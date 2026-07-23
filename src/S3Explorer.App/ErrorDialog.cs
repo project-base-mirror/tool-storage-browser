@@ -55,8 +55,9 @@ internal sealed class ErrorDialog : Form
 
     private static void AddRow(TableLayoutPanel table, int row, string label, string value)
     {
+        var baseFont = SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont;
         table.RowStyles.Add(new RowStyle(row == 5 || row == 6 ? SizeType.Percent : SizeType.AutoSize, row == 5 || row == 6 ? 50 : 0));
-        table.Controls.Add(new Label { Text = label, AutoSize = true, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold), Margin = new Padding(3, 6, 3, 3) }, 0, row);
+        table.Controls.Add(new Label { Text = label, AutoSize = true, Font = new Font(baseFont, FontStyle.Bold), Margin = new Padding(3, 6, 3, 3) }, 0, row);
         table.Controls.Add(new TextBox { Text = value, ReadOnly = true, BorderStyle = BorderStyle.None, Multiline = true, Dock = DockStyle.Fill, BackColor = SystemColors.Control, Margin = new Padding(3, 6, 3, 3) }, 1, row);
     }
 

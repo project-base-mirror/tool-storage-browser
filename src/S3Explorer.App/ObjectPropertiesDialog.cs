@@ -54,10 +54,11 @@ internal sealed class ObjectPropertiesDialog : Form
             ("Version ID", value.VersionId ?? "—"),
             ("预签名 URL", presignedUrl is null ? "未生成" : "已生成（出于安全考虑不在日志中记录）")
         };
+        var baseFont = SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont;
         for (var row = 0; row < fields.Length; row++)
         {
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(new Label { Text = fields[row].Item1 + "：", AutoSize = true, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold), Margin = new Padding(3, 7, 3, 3) }, 0, row);
+            table.Controls.Add(new Label { Text = fields[row].Item1 + "：", AutoSize = true, Font = new Font(baseFont, FontStyle.Bold), Margin = new Padding(3, 7, 3, 3) }, 0, row);
             var box = new TextBox { Text = fields[row].Item2, ReadOnly = true, BorderStyle = BorderStyle.None, Dock = DockStyle.Fill, BackColor = SystemColors.Window, Margin = new Padding(3, 7, 3, 3) };
             table.Controls.Add(box, 1, row);
         }

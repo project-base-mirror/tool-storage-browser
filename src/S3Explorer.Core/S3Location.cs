@@ -71,6 +71,17 @@ public static class S3Path
         return normalizedPrefix + normalizedName;
     }
 
+    public static string ParentPrefix(string? prefix)
+    {
+        var normalized = NormalizePrefix(prefix);
+        if (normalized.Length == 0)
+            return string.Empty;
+
+        var trimmed = normalized.TrimEnd('/');
+        var separator = trimmed.LastIndexOf('/');
+        return separator < 0 ? string.Empty : trimmed[..(separator + 1)];
+    }
+
     public static string FolderMarker(string? prefix, string folderName)
     {
         if (folderName.Any(char.IsControl) || folderName.Trim() is "" or "/")

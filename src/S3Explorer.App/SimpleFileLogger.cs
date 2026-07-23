@@ -22,7 +22,7 @@ internal sealed class SimpleFileLogger
         try
         {
             Directory.CreateDirectory(_directory);
-            var safe = SecretRedactor.Redact(message);
+            var safe = SensitiveDataRedactor.Redact(message);
             lock (_sync)
                 File.AppendAllText(CurrentLogPath, $"{DateTimeOffset.Now:O} [{level}] {safe}{Environment.NewLine}");
         }

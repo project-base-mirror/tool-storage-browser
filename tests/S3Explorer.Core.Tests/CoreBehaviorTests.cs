@@ -24,6 +24,13 @@ public sealed class CoreBehaviorTests
         Assert.Equal("s3://A/bucket/a/b/", location.Parent().ToString());
     }
 
+    [Theory]
+    [InlineData("a/b/c/", "a/b/")]
+    [InlineData("folder/", "")]
+    [InlineData("", "")]
+    public void ParentPrefixStaysWithinBucket(string prefix, string expected) =>
+        Assert.Equal(expected, S3Path.ParentPrefix(prefix));
+
     [Fact]
     public void FolderMarkerUsesSlashAndAllowsUnicode()
     {

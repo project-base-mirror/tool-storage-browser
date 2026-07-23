@@ -23,7 +23,6 @@ public sealed class S3ClientFactory
             ForcePathStyle = profile.AddressingStyle == AddressingStyle.PathStyle,
             UseHttp = endpoint.Scheme == Uri.UriSchemeHttp,
             Timeout = TimeSpan.FromSeconds(profile.RequestTimeoutSeconds),
-            ReadWriteTimeout = TimeSpan.FromSeconds(profile.RequestTimeoutSeconds),
             MaxErrorRetry = 3
         };
 

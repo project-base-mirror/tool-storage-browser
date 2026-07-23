@@ -278,17 +278,21 @@ internal sealed class MainForm : Form
     {
         _tree.NodeMouseDoubleClick += async (_, args) =>
         {
-            if (args.Node.Tag is ConnectionProfile profile)
-                await LoadBucketsAsync(profile, args.Node);
-            else if (args.Node.Tag is BucketNodeTag bucket)
+            var node = args.Node;
+            if (node is null) return;
+            if (node.Tag is ConnectionProfile profile)
+                await LoadBucketsAsync(profile, node);
+            else if (node.Tag is BucketNodeTag bucket)
                 await NavigateAsync(bucket.Profile, bucket.Bucket, string.Empty, true);
         };
         _tree.AfterSelect += async (_, args) =>
         {
             UpdateCommandStates();
-            if (args.Node.Tag is ConnectionProfile profile)
-                ShowConnectionSummary(profile, args.Node);
-            else if (args.Node.Tag is BucketNodeTag bucket)
+            var node = args.Node;
+            if (node is null) return;
+            if (node.Tag is ConnectionProfile profile)
+                ShowConnectionSummary(profile, node);
+            else if (node.Tag is BucketNodeTag bucket)
                 await NavigateAsync(bucket.Profile, bucket.Bucket, string.Empty, true);
         };
 
@@ -676,7 +680,7 @@ internal sealed class MainForm : Form
     {
         var item = new ListViewItem(entry.Name) { Tag = entry };
         item.SubItems.Add(entry.IsDirectory ? string.Empty : FileSizeFormatter.Format(entry.Size));
-        item.SubItems.Add(entry.IsDirectory ? "Folder" : ObjectTypeDetector.GetTypeName(entry.Name));
+        item.SubItems.Add(ObjectTypeDetector.Detect(entry.Name, entry.IsDirectory));
         item.SubItems.Add(entry.LastModified?.LocalDateTime.ToString("G") ?? string.Empty);
         item.SubItems.Add(entry.IsDirectory ? string.Empty : entry.StorageClass);
         return item;
@@ -692,10 +696,13 @@ internal sealed class MainForm : Form
     private async Task ReloadBucketsAsync()
     {
         if (_currentProfile is null) return;
-        var node = _tree.Nodes[0].Nodes.Cast<TreeNode>()
-            .FirstOrDefault(item => item.Tag is ConnectionProfile profile && profile.Id == _currentProfile.Id);
+        var node = FindProfileNode(_currentProfile);
         if (node is not null) await LoadBucketsAsync(_currentProfile, node);
     }
+
+    private TreeNode? FindProfileNode(ConnectionProfile profile) =>
+        _tree.Nodes[0].Nodes.Cast<TreeNode>()
+            .FirstOrDefault(item => item.Tag is ConnectionProfile candidate && candidate.Id == profile.Id);
 
     private async Task NavigateUpAsync()
     {
@@ -706,15 +713,25 @@ internal sealed class MainForm : Form
 
     private async Task NavigateAddressAsync()
     {
-        if (!S3Location.TryParse(_address.Text, out var location, out var error) || location is null)
+        if (!S3Location.TryParse(_address.Text, out var location))
         {
-            MessageBox.Show(this, error, "地址无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "S3 路径格式应为 s3://<连接名称>/<bucket>/<prefix>。", "地址无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         var profile = _profiles.FirstOrDefault(item => string.Equals(item.Name, location.Profile, StringComparison.OrdinalIgnoreCase));
         if (profile is null)
         {
             MessageBox.Show(this, $"找不到连接：{location.Profile}", "地址无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (location.Bucket is null)
+        {
+            var node = FindProfileNode(profile);
+            if (node is not null)
+            {
+                _tree.SelectedNode = node;
+                await LoadBucketsAsync(profile, node);
+            }
             return;
         }
         await NavigateAsync(profile, location.Bucket, location.Prefix, true);
@@ -737,8 +754,18 @@ internal sealed class MainForm : Form
         _historyIndex = next;
         var location = _history[next];
         var profile = _profiles.FirstOrDefault(item => string.Equals(item.Name, location.Profile, StringComparison.OrdinalIgnoreCase));
-        if (profile is not null)
-            await NavigateAsync(profile, location.Bucket, location.Prefix, false);
+        if (profile is null) return;
+        if (location.Bucket is null)
+        {
+            var node = FindProfileNode(profile);
+            if (node is not null)
+            {
+                _tree.SelectedNode = node;
+                await LoadBucketsAsync(profile, node);
+            }
+            return;
+        }
+        await NavigateAsync(profile, location.Bucket, location.Prefix, false);
     }
 
     private async Task CreateBucketAsync()
@@ -814,7 +841,7 @@ internal sealed class MainForm : Form
                 foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
                 {
                     var relative = Path.GetRelativePath(path, file).Replace('\\', '/');
-                    EnqueueUpload(file, S3Path.Combine(_currentPrefix, rootName, relative));
+                    EnqueueUpload(file, S3Path.Combine(_currentPrefix, $"{rootName}/{relative}"));
                 }
             }
         }
