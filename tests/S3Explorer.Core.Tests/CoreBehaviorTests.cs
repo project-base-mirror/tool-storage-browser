@@ -60,4 +60,47 @@ public sealed class CoreBehaviorTests
     [InlineData(null, 429, true)]
     public void RetryClassificationWorks(string? code, int? status, bool expected) =>
         Assert.Equal(expected, RetryClassifier.ShouldRetry(code, status));
+
+    [Fact]
+    public void OperationCancellationReplacesAndCancelsPreviousToken()
+    {
+        using var cancellation = new OperationCancellation();
+
+        var first = cancellation.StartNew();
+        var second = cancellation.StartNew();
+
+        Assert.True(first.IsCancellationRequested);
+        Assert.False(second.IsCancellationRequested);
+
+        cancellation.CancelCurrent();
+        Assert.True(second.IsCancellationRequested);
+
+        cancellation.CancelCurrent();
+        var third = cancellation.CurrentOrStart();
+        Assert.False(third.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void OperationCancellationSupportsRepeatedConcurrentReplacement()
+    {
+        using var cancellation = new OperationCancellation();
+        var exceptions = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+
+        Parallel.For(0, 500, index =>
+        {
+            try
+            {
+                if (index % 3 == 0)
+                    cancellation.CancelCurrent();
+                else
+                    _ = cancellation.StartNew();
+            }
+            catch (Exception exception)
+            {
+                exceptions.Enqueue(exception);
+            }
+        });
+
+        Assert.Empty(exceptions);
+    }
 }

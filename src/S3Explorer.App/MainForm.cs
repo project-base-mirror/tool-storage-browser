@@ -46,6 +46,7 @@ internal sealed class MainForm : Form
     private readonly List<S3ObjectEntry> _loadedItems = [];
     private readonly List<S3Location> _history = [];
     private readonly Dictionary<string, ToolStripItem> _commands = new(StringComparer.OrdinalIgnoreCase);
+    private readonly OperationCancellation _navigationCancellation = new();
 
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private AppSettings _settings = new();
@@ -58,7 +59,6 @@ internal sealed class MainForm : Form
     private int _sortColumn;
     private bool _sortAscending = true;
     private long _navigationRevision;
-    private CancellationTokenSource? _navigationCancellation;
     private bool _closing;
 
     public MainForm(IProfileStore profileStore, IS3StorageService storage, AppSettingsStore settingsStore, SimpleFileLogger logger)
@@ -474,13 +474,15 @@ internal sealed class MainForm : Form
 
     private async Task LoadBucketsAsync(ConnectionProfile profile, TreeNode profileNode)
     {
-        CancelNavigation();
-        using var cancellation = new CancellationTokenSource();
-        _navigationCancellation = cancellation;
+        var revision = ++_navigationRevision;
+        var cancellationToken = _navigationCancellation.StartNew();
         SetBusy($"正在连接 {profile.Name}...");
         try
         {
-            var buckets = await _storage.ListBucketsAsync(profile, cancellation.Token);
+            var buckets = await _storage.ListBucketsAsync(profile, cancellationToken);
+            if (revision != _navigationRevision || cancellationToken.IsCancellationRequested)
+                return;
+
             _currentProfile = profile;
             _currentBucket = null;
             _currentPrefix = string.Empty;
@@ -501,7 +503,7 @@ internal sealed class MainForm : Form
             ShowConnectionSummary(profile, profileNode, buckets.Count);
             _logger.Info($"Connected profile={profile.Name} endpoint={profile.Endpoint} buckets={buckets.Count}");
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception exception)
         {
             _logger.Error($"Connect failed profile={profile.Name} endpoint={profile.Endpoint}", exception);
@@ -509,8 +511,11 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            SetIdle();
-            UpdateCommandStates();
+            if (revision == _navigationRevision)
+            {
+                SetIdle();
+                UpdateCommandStates();
+            }
         }
     }
 
@@ -579,10 +584,12 @@ internal sealed class MainForm : Form
     {
         if (_currentProfile is null || _currentBucket is null) return;
 
+        var cancellationToken = reset
+            ? _navigationCancellation.StartNew()
+            : _navigationCancellation.CurrentOrStart();
+
         if (reset)
         {
-            CancelNavigation();
-            _navigationCancellation = new CancellationTokenSource();
             _loadedItems.Clear();
             _continuationToken = null;
             _hasMore = false;
@@ -590,7 +597,6 @@ internal sealed class MainForm : Form
         }
 
         var revision = ++_navigationRevision;
-        var cancellation = _navigationCancellation ??= new CancellationTokenSource();
         SetBusy("正在加载对象...");
         try
         {
@@ -600,8 +606,8 @@ internal sealed class MainForm : Form
                 _currentPrefix,
                 reset ? null : _continuationToken,
                 1000,
-                cancellation.Token);
-            if (revision != _navigationRevision || cancellation.IsCancellationRequested)
+                cancellationToken);
+            if (revision != _navigationRevision || cancellationToken.IsCancellationRequested)
                 return;
 
             _loadedItems.AddRange(page.Items.Where(item =>
@@ -611,7 +617,7 @@ internal sealed class MainForm : Form
             ApplyFilterAndSort();
             _logger.Info($"ListObjects profile={_currentProfile.Name} bucket={_currentBucket} prefix={_currentPrefix} count={page.Items.Count} hasMore={page.HasMore}");
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception exception)
         {
             _logger.Error($"ListObjects failed bucket={_currentBucket} prefix={_currentPrefix}", exception);
@@ -619,7 +625,8 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            SetIdle();
+            if (revision == _navigationRevision)
+                SetIdle();
         }
     }
 
@@ -1238,9 +1245,7 @@ internal sealed class MainForm : Form
     private void CancelNavigation()
     {
         _navigationRevision++;
-        _navigationCancellation?.Cancel();
-        _navigationCancellation?.Dispose();
-        _navigationCancellation = null;
+        _navigationCancellation.CancelCurrent();
     }
 
     private ToolStripMenuItem Command(string id, string text, EventHandler handler, Keys shortcut = Keys.None)
