@@ -1,0 +1,42 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "S3Explorer.Core", "src\S3Explorer.Core\S3Explorer.Core.csproj", "{88E8698D-BD13-44E2-B56B-8799B7BA7C31}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "S3Explorer.Infrastructure.S3", "src\S3Explorer.Infrastructure.S3\S3Explorer.Infrastructure.S3.csproj", "{3A68E170-9623-428B-895D-0FE97824E30C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "S3Explorer.App", "src\S3Explorer.App\S3Explorer.App.csproj", "{C213C4BB-0A49-445E-A8B4-AC1F36D30705}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "S3Explorer.Core.Tests", "tests\S3Explorer.Core.Tests\S3Explorer.Core.Tests.csproj", "{FAF31FE5-9D54-4428-85D2-5608B3ADE46D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "S3Explorer.Infrastructure.S3.Tests", "tests\S3Explorer.Infrastructure.S3.Tests\S3Explorer.Infrastructure.S3.Tests.csproj", "{7BC637BB-C8C4-40A3-A4B3-B5E348035384}"
+EndProject
+Global
+  GlobalSection(SolutionConfigurationPlatforms) = preSolution
+    Debug|Any CPU = Debug|Any CPU
+    Release|Any CPU = Release|Any CPU
+  EndGlobalSection
+  GlobalSection(ProjectConfigurationPlatforms) = postSolution
+    {88E8698D-BD13-44E2-B56B-8799B7BA7C31}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {88E8698D-BD13-44E2-B56B-8799B7BA7C31}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {88E8698D-BD13-44E2-B56B-8799B7BA7C31}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {88E8698D-BD13-44E2-B56B-8799B7BA7C31}.Release|Any CPU.Build.0 = Release|Any CPU
+    {3A68E170-9623-428B-895D-0FE97824E30C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {3A68E170-9623-428B-895D-0FE97824E30C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {3A68E170-9623-428B-895D-0FE97824E30C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {3A68E170-9623-428B-895D-0FE97824E30C}.Release|Any CPU.Build.0 = Release|Any CPU
+    {C213C4BB-0A49-445E-A8B4-AC1F36D30705}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {C213C4BB-0A49-445E-A8B4-AC1F36D30705}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {C213C4BB-0A49-445E-A8B4-AC1F36D30705}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {C213C4BB-0A49-445E-A8B4-AC1F36D30705}.Release|Any CPU.Build.0 = Release|Any CPU
+    {FAF31FE5-9D54-4428-85D2-5608B3ADE46D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {FAF31FE5-9D54-4428-85D2-5608B3ADE46D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {FAF31FE5-9D54-4428-85D2-5608B3ADE46D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {FAF31FE5-9D54-4428-85D2-5608B3ADE46D}.Release|Any CPU.Build.0 = Release|Any CPU
+    {7BC637BB-C8C4-40A3-A4B3-B5E348035384}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {7BC637BB-C8C4-40A3-A4B3-B5E348035384}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {7BC637BB-C8C4-40A3-A4B3-B5E348035384}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {7BC637BB-C8C4-40A3-A4B3-B5E348035384}.Release|Any CPU.Build.0 = Release|Any CPU
+  EndGlobalSection
+EndGlobal

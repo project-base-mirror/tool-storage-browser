@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>S3Explorer.Core</AssemblyName>
+    <RootNamespace>S3Explorer.Core</RootNamespace>
+  </PropertyGroup>
+</Project>
