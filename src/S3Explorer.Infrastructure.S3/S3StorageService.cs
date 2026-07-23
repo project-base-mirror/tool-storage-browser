@@ -4,6 +4,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
 using S3Explorer.Core;
+using CoreBucketInfo = S3Explorer.Core.BucketInfo;
 
 namespace S3Explorer.Infrastructure.S3;
 
@@ -40,13 +41,13 @@ public sealed class S3StorageService : IS3StorageService
         }
     }
 
-    public async Task<IReadOnlyList<BucketInfo>> ListBucketsAsync(ConnectionProfile profile, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<CoreBucketInfo>> ListBucketsAsync(ConnectionProfile profile, CancellationToken cancellationToken)
     {
         using var client = _factory.Create(profile);
         var response = await client.ListBucketsAsync(cancellationToken).ConfigureAwait(false);
         return response.Buckets
             .OrderBy(bucket => bucket.BucketName, StringComparer.OrdinalIgnoreCase)
-            .Select(bucket => new BucketInfo(bucket.BucketName, bucket.CreationDate))
+            .Select(bucket => new CoreBucketInfo(bucket.BucketName, bucket.CreationDate))
             .ToArray();
     }
 

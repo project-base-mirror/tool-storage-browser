@@ -1,5 +1,6 @@
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.S3;
+using Xunit;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
 

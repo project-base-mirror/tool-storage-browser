@@ -1,4 +1,5 @@
 using S3Explorer.Core;
+using Xunit;
 
 namespace S3Explorer.Core.Tests;
 
