@@ -28,6 +28,18 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 
 需要安装 .NET 10 SDK。
 
+Windows 上最容易发现的入口位于仓库根目录。双击或在命令行运行：
+
+    build.bat
+
+构建产物固定写入：
+
+    artifacts/build/
+
+构建成功后会打印并打开实际产物目录。构建失败时批处理窗口会保留，便于查看完整错误。
+
+也可以直接使用 `dotnet`：
+
     dotnet restore .\S3Explorer.sln
     dotnet build .\S3Explorer.sln -c Release --no-restore
 
@@ -51,7 +63,13 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 ## 发布
 
-仓库提供 PowerShell 发布脚本：
+仓库根目录提供可直接双击的发布入口：
+
+    publish.bat
+
+它调用 `scripts\Publish.ps1`，成功后打印并打开实际发布目录；失败时保留错误窗口。
+
+也可以直接运行 PowerShell 发布脚本：
 
     pwsh .\scripts\Publish.ps1
 
@@ -61,17 +79,31 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
     artifacts/release/S3Explorer-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
+构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
+
 发布配置明确关闭 trimming 和单文件打包，避免 AWS SDK、JSON 序列化或 WinForms 反射类型被误删。
 
 仅重新打包而跳过验证：
 
-    pwsh .\scripts\Publish.ps1 -SkipValidation
+    publish.bat -SkipValidation
+
+自动化环境中不打开资源管理器：
+
+    publish.bat -NoOpen
 
 在交互式 Windows 桌面上额外记录启动时间和空闲 Working Set：
 
     pwsh .\scripts\Publish.ps1 -MeasureRuntime
 
 `release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、ZIP SHA-256、SDK 版本，以及可选的启动时间和内存数据。
+
+发布脚本回归检查：
+
+    pwsh .\scripts\Test-Publish.ps1
+
+已有发布包时只检查入口、固定路径、批处理失败保留行为和产物结构：
+
+    pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 
 ## 数据位置与安全
 
@@ -92,7 +124,11 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       S3Explorer.Core.Tests
       S3Explorer.Infrastructure.S3.Tests
     scripts/
+      Build.ps1
       Publish.ps1
+      Test-Publish.ps1
+    build.bat
+    publish.bat
 
 ## 当前限制
 
@@ -105,7 +141,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 1. `dotnet restore` 成功。
 2. 全量 `dotnet test` 成功。
 3. Release `dotnet build` 成功。
-4. 两种发布目录和 ZIP 均生成。
-5. 检查 `release-metrics.json` 中的体积和哈希。
-6. 在发布机上启动 framework-dependent 包，验证连接窗口、对象列表和 WinForms 控件。
-7. 需要性能记录时，在交互式桌面使用 `-MeasureRuntime`。
+4. `scripts\Test-Publish.ps1` 成功。
+5. 两种发布目录和 ZIP 均生成。
+6. 检查 `release-metrics.json` 中的体积和哈希。
+7. 在发布机上启动 framework-dependent 包，验证连接窗口、对象列表和 WinForms 控件。
+8. 需要性能记录时，在交互式桌面使用 `-MeasureRuntime`。

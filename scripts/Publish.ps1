@@ -2,9 +2,9 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$OutputRoot = "",
     [switch]$SkipValidation,
-    [switch]$MeasureRuntime
+    [switch]$MeasureRuntime,
+    [switch]$NoOpen
 )
 
 Set-StrictMode -Version Latest
@@ -13,19 +13,15 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
-
-if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
-    $OutputRoot = Join-Path $repositoryRoot "artifacts\release"
-}
-
-$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+$artifactsRoot = Join-Path $repositoryRoot "artifacts"
+$outputRoot = Join-Path $artifactsRoot "release"
 $frameworkName = "S3Explorer-$Runtime"
 $selfContainedName = "S3Explorer-$Runtime-self-contained"
-$frameworkDirectory = Join-Path $OutputRoot $frameworkName
-$selfContainedDirectory = Join-Path $OutputRoot $selfContainedName
-$frameworkZip = Join-Path $OutputRoot "$frameworkName.zip"
-$selfContainedZip = Join-Path $OutputRoot "$selfContainedName.zip"
-$metricsPath = Join-Path $OutputRoot "release-metrics.json"
+$frameworkDirectory = Join-Path $outputRoot $frameworkName
+$selfContainedDirectory = Join-Path $outputRoot $selfContainedName
+$frameworkZip = Join-Path $outputRoot "$frameworkName.zip"
+$selfContainedZip = Join-Path $outputRoot "$selfContainedName.zip"
+$metricsPath = Join-Path $outputRoot "release-metrics.json"
 
 function Invoke-DotNet {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -163,7 +159,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw ".NET SDK was not found on PATH. Install the .NET 10 SDK first."
 }
 
-New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 
 if (-not $SkipValidation) {
     Invoke-DotNet -Arguments @("restore", $solution)
@@ -198,8 +194,13 @@ $metrics = [ordered]@{
 $metrics | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $metricsPath -Encoding utf8
 
 Write-Host ""
-Write-Host "Release artifacts: $OutputRoot"
+$resolvedOutputRoot = (Resolve-Path -LiteralPath $outputRoot).Path
+Write-Host "Release artifacts: $resolvedOutputRoot"
 $metrics.packages | Format-Table name, directoryMiB, zipMiB, zipSha256 -AutoSize
 if ($null -ne $runtimeMetric) {
     $runtimeMetric | Format-List
+}
+
+if (-not $NoOpen) {
+    Start-Process -FilePath "explorer.exe" -ArgumentList @($resolvedOutputRoot) | Out-Null
 }
