@@ -145,6 +145,184 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         await PumpAsync().ConfigureAwait(false);
     }
 
+    public async Task<TransferBatchRecord> CreateBatchAsync(
+        TransferBatchRecord batch,
+        CancellationToken cancellationToken = default)
+    {
+        var now = _clock();
+        batch = batch with
+        {
+            TaskIds = Array.Empty<Guid>(),
+            DiscoveryCompleted = false,
+            SkippedCount = 0,
+            CancellationRequested = false,
+            CreatedAt = batch.CreatedAt == default ? now : batch.CreatedAt,
+            UpdatedAt = now
+        };
+        batch.Validate();
+        await MutateAsync(snapshot =>
+        {
+            if (snapshot.Batches.Any(item => item.Id == batch.Id))
+                throw new InvalidOperationException($"传输批次 ID 已存在：{batch.Id}");
+            return snapshot with { Batches = snapshot.Batches.Append(batch).ToArray() };
+        }, null, cancellationToken).ConfigureAwait(false);
+        return batch;
+    }
+
+    public async Task AddBatchTasksAsync(
+        Guid batchId,
+        IReadOnlyCollection<TransferTaskRecord> tasks,
+        CancellationToken cancellationToken = default)
+    {
+        if (tasks.Count == 0) return;
+        var now = _clock();
+        var prepared = tasks.Select(task => task with
+        {
+            BatchId = batchId,
+            Kind = TransferTaskKind.FolderBatchItem,
+            State = TransferTaskState.Queued,
+            AttemptCount = 0,
+            Failure = null,
+            NextAttemptAt = null,
+            TransferredBytes = 0,
+            CreatedAt = task.CreatedAt == default ? now : task.CreatedAt,
+            UpdatedAt = now,
+            StartedAt = null,
+            CompletedAt = null
+        }).ToArray();
+        if (prepared.Select(task => task.Id).Distinct().Count() != prepared.Length)
+            throw new InvalidOperationException("批次子任务 ID 重复。");
+        foreach (var task in prepared) task.Validate();
+
+        await MutateAsync(snapshot =>
+        {
+            var batch = FindBatch(snapshot, batchId);
+            if (batch.CancellationRequested)
+                throw new InvalidOperationException("批次已请求取消，不能继续加入任务。");
+            if (batch.DiscoveryCompleted)
+                throw new InvalidOperationException("批次发现已完成，不能继续加入任务。");
+            if (prepared.Any(task =>
+                task.ProfileId != batch.ProfileId ||
+                task.Direction != batch.Direction ||
+                !string.Equals(task.Bucket, batch.Bucket, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException("批次子任务的连接、方向或 Bucket 与父批次不一致。");
+            }
+            if (snapshot.Tasks.Any(existing => prepared.Any(task => task.Id == existing.Id)))
+                throw new InvalidOperationException("批次子任务 ID 已存在。");
+
+            var updatedBatch = batch with
+            {
+                TaskIds = batch.TaskIds.Concat(prepared.Select(task => task.Id)).ToArray(),
+                UpdatedAt = now
+            };
+            var next = snapshot with { Tasks = snapshot.Tasks.Concat(prepared).ToArray() };
+            return ReplaceBatch(next, batchId, _ => updatedBatch);
+        }, null, cancellationToken).ConfigureAwait(false);
+        await PumpAsync().ConfigureAwait(false);
+    }
+
+    public Task CompleteBatchDiscoveryAsync(
+        Guid batchId,
+        int skippedCount = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (skippedCount < 0) throw new ArgumentOutOfRangeException(nameof(skippedCount));
+        return MutateAsync(snapshot => ReplaceBatch(snapshot, batchId, batch => batch with
+        {
+            DiscoveryCompleted = true,
+            SkippedCount = checked(batch.SkippedCount + skippedCount),
+            UpdatedAt = _clock()
+        }), null, cancellationToken);
+    }
+
+    public async Task<int> RetryBatchFailuresAsync(
+        Guid batchId,
+        IReadOnlyCollection<Guid>? selectedTaskIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        var selected = selectedTaskIds?.ToHashSet();
+        var retried = 0;
+        var now = _clock();
+        await MutateAsync(snapshot =>
+        {
+            var batch = FindBatch(snapshot, batchId);
+            var childIds = batch.TaskIds.ToHashSet();
+            if (selected is not null && selected.Any(id => !childIds.Contains(id)))
+                throw new InvalidOperationException("选中的任务不属于该批次。");
+
+            var tasks = snapshot.Tasks.Select(task =>
+            {
+                if (task.BatchId != batchId ||
+                    task.State != TransferTaskState.Failed ||
+                    task.Failure?.Retryable != true ||
+                    (selected is not null && !selected.Contains(task.Id)))
+                {
+                    return task;
+                }
+
+                retried++;
+                var retry = TransferTaskStateMachine.Transition(task, TransferTaskState.RetryPending, now);
+                return retry with
+                {
+                    AttemptCount = 0,
+                    Failure = null,
+                    NextAttemptAt = now,
+                    CompletedAt = null
+                };
+            }).ToArray();
+            var updated = snapshot with { Tasks = tasks };
+            return ReplaceBatch(updated, batchId, current => current with
+            {
+                CancellationRequested = false,
+                UpdatedAt = now
+            });
+        }, null, cancellationToken).ConfigureAwait(false);
+        await PumpAsync().ConfigureAwait(false);
+        return retried;
+    }
+
+    public async Task CancelBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
+    {
+        await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureInitialized();
+            var batch = FindBatch(_snapshot, batchId);
+            var childIds = batch.TaskIds.ToHashSet();
+            foreach (var pair in _running.Where(pair => childIds.Contains(pair.Key)).ToArray())
+            {
+                pair.Value.RequestedStop = TransferTaskState.Cancelled;
+                pair.Value.Cancellation.Cancel();
+            }
+
+            var now = _clock();
+            var tasks = _snapshot.Tasks.Select(task =>
+            {
+                if (task.BatchId != batchId ||
+                    task.State is not (TransferTaskState.Queued or TransferTaskState.Paused or
+                        TransferTaskState.RetryPending or TransferTaskState.Interrupted))
+                {
+                    return task;
+                }
+                return TransferTaskStateMachine.Transition(task, TransferTaskState.Cancelled, now);
+            }).ToArray();
+            var next = ReplaceBatch(_snapshot with { Tasks = tasks }, batchId, current => current with
+            {
+                CancellationRequested = true,
+                DiscoveryCompleted = true,
+                UpdatedAt = now
+            });
+            await CommitLockedAsync(next, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+        Publish();
+        await PumpAsync().ConfigureAwait(false);
+    }
+
     public Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default) =>
         StopOrTransitionAsync(taskId, TransferTaskState.Paused, cancellationToken);
 
@@ -261,7 +439,9 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
     public Task RemoveCompletedAsync(CancellationToken cancellationToken = default) => MutateAsync(
         snapshot => snapshot with
         {
-            Tasks = snapshot.Tasks.Where(task => task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled)).ToArray()
+            Tasks = snapshot.Tasks.Where(task =>
+                task.BatchId is not null ||
+                task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled)).ToArray()
         }, null, cancellationToken);
 
     public Task MarkMultipartCleanedAsync(
@@ -561,6 +741,26 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         if (!found) throw new KeyNotFoundException($"找不到传输任务：{taskId}");
         return snapshot with { Tasks = tasks };
     }
+
+    private static TransferStoreSnapshot ReplaceBatch(
+        TransferStoreSnapshot snapshot,
+        Guid batchId,
+        Func<TransferBatchRecord, TransferBatchRecord> update)
+    {
+        var found = false;
+        var batches = snapshot.Batches.Select(batch =>
+        {
+            if (batch.Id != batchId) return batch;
+            found = true;
+            return update(batch);
+        }).ToArray();
+        if (!found) throw new KeyNotFoundException($"找不到传输批次：{batchId}");
+        return snapshot with { Batches = batches };
+    }
+
+    private static TransferBatchRecord FindBatch(TransferStoreSnapshot snapshot, Guid batchId) =>
+        snapshot.Batches.FirstOrDefault(batch => batch.Id == batchId)
+        ?? throw new KeyNotFoundException($"找不到传输批次：{batchId}");
 
     private static TransferTaskRecord FindTask(TransferStoreSnapshot snapshot, Guid taskId) =>
         snapshot.Tasks.FirstOrDefault(task => task.Id == taskId)

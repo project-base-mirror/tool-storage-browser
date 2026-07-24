@@ -140,6 +140,7 @@ public sealed record TransferTaskRecord
     public string Bucket { get; init; } = string.Empty;
     public string ObjectKey { get; init; } = string.Empty;
     public string LocalPath { get; init; } = string.Empty;
+    public string RelativePath { get; init; } = string.Empty;
     public string StorageClass { get; init; } = "STANDARD";
     public long TotalBytes { get; init; }
     public long TransferredBytes { get; init; }
@@ -180,16 +181,28 @@ public sealed record TransferTaskRecord
 public sealed record TransferBatchRecord
 {
     public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid ProfileId { get; init; }
+    public string ProfileName { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+    public string Bucket { get; init; } = string.Empty;
+    public string RootPath { get; init; } = string.Empty;
     public TransferDirection Direction { get; init; }
     public IReadOnlyList<Guid> TaskIds { get; init; } = Array.Empty<Guid>();
+    public bool DiscoveryCompleted { get; init; }
+    public int SkippedCount { get; init; }
+    public bool CancellationRequested { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
 
     public void Validate()
     {
         if (Id == Guid.Empty) throw new ArgumentException("批次 ID 不能为空。", nameof(Id));
+        if (ProfileId == Guid.Empty) throw new ArgumentException("连接 ID 不能为空。", nameof(ProfileId));
+        if (string.IsNullOrWhiteSpace(ProfileName)) throw new ArgumentException("连接名称不能为空。", nameof(ProfileName));
         if (string.IsNullOrWhiteSpace(Name)) throw new ArgumentException("批次名称不能为空。", nameof(Name));
+        if (string.IsNullOrWhiteSpace(Bucket)) throw new ArgumentException("Bucket 不能为空。", nameof(Bucket));
+        if (string.IsNullOrWhiteSpace(RootPath)) throw new ArgumentException("批次根路径不能为空。", nameof(RootPath));
+        if (SkippedCount < 0) throw new ArgumentOutOfRangeException(nameof(SkippedCount));
         if (TaskIds.Any(id => id == Guid.Empty) || TaskIds.Distinct().Count() != TaskIds.Count)
             throw new ArgumentException("批次任务 ID 必须有效且唯一。", nameof(TaskIds));
     }
@@ -210,6 +223,22 @@ public sealed record TransferStoreSnapshot
             throw new InvalidOperationException("任务 ID 重复。");
         if (Batches.Select(batch => batch.Id).Distinct().Count() != Batches.Count)
             throw new InvalidOperationException("批次 ID 重复。");
+
+        var batchIds = Batches.Select(batch => batch.Id).ToHashSet();
+        foreach (var task in Tasks.Where(task => task.BatchId is not null))
+        {
+            if (!batchIds.Contains(task.BatchId!.Value))
+                throw new InvalidOperationException($"任务引用了不存在的批次：{task.BatchId}");
+            if (task.Kind != TransferTaskKind.FolderBatchItem)
+                throw new InvalidOperationException("批次子任务必须标记为 FolderBatchItem。");
+        }
+
+        var taskIds = Tasks.Select(task => task.Id).ToHashSet();
+        foreach (var batch in Batches)
+        {
+            if (batch.TaskIds.Any(id => !taskIds.Contains(id)))
+                throw new InvalidOperationException($"批次 {batch.Id} 引用了不存在的任务。");
+        }
     }
 }
 
