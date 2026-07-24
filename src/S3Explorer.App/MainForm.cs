@@ -9,6 +9,22 @@ internal sealed record LoadMoreTag;
 
 internal sealed class MainForm : Form
 {
+    private static string DisplayVersion
+    {
+        get
+        {
+            var version = typeof(MainForm).Assembly.GetName().Version;
+            return version is null
+                ? Application.ProductVersion
+                : $"{version.Major}.{version.Minor}.{version.Build}";
+        }
+    }
+
+    private static string WindowTitle(string? profileName = null) =>
+        string.IsNullOrWhiteSpace(profileName)
+            ? $"S3 Explorer v{DisplayVersion}"
+            : $"S3 Explorer v{DisplayVersion} - {profileName}";
+
     private readonly IProfileStore _profileStore;
     private readonly IS3StorageService _storage;
     private readonly AppSettingsStore _settingsStore;
@@ -72,7 +88,8 @@ internal sealed class MainForm : Form
         _settingsStore = settingsStore;
         _logger = logger;
 
-        Text = "S3 Explorer";
+        Text = WindowTitle();
+        Icon = UiIcons.CreateApplicationIcon();
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(1280, 780);
         MinimumSize = new Size(960, 600);
@@ -537,7 +554,7 @@ internal sealed class MainForm : Form
             _currentProfile = profile;
             _currentBucket = null;
             _currentPrefix = string.Empty;
-            Text = $"S3 Explorer - {profile.Name}";
+            Text = WindowTitle(profile.Name);
             _connectionStatus.Text = $"已连接：{profile.Name}";
             profileNode.Nodes.Clear();
             foreach (var bucket in buckets)
@@ -602,7 +619,7 @@ internal sealed class MainForm : Form
         _currentPrefix = string.Empty;
         _loadedItems.Clear();
         _objects.Items.Clear();
-        Text = "S3 Explorer";
+        Text = WindowTitle();
         _connectionStatus.Text = "未连接";
         _pathStatus.Text = "s3://";
         _address.Text = string.Empty;
@@ -624,6 +641,9 @@ internal sealed class MainForm : Form
             AddSummaryItem("外部 Bucket", profile.ExternalBuckets.Count == 0 ? "未配置" : string.Join(", ", profile.ExternalBuckets));
             AddSummaryItem("Bucket 数量", bucketCount?.ToString() ?? Math.Max(0, node.Nodes.Count).ToString());
             AddSummaryItem("当前状态", _currentProfile?.Id == profile.Id ? "已连接" : "未连接");
+            AddSummaryItem("临时凭据", profile.UsesTemporarySessionCredentials
+                ? "已启用（Session Token）"
+                : "未启用");
             AddSummaryItem("凭据存储", "SecretKey 与 SessionToken 使用 DPAPI CurrentUser 加密");
         }
         finally { _objects.EndUpdate(); }
@@ -646,7 +666,7 @@ internal sealed class MainForm : Form
         _currentProfile = profile;
         _currentBucket = bucket;
         _currentPrefix = S3Path.NormalizePrefix(prefix);
-        Text = $"S3 Explorer - {profile.Name}";
+        Text = WindowTitle(profile.Name);
         var location = new S3Location(profile.Name, bucket, _currentPrefix);
         _address.Text = location.ToString();
         _pathStatus.Text = location.ToString();

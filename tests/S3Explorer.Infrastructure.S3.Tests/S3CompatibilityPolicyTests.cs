@@ -1,5 +1,6 @@
 using System.Net;
 using Amazon.S3;
+using S3Explorer.Core;
 using Xunit;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
@@ -31,6 +32,29 @@ public sealed class S3CompatibilityPolicyTests
         };
 
         Assert.True(S3CompatibilityPolicy.ShouldFallbackToSingleDelete(exception));
+    }
+
+    [Theory]
+    [InlineData(S3ServiceType.MinIO, "us-east-1")]
+    [InlineData(S3ServiceType.BackblazeB2, "us-west-004")]
+    [InlineData(S3ServiceType.AliyunOss, "oss-cn-shenzhen")]
+    [InlineData(S3ServiceType.Custom, "custom-region")]
+    public void CompatibleProvidersOmitBucketLocationConstraint(S3ServiceType serviceType, string region)
+    {
+        var profile = new ConnectionProfile { ServiceType = serviceType };
+        var request = S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", region);
+
+        Assert.Null(request.BucketRegionName);
+    }
+
+    [Fact]
+    public void AmazonS3IncludesNonDefaultBucketLocationConstraint()
+    {
+        var profile = new ConnectionProfile { ServiceType = S3ServiceType.AmazonS3 };
+
+        Assert.Equal("eu-west-1",
+            S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", " eu-west-1 " ).BucketRegionName);
+        Assert.Null(S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", "us-east-1").BucketRegionName);
     }
 
     [Fact]

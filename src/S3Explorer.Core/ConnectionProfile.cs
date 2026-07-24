@@ -31,6 +31,7 @@ public sealed record ConnectionProfile
     public string AccessKey { get; init; } = string.Empty;
     public string SecretKey { get; init; } = string.Empty;
     public string SessionToken { get; init; } = string.Empty;
+    public bool UsesTemporarySessionCredentials => !string.IsNullOrWhiteSpace(SessionToken);
     public AddressingStyle AddressingStyle { get; init; } = AddressingStyle.Auto;
     public bool UseHttps { get; init; } = true;
     public bool IgnoreCertificateErrors { get; init; }

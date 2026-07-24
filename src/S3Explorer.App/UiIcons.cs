@@ -51,6 +51,46 @@ internal static class UiIcons
         };
     }
 
+    public static Icon CreateApplicationIcon()
+    {
+        const int size = 64;
+        using var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.Transparent);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        using var background = new SolidBrush(Color.FromArgb(33, 113, 181));
+        graphics.FillEllipse(background, 2, 2, 60, 60);
+
+        using var storagePen = new Pen(Color.White, 4f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        graphics.DrawEllipse(storagePen, 14, 14, 36, 14);
+        graphics.DrawLine(storagePen, 14, 21, 14, 43);
+        graphics.DrawLine(storagePen, 50, 21, 50, 43);
+        graphics.DrawArc(storagePen, 14, 25, 36, 18, 0, 180);
+        graphics.DrawArc(storagePen, 14, 34, 36, 18, 0, 180);
+
+        using var statusBrush = new SolidBrush(Color.FromArgb(43, 190, 105));
+        graphics.FillEllipse(statusBrush, 43, 43, 15, 15);
+        using var statusPen = new Pen(Color.White, 2f);
+        graphics.DrawEllipse(statusPen, 43, 43, 15, 15);
+
+        var handle = bitmap.GetHicon();
+        try
+        {
+            return (Icon)Icon.FromHandle(handle).Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
+    }
+
     public static ImageList CreateSmallImageList()
     {
         var images = new ImageList

@@ -116,6 +116,16 @@ public sealed class CoreBehaviorTests
         Assert.Throws<ArgumentOutOfRangeException>(() => (profile with { ConnectionTimeoutSeconds = 0 }).Validate());
     }
 
+    [Fact]
+    public void SessionTokenSelectsTemporaryCredentialsWithoutExposingItsValue()
+    {
+        var permanent = new ConnectionProfile { SessionToken = string.Empty };
+        var temporary = permanent with { SessionToken = "temporary-token" };
+
+        Assert.False(permanent.UsesTemporarySessionCredentials);
+        Assert.True(temporary.UsesTemporarySessionCredentials);
+    }
+
     [Theory]
     [InlineData("bad host/path")]
     [InlineData("bad host")]

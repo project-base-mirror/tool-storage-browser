@@ -93,7 +93,8 @@ internal sealed class ConnectionDialog : Form
         secretPanel.Controls.Add(show, 1, 0);
         AddField(table, ref row, "Secret Key：", secretPanel);
 
-        AddField(table, ref row, "Session Token：", _sessionToken);
+        AddField(table, ref row, "Session Token（STS 临时凭据）：", _sessionToken);
+        AddHint(table, ref row, "仅 AWS STS 或其他临时 Access Key 需要填写。普通长期 Access Key/Secret Key 请留空；非空时请求会使用 SessionAWSCredentials。");
         AddField(table, ref row, "默认进入 Bucket：", _defaultBucket);
         AddField(table, ref row, "外部 Bucket：", _externalBuckets);
         AddHint(table, ref row, "每行一个 Bucket。没有 ListBuckets 权限时，程序会显示这些 Bucket，并优先进入“默认进入 Bucket”。");

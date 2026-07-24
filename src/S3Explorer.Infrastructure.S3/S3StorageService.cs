@@ -102,9 +102,7 @@ public sealed class S3StorageService : IS3StorageService
     {
         ValidateBucketName(bucket);
         using var client = _factory.Create(profile);
-        var request = new PutBucketRequest { BucketName = bucket };
-        if (!string.Equals(region, "us-east-1", StringComparison.OrdinalIgnoreCase))
-            request.BucketRegionName = region;
+        var request = S3CompatibilityPolicy.CreateBucketRequest(profile, bucket, region);
         await client.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
     }
 

@@ -10,6 +10,7 @@ namespace S3Explorer.Infrastructure.S3;
 public sealed record S3ClientOptionsSnapshot(
     string ServiceUrl,
     string AuthenticationRegion,
+    bool UsesSessionCredentials,
     bool ForcePathStyle,
     bool DisableHostPrefixInjection,
     bool AllowAutoRedirect,
@@ -23,9 +24,9 @@ public sealed class S3ClientFactory
         profile.Validate();
         var config = CreateConfig(profile);
 
-        AWSCredentials credentials = string.IsNullOrWhiteSpace(profile.SessionToken)
-            ? new BasicAWSCredentials(profile.AccessKey, profile.SecretKey)
-            : new SessionAWSCredentials(profile.AccessKey, profile.SecretKey, profile.SessionToken);
+        AWSCredentials credentials = profile.UsesTemporarySessionCredentials
+            ? new SessionAWSCredentials(profile.AccessKey, profile.SecretKey, profile.SessionToken)
+            : new BasicAWSCredentials(profile.AccessKey, profile.SecretKey);
 
         var client = new AmazonS3Client(credentials, config);
         if (!string.IsNullOrWhiteSpace(profile.CustomHostHeader))
@@ -45,12 +46,13 @@ public sealed class S3ClientFactory
     {
         profile.Validate();
         var endpoint = profile.NormalizedEndpoint;
+        var forcePathStyle = S3CompatibilityPolicy.ShouldForcePathStyle(profile);
         var config = new AmazonS3Config
         {
             ServiceURL = EndpointCompatibility.NormalizeServiceUrl(profile.Endpoint),
             AuthenticationRegion = profile.EffectiveSignatureRegion,
-            ForcePathStyle = profile.AddressingStyle == AddressingStyle.PathStyle,
-            DisableHostPrefixInjection = profile.AddressingStyle == AddressingStyle.PathStyle,
+            ForcePathStyle = forcePathStyle,
+            DisableHostPrefixInjection = forcePathStyle,
             UseHttp = endpoint.Scheme == Uri.UriSchemeHttp,
             Timeout = TimeSpan.FromSeconds(profile.RequestTimeoutSeconds),
             MaxErrorRetry = 3,
@@ -77,6 +79,7 @@ public sealed class S3ClientFactory
         return new(
             config.ServiceURL,
             config.AuthenticationRegion,
+            profile.UsesTemporarySessionCredentials,
             config.ForcePathStyle,
             config.DisableHostPrefixInjection,
             config.AllowAutoRedirect,

@@ -1,5 +1,7 @@
 using System.Net;
 using Amazon.S3;
+using Amazon.S3.Model;
+using S3Explorer.Core;
 
 namespace S3Explorer.Infrastructure.S3;
 
@@ -26,6 +28,34 @@ public static class S3CompatibilityPolicy
     public static bool RequiresMultipartCopy(AmazonS3Exception exception) =>
         exception.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotImplemented ||
         IsCode(exception, "EntityTooLarge", "InvalidRequest", "NotImplemented", "XNotImplemented");
+
+    public static bool ShouldForcePathStyle(ConnectionProfile profile) =>
+        profile.AddressingStyle == AddressingStyle.PathStyle ||
+        (profile.ServiceType == S3ServiceType.MinIO && profile.AddressingStyle == AddressingStyle.Auto);
+
+    public static PutBucketRequest CreateBucketRequest(
+        ConnectionProfile profile,
+        string bucket,
+        string? requestedRegion)
+    {
+        var request = new PutBucketRequest { BucketName = bucket };
+        var locationConstraint = GetBucketLocationConstraint(profile, requestedRegion);
+        if (locationConstraint is not null)
+            request.BucketRegionName = locationConstraint;
+        return request;
+    }
+
+    public static string? GetBucketLocationConstraint(ConnectionProfile profile, string? requestedRegion)
+    {
+        if (profile.ServiceType != S3ServiceType.AmazonS3)
+            return null;
+
+        var normalized = requestedRegion?.Trim();
+        return string.IsNullOrWhiteSpace(normalized) ||
+               string.Equals(normalized, "us-east-1", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : normalized;
+    }
 
     public static long CalculateCopyPartSize(long objectSize)
     {

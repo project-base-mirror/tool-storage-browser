@@ -54,6 +54,40 @@ public sealed class S3ClientFactoryTests
     }
 
     [Fact]
+    public void MinioAutoAddressingForcesPathStyleForBucketOperations()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
+        {
+            Name = "MinIO",
+            AccessKey = "access",
+            SecretKey = "secret",
+            AddressingStyle = AddressingStyle.Auto
+        };
+
+        var snapshot = new S3ClientFactory().Describe(profile);
+
+        Assert.True(snapshot.ForcePathStyle);
+        Assert.True(snapshot.DisableHostPrefixInjection);
+    }
+
+    [Fact]
+    public void SessionTokenSelectsSessionCredentials()
+    {
+        var profile = new ConnectionProfile
+        {
+            Name = "Temporary",
+            Endpoint = "https://s3.example.test",
+            Region = "us-east-1",
+            AccessKey = "access",
+            SecretKey = "secret",
+            SessionToken = "token"
+        };
+
+        Assert.True(new S3ClientFactory().Describe(profile).UsesSessionCredentials);
+        Assert.False(new S3ClientFactory().Describe(profile with { SessionToken = string.Empty }).UsesSessionCredentials);
+    }
+
+    [Fact]
     public void VirtualHostedStyleDoesNotForcePathAddressing()
     {
         var profile = new ConnectionProfile
