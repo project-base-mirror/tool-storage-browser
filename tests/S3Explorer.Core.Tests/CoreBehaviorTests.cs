@@ -62,6 +62,35 @@ public sealed class CoreBehaviorTests
         Assert.Equal(expected, RetryClassifier.ShouldRetry(code, status));
 
     [Fact]
+    public void EndpointNormalizationPreservesPortAndBasePath()
+    {
+        var endpoint = EndpointCompatibility.NormalizeServiceUrl("https://storage.example.test:9443/api/s3///");
+        Assert.Equal("https://storage.example.test:9443/api/s3", endpoint);
+    }
+
+    [Fact]
+    public void SignatureRegionFallsBackToRegion()
+    {
+        var profile = new ConnectionProfile { Region = "ap-guangzhou" };
+        Assert.Equal("ap-guangzhou", profile.EffectiveSignatureRegion);
+        Assert.Equal("auto", (profile with { SignatureRegion = " auto " }).EffectiveSignatureRegion);
+    }
+
+    [Theory]
+    [InlineData("bad host/path")]
+    [InlineData("bad host")]
+    [InlineData("example.test/path")]
+    public void InvalidCustomHostHeaderIsRejected(string value) =>
+        Assert.Throws<ArgumentException>(() => EndpointCompatibility.ValidateHostHeader(value));
+
+    [Fact]
+    public void OptionalProvidersHaveS3CompatiblePresets()
+    {
+        Assert.Contains("/storage/v1/s3", ConnectionProfile.CreatePreset(S3ServiceType.SupabaseStorage).Endpoint);
+        Assert.Equal("https://storage.googleapis.com", ConnectionProfile.CreatePreset(S3ServiceType.GoogleCloudStorage).Endpoint);
+    }
+
+    [Fact]
     public void OperationCancellationReplacesAndCancelsPreviousToken()
     {
         using var cancellation = new OperationCancellation();

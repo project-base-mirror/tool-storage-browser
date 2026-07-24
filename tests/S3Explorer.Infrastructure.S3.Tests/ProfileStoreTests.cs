@@ -18,11 +18,17 @@ public sealed class ProfileStoreTests
             ServiceType = S3ServiceType.MinIO,
             Endpoint = "http://127.0.0.1:9000",
             Region = "us-east-1",
+            SignatureRegion = "custom-signing-region",
             AccessKey = "access",
             SecretKey = "plain-secret",
             SessionToken = "plain-session",
             AddressingStyle = AddressingStyle.PathStyle,
-            UseHttps = false
+            UseHttps = false,
+            IgnoreCertificateErrors = true,
+            CustomHostHeader = "storage.internal:9000",
+            FollowTemporaryRedirects = false,
+            EnableMultiObjectDelete = false,
+            EnableMultipartCopy = false
         };
 
         try
@@ -32,8 +38,14 @@ public sealed class ProfileStoreTests
             Assert.DoesNotContain("plain-secret", json);
             Assert.DoesNotContain("plain-session", json);
 
-            var loaded = await store.LoadAsync();
-            Assert.Equal("plain-secret", Assert.Single(loaded).SecretKey);
+            var loaded = Assert.Single(await store.LoadAsync());
+            Assert.Equal("plain-secret", loaded.SecretKey);
+            Assert.Equal("custom-signing-region", loaded.SignatureRegion);
+            Assert.Equal("storage.internal:9000", loaded.CustomHostHeader);
+            Assert.True(loaded.IgnoreCertificateErrors);
+            Assert.False(loaded.FollowTemporaryRedirects);
+            Assert.False(loaded.EnableMultiObjectDelete);
+            Assert.False(loaded.EnableMultipartCopy);
         }
         finally
         {

@@ -72,12 +72,17 @@ public sealed class JsonProfileStore : IProfileStore
         public S3ServiceType ServiceType { get; set; }
         public string Endpoint { get; set; } = string.Empty;
         public string Region { get; set; } = string.Empty;
+        public string SignatureRegion { get; set; } = string.Empty;
         public string AccessKey { get; set; } = string.Empty;
         public string ProtectedSecretKey { get; set; } = string.Empty;
         public string ProtectedSessionToken { get; set; } = string.Empty;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
+        public string CustomHostHeader { get; set; } = string.Empty;
+        public bool FollowTemporaryRedirects { get; set; } = true;
+        public bool EnableMultiObjectDelete { get; set; } = true;
+        public bool EnableMultipartCopy { get; set; } = true;
         public string DefaultStorageClass { get; set; } = "STANDARD";
         public int RequestTimeoutSeconds { get; set; }
 
@@ -88,12 +93,17 @@ public sealed class JsonProfileStore : IProfileStore
             ServiceType = source.ServiceType,
             Endpoint = source.Endpoint,
             Region = source.Region,
+            SignatureRegion = source.SignatureRegion,
             AccessKey = source.AccessKey,
             ProtectedSecretKey = protector.Protect(source.SecretKey),
             ProtectedSessionToken = protector.Protect(source.SessionToken),
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
             IgnoreCertificateErrors = source.IgnoreCertificateErrors,
+            CustomHostHeader = source.CustomHostHeader,
+            FollowTemporaryRedirects = source.FollowTemporaryRedirects,
+            EnableMultiObjectDelete = source.EnableMultiObjectDelete,
+            EnableMultipartCopy = source.EnableMultipartCopy,
             DefaultStorageClass = source.DefaultStorageClass,
             RequestTimeoutSeconds = source.RequestTimeoutSeconds
         };
@@ -105,12 +115,17 @@ public sealed class JsonProfileStore : IProfileStore
             ServiceType = ServiceType,
             Endpoint = Endpoint,
             Region = Region,
+            SignatureRegion = SignatureRegion,
             AccessKey = AccessKey,
             SecretKey = protector.Unprotect(ProtectedSecretKey),
             SessionToken = protector.Unprotect(ProtectedSessionToken),
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,
+            CustomHostHeader = CustomHostHeader,
+            FollowTemporaryRedirects = FollowTemporaryRedirects,
+            EnableMultiObjectDelete = EnableMultiObjectDelete,
+            EnableMultipartCopy = EnableMultipartCopy,
             DefaultStorageClass = DefaultStorageClass,
             RequestTimeoutSeconds = RequestTimeoutSeconds
         };
