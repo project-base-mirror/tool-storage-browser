@@ -173,14 +173,14 @@ public sealed class PersistentTransferQueueTests
         public bool FailAll { get; set; }
 
         public Task ExecuteAsync(
-            TransferTaskRecord task,
-            IProgress<TransferProgress> progress,
+            ITransferTaskExecutionContext context,
             CancellationToken cancellationToken)
         {
+            var task = context.Task;
             cancellationToken.ThrowIfCancellationRequested();
             if (FailAll || task.Id == FailTaskId)
                 throw new IOException("simulated failure");
-            progress.Report(new TransferProgress(task.TotalBytes, task.TotalBytes));
+            context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
             return Task.CompletedTask;
         }
     }
@@ -193,13 +193,13 @@ public sealed class PersistentTransferQueueTests
         public Task Started => _started.Task;
 
         public async Task ExecuteAsync(
-            TransferTaskRecord task,
-            IProgress<TransferProgress> progress,
+            ITransferTaskExecutionContext context,
             CancellationToken cancellationToken)
         {
+            var task = context.Task;
             _started.TrySetResult();
             await _release.Task.WaitAsync(cancellationToken);
-            progress.Report(new TransferProgress(task.TotalBytes, task.TotalBytes));
+            context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
         }
 
         public void Release() => _release.TrySetResult();

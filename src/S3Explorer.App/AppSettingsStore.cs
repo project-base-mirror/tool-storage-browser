@@ -27,6 +27,8 @@ internal sealed record AppSettings
     public int PartSizeMb { get; init; } = 16;
     public int RetryCount { get; init; } = 3;
     public int RetryDelaySeconds { get; init; } = 2;
+    public int UploadLimitKibPerSecond { get; init; }
+    public int DownloadLimitKibPerSecond { get; init; }
     public int[] ObjectColumnWidths { get; init; } = [320, 110, 120, 165, 120];
     public int SortColumn { get; init; }
     public bool SortAscending { get; init; } = true;

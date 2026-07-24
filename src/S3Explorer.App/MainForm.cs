@@ -51,6 +51,7 @@ internal sealed class MainForm : Form
     private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
     private readonly ContextMenuStrip _accountMenu = new();
     private readonly PersistentTransferQueue _transferQueue;
+    private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new();
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
@@ -87,13 +88,15 @@ internal sealed class MainForm : Form
         IS3StorageService storage,
         AppSettingsStore settingsStore,
         SimpleFileLogger logger,
-        PersistentTransferQueue transferQueue)
+        PersistentTransferQueue transferQueue,
+        TransferRuntimeConfiguration transferRuntime)
     {
         _profileStore = profileStore;
         _storage = storage;
         _settingsStore = settingsStore;
         _logger = logger;
         _transferQueue = transferQueue;
+        _transferRuntime = transferRuntime;
         _transfers = new TransferQueueControl(transferQueue);
 
         Text = WindowTitle();
@@ -448,6 +451,8 @@ internal sealed class MainForm : Form
     private async Task InitializeAsync()
     {
         _settings = await _settingsStore.LoadAsync();
+        _transferRuntime.Apply(_settings);
+        _transfers.ConfigureRetryPolicy(_settings.RetryCount, _settings.RetryDelaySeconds);
         ApplySettings();
         _profiles = await _profileStore.LoadAsync();
         PopulateProfiles();
@@ -1301,6 +1306,8 @@ internal sealed class MainForm : Form
         using var dialog = new SettingsDialog(_settings);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _settings = dialog.Settings;
+        _transferRuntime.Apply(_settings);
+        _transfers.ConfigureRetryPolicy(_settings.RetryCount, _settings.RetryDelaySeconds);
         await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         await SaveSettingsAsync();
         if (_currentProfile is not null && _currentBucket is not null)

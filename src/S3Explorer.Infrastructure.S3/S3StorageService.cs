@@ -182,22 +182,89 @@ public sealed class S3StorageService : IS3StorageService
         string key,
         string localPath,
         string storageClass,
-        IProgress<TransferProgress>? progress,
+        TransferOperationContext transferContext,
         CancellationToken cancellationToken)
     {
-        using var client = _factory.Create(profile);
-        using var transfer = new TransferUtility(client);
-        var request = new TransferUtilityUploadRequest
+        transferContext.Options.Validate();
+        var file = new FileInfo(localPath);
+        if (!file.Exists)
+            throw new FileNotFoundException("上传源文件不存在。", localPath);
+
+        try
         {
-            BucketName = bucket,
-            Key = key,
-            FilePath = localPath,
-            StorageClass = S3StorageClass.FindValue(storageClass),
-            PartSize = 16L * 1024 * 1024
-        };
-        request.UploadProgressEvent += (_, args) =>
-            progress?.Report(new TransferProgress(args.TransferredBytes, args.TotalBytes));
-        await transfer.UploadAsync(request, cancellationToken).ConfigureAwait(false);
+            using var client = _factory.Create(profile);
+            if (file.Length < transferContext.Options.MultipartThresholdBytes)
+            {
+                await using var source = new FileStream(
+                    localPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    128 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                long transferred = 0;
+                await using var throttled = new ThrottledReadStream(
+                    source,
+                    transferContext.BandwidthLimiter,
+                    TransferDirection.Upload,
+                    bytes =>
+                    {
+                        transferred += bytes;
+                        transferContext.ReportProgress(new TransferProgress(transferred, file.Length));
+                    },
+                    leaveOpen: false);
+
+                await client.PutObjectAsync(new PutObjectRequest
+                {
+                    BucketName = bucket,
+                    Key = key,
+                    InputStream = throttled,
+                    AutoCloseStream = false,
+                    StorageClass = S3StorageClass.FindValue(storageClass)
+                }, cancellationToken).ConfigureAwait(false);
+                transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
+                return;
+            }
+
+            var utilityConfig = new TransferUtilityConfig
+            {
+                ConcurrentServiceRequests = transferContext.Options.MultipartConcurrency
+            };
+            using var utility = new TransferUtility(client, utilityConfig);
+            var request = new TransferUtilityUploadRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                FilePath = localPath,
+                StorageClass = S3StorageClass.FindValue(storageClass),
+                PartSize = transferContext.Options.PartSizeBytes
+            };
+            long previous = 0;
+            request.UploadProgressEvent += (_, args) =>
+            {
+                var delta = args.TransferredBytes - Interlocked.Exchange(ref previous, args.TransferredBytes);
+                if (delta > 0)
+                {
+                    var remaining = delta;
+                    while (remaining > 0)
+                    {
+                        var chunk = (int)Math.Min(int.MaxValue, remaining);
+                        transferContext.BandwidthLimiter
+                            .WaitAsync(TransferDirection.Upload, chunk, cancellationToken)
+                            .AsTask()
+                            .GetAwaiter()
+                            .GetResult();
+                        remaining -= chunk;
+                    }
+                }
+                transferContext.ReportProgress(new TransferProgress(args.TransferredBytes, args.TotalBytes));
+            };
+            await utility.UploadAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw ToTransferException(exception);
+        }
     }
 
     public async Task DownloadFileAsync(
@@ -205,37 +272,127 @@ public sealed class S3StorageService : IS3StorageService
         string bucket,
         string key,
         string localPath,
-        IProgress<TransferProgress>? progress,
+        TransferOperationContext transferContext,
         CancellationToken cancellationToken)
     {
-        var directory = Path.GetDirectoryName(localPath);
-        if (!string.IsNullOrEmpty(directory))
-            Directory.CreateDirectory(directory);
-
-        var temporaryPath = localPath + ".s3explorer.download";
-        if (File.Exists(temporaryPath))
-            File.Delete(temporaryPath);
+        transferContext.Options.Validate();
+        var temporaryPath = ResumableDownloadFile.TemporaryPath(localPath);
 
         try
         {
             using var client = _factory.Create(profile);
-            using var transfer = new TransferUtility(client);
-            var request = new TransferUtilityDownloadRequest
+            var metadata = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
             {
                 BucketName = bucket,
-                Key = key,
-                FilePath = temporaryPath
-            };
-            request.WriteObjectProgressEvent += (_, args) =>
-                progress?.Report(new TransferProgress(args.TransferredBytes, args.TotalBytes));
-            await transfer.DownloadAsync(request, cancellationToken).ConfigureAwait(false);
-            File.Move(temporaryPath, localPath, true);
+                Key = key
+            }, cancellationToken).ConfigureAwait(false);
+
+            var remote = new RemoteObjectIdentity(
+                metadata.ContentLength,
+                metadata.ETag,
+                metadata.VersionId);
+            var temporaryExists = File.Exists(temporaryPath);
+            var temporaryLength = temporaryExists ? new FileInfo(temporaryPath).Length : 0;
+            var decision = DownloadResumePlanner.Decide(
+                temporaryExists,
+                temporaryLength,
+                transferContext.DownloadCheckpoint,
+                remote);
+
+            ResumableDownloadFile.Prepare(
+                temporaryPath,
+                decision.ResetTemporaryFile,
+                decision.Offset);
+
+            var completed = decision.Offset;
+            var checkpoint = new DownloadCheckpoint(
+                temporaryPath,
+                completed,
+                remote.Length,
+                remote.ETag,
+                remote.VersionId);
+            await transferContext.UpdateCheckpointAsync(
+                completed,
+                checkpoint,
+                transferContext.MultipartCheckpoint,
+                cancellationToken).ConfigureAwait(false);
+            transferContext.ReportProgress(new TransferProgress(completed, remote.Length));
+
+            if (completed < remote.Length)
+            {
+                var request = new GetObjectRequest
+                {
+                    BucketName = bucket,
+                    Key = key,
+                    ByteRange = completed > 0 ? new ByteRange(completed, remote.Length - 1) : null
+                };
+                using var response = await client.GetObjectAsync(request, cancellationToken).ConfigureAwait(false);
+                if (!SameIdentity(metadata.ETag, response.ETag) ||
+                    !SameIdentity(metadata.VersionId, response.VersionId))
+                {
+                    throw new TransferExecutionException(new TransferFailureInfo(
+                        "下载期间远端对象身份发生变化，将在下次重试时重新校验断点。",
+                        TransferFailureCategory.Conflict,
+                        Retryable: true));
+                }
+
+                await using var destination = new FileStream(
+                    temporaryPath,
+                    FileMode.Open,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    128 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                destination.Position = completed;
+                var buffer = new byte[128 * 1024];
+                var bytesSinceCheckpoint = 0L;
+                while (true)
+                {
+                    var read = await response.ResponseStream
+                        .ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (read == 0)
+                        break;
+
+                    await transferContext.BandwidthLimiter
+                        .WaitAsync(TransferDirection.Download, read, cancellationToken)
+                        .ConfigureAwait(false);
+                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
+                        .ConfigureAwait(false);
+                    completed += read;
+                    bytesSinceCheckpoint += read;
+                    transferContext.ReportProgress(new TransferProgress(completed, remote.Length));
+
+                    if (bytesSinceCheckpoint >= 4L * 1024 * 1024)
+                    {
+                        await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        destination.Flush(flushToDisk: true);
+                        checkpoint = checkpoint with { CompletedBytes = completed };
+                        await transferContext.UpdateCheckpointAsync(
+                            completed,
+                            checkpoint,
+                            transferContext.MultipartCheckpoint,
+                            cancellationToken).ConfigureAwait(false);
+                        bytesSinceCheckpoint = 0;
+                    }
+                }
+
+                await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                destination.Flush(flushToDisk: true);
+            }
+
+            checkpoint = checkpoint with { CompletedBytes = completed };
+            await transferContext.UpdateCheckpointAsync(
+                completed,
+                checkpoint,
+                transferContext.MultipartCheckpoint,
+                cancellationToken).ConfigureAwait(false);
+            ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length);
+            transferContext.ReportProgress(new TransferProgress(remote.Length, remote.Length));
         }
-        catch
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            if (File.Exists(temporaryPath))
-                File.Delete(temporaryPath);
-            throw;
+            throw ToTransferException(exception);
         }
     }
 
@@ -467,6 +624,46 @@ public sealed class S3StorageService : IS3StorageService
             }
             throw;
         }
+    }
+
+    private static bool SameIdentity(string? expected, string? actual) =>
+        string.Equals(
+            expected?.Trim().Trim('"') ?? string.Empty,
+            actual?.Trim().Trim('"') ?? string.Empty,
+            StringComparison.Ordinal);
+
+    private static TransferExecutionException ToTransferException(Exception exception)
+    {
+        if (exception is TransferExecutionException transfer)
+            return transfer;
+
+        if (exception is AmazonS3Exception s3)
+        {
+            var category = s3.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized => TransferFailureCategory.Authentication,
+                HttpStatusCode.Forbidden => TransferFailureCategory.Authorization,
+                HttpStatusCode.NotFound => TransferFailureCategory.NotFound,
+                HttpStatusCode.Conflict => TransferFailureCategory.Conflict,
+                HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => TransferFailureCategory.Timeout,
+                _ when (int)s3.StatusCode >= 500 => TransferFailureCategory.Service,
+                _ => TransferFailureCategory.Unknown
+            };
+            var retryable =
+                category is TransferFailureCategory.Timeout or TransferFailureCategory.Service ||
+                string.Equals(s3.ErrorCode, "SlowDown", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(s3.ErrorCode, "RequestTimeout", StringComparison.OrdinalIgnoreCase);
+            return new TransferExecutionException(new TransferFailureInfo(
+                s3.Message,
+                category,
+                (int)s3.StatusCode,
+                s3.ErrorCode,
+                s3.RequestId,
+                retryable),
+                s3);
+        }
+
+        return new TransferExecutionException(TransferFailureClassifier.Classify(exception), exception);
     }
 
     private static void ValidateBucketName(string bucket)

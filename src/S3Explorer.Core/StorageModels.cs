@@ -63,8 +63,8 @@ public interface IS3StorageService
     Task CreateBucketAsync(ConnectionProfile profile, string bucket, string region, CancellationToken cancellationToken);
     Task DeleteEmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
-    Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, IProgress<TransferProgress>? progress, CancellationToken cancellationToken);
-    Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, IProgress<TransferProgress>? progress, CancellationToken cancellationToken);
+    Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
+    Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task CreateFolderAsync(ConnectionProfile profile, string bucket, string folderKey, CancellationToken cancellationToken);
     Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);

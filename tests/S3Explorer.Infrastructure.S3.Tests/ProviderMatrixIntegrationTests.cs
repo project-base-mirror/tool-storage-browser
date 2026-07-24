@@ -11,6 +11,24 @@ public sealed class ProviderMatrixIntegrationTests
 
     public ProviderMatrixIntegrationTests(ITestOutputHelper output) => _output = output;
 
+    private static TransferOperationContext CreateTransferContext()
+    {
+        var limiter = new SharedTransferBandwidthLimiter();
+        limiter.Configure(0, 0);
+        return new TransferOperationContext(
+            new TransferExecutionOptions
+            {
+                MultipartThresholdBytes = 5L * 1024 * 1024,
+                PartSizeBytes = 5L * 1024 * 1024,
+                MultipartConcurrency = 2
+            },
+            limiter,
+            null,
+            null,
+            _ => { },
+            (_, _, _, _) => Task.CompletedTask);
+    }
+
     [Fact]
     [Trait("Category", "Integration")]
     public async Task Configured_provider_runs_compatibility_matrix_and_cleans_resources()
@@ -51,7 +69,7 @@ public sealed class ProviderMatrixIntegrationTests
 
             var specialKey = Key("folder/中文 space+%.txt");
             keys.Add(specialKey);
-            await service.UploadFileAsync(profile, bucket, specialKey, source, "STANDARD", null, CancellationToken.None);
+            await service.UploadFileAsync(profile, bucket, specialKey, source, "STANDARD", CreateTransferContext(), CancellationToken.None);
 
             var page = await service.ListObjectsAsync(profile, bucket, prefix + "folder/", null, 1, CancellationToken.None);
             var allItems = new List<S3ObjectEntry>(page.Items);
@@ -72,7 +90,7 @@ public sealed class ProviderMatrixIntegrationTests
             var url = service.CreatePresignedUrl(profile, bucket, specialKey, TimeSpan.FromMinutes(5));
             Assert.StartsWith("http", url, StringComparison.OrdinalIgnoreCase);
 
-            await service.DownloadFileAsync(profile, bucket, specialKey, target, null, CancellationToken.None);
+            await service.DownloadFileAsync(profile, bucket, specialKey, target, CreateTransferContext(), CancellationToken.None);
             Assert.Equal("S3 Explorer provider matrix", await File.ReadAllTextAsync(target));
 
             var copyKey = Key("folder/copy.txt");
@@ -91,7 +109,7 @@ public sealed class ProviderMatrixIntegrationTests
                 singleDeleteKey,
                 source,
                 "STANDARD",
-                null,
+                CreateTransferContext(),
                 CancellationToken.None);
             await service.DeleteObjectsAsync(
                 profile with { EnableMultiObjectDelete = false },
@@ -103,7 +121,7 @@ public sealed class ProviderMatrixIntegrationTests
             var multipartKey = Key("multipart/large.bin");
             keys.Add(multipartKey);
             await service.UploadFileAsync(
-                profile, bucket, multipartKey, multipartSource, "STANDARD", null, CancellationToken.None);
+                profile, bucket, multipartKey, multipartSource, "STANDARD", CreateTransferContext(), CancellationToken.None);
             var multipartProperties = await service.GetObjectPropertiesAsync(
                 profile, bucket, multipartKey, CancellationToken.None);
             Assert.Equal(new FileInfo(multipartSource).Length, multipartProperties.Size);

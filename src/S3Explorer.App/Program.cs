@@ -16,7 +16,8 @@ internal static class Program
         var settingsStore = new AppSettingsStore();
         var logger = new SimpleFileLogger();
         var transferStore = new JsonTransferTaskStore();
-        var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService);
+        var transferRuntime = new TransferRuntimeConfiguration();
+        var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
         var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
 
         Application.ThreadException += (_, args) =>
@@ -31,6 +32,6 @@ internal static class Program
         };
 
         logger.Info($"S3 Explorer started. Version={Application.ProductVersion}");
-        Application.Run(new MainForm(profileStore, storageService, settingsStore, logger, transferQueue));
+        Application.Run(new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime));
     }
 }

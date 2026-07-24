@@ -19,6 +19,8 @@ internal sealed class TransferQueueControl : UserControl
     private readonly ListView _failed = CreateList();
     private readonly ConcurrentDictionary<Guid, ProgressSample> _progress = new();
     private readonly Dictionary<Guid, TransferTaskState> _knownStates = [];
+    private int _maxAttempts = 4;
+    private int _retryBaseDelaySeconds = 2;
     private bool _initializing;
 
     public TransferQueueControl(PersistentTransferQueue queue)
@@ -46,6 +48,12 @@ internal sealed class TransferQueueControl : UserControl
     }
 
     public Task SetConcurrencyAsync(int value, CancellationToken cancellationToken = default) => _queue.SetConcurrencyAsync(value, cancellationToken);
+
+    public void ConfigureRetryPolicy(int retryCount, int retryBaseDelaySeconds)
+    {
+        _maxAttempts = Math.Clamp(retryCount + 1, 1, 21);
+        _retryBaseDelaySeconds = Math.Clamp(retryBaseDelaySeconds, 0, 3600);
+    }
     public Task PauseAllAsync(CancellationToken cancellationToken = default) => _queue.PauseAllAsync(cancellationToken);
     public Task CancelAllAsync(CancellationToken cancellationToken = default) => _queue.CancelAllAsync(cancellationToken);
     public Task WaitForIdleAsync(CancellationToken cancellationToken = default) => _queue.WaitForIdleAsync(cancellationToken);
@@ -54,14 +62,16 @@ internal sealed class TransferQueueControl : UserControl
         _queue.EnqueueAsync(new TransferTaskRecord
         {
             ProfileId = profile.Id, ProfileName = profile.Name, Direction = TransferDirection.Upload, Bucket = bucket,
-            ObjectKey = key, LocalPath = localPath, StorageClass = storageClass, TotalBytes = Math.Max(0, size), MaxAttempts = 3
+            ObjectKey = key, LocalPath = localPath, StorageClass = storageClass, TotalBytes = Math.Max(0, size),
+            MaxAttempts = _maxAttempts, RetryBaseDelaySeconds = _retryBaseDelaySeconds
         }, cancellationToken);
 
     public Task EnqueueDownloadAsync(ConnectionProfile profile, string bucket, string key, string localPath, long size, CancellationToken cancellationToken = default) =>
         _queue.EnqueueAsync(new TransferTaskRecord
         {
             ProfileId = profile.Id, ProfileName = profile.Name, Direction = TransferDirection.Download, Bucket = bucket,
-            ObjectKey = key, LocalPath = localPath, TotalBytes = Math.Max(0, size), MaxAttempts = 3
+            ObjectKey = key, LocalPath = localPath, TotalBytes = Math.Max(0, size),
+            MaxAttempts = _maxAttempts, RetryBaseDelaySeconds = _retryBaseDelaySeconds
         }, cancellationToken);
 
     private void BuildUi()

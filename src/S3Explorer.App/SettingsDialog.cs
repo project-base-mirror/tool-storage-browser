@@ -29,6 +29,8 @@ internal sealed class SettingsDialog : Form
     private readonly NumericUpDown _partSize = new() { Minimum = 5, Maximum = 512 };
     private readonly NumericUpDown _retries = new() { Minimum = 0, Maximum = 20 };
     private readonly NumericUpDown _delay = new() { Minimum = 0, Maximum = 300 };
+    private readonly NumericUpDown _uploadLimit = new() { Minimum = 0, Maximum = 1_048_576, ThousandsSeparator = true, Increment = 1024 };
+    private readonly NumericUpDown _downloadLimit = new() { Minimum = 0, Maximum = 1_048_576, ThousandsSeparator = true, Increment = 1024 };
 
     public AppSettings Settings { get; private set; }
 
@@ -63,7 +65,9 @@ internal sealed class SettingsDialog : Form
             MultipartThresholdMb = (int)_threshold.Value,
             PartSizeMb = (int)_partSize.Value,
             RetryCount = (int)_retries.Value,
-            RetryDelaySeconds = (int)_delay.Value
+            RetryDelaySeconds = (int)_delay.Value,
+            UploadLimitKibPerSecond = (int)_uploadLimit.Value,
+            DownloadLimitKibPerSecond = (int)_downloadLimit.Value
         };
         buttons.Controls.AddRange([cancel, ok]);
         Controls.Add(tabs);
@@ -90,6 +94,8 @@ internal sealed class SettingsDialog : Form
         _partSize.Value = settings.PartSizeMb;
         _retries.Value = settings.RetryCount;
         _delay.Value = settings.RetryDelaySeconds;
+        _uploadLimit.Value = Math.Clamp(settings.UploadLimitKibPerSecond, 0, 1_048_576);
+        _downloadLimit.Value = Math.Clamp(settings.DownloadLimitKibPerSecond, 0, 1_048_576);
     }
 
     private TabPage BuildGeneral()
@@ -146,7 +152,16 @@ internal sealed class SettingsDialog : Form
         AddNumber(table, ref row, "分片上传阈值（MB）：", _threshold);
         AddNumber(table, ref row, "分片大小（MB）：", _partSize);
         AddNumber(table, ref row, "失败重试次数：", _retries);
-        AddNumber(table, ref row, "重试间隔（秒）：", _delay);
+        AddNumber(table, ref row, "重试基础间隔（秒）：", _delay);
+        AddNumber(table, ref row, "上传限速（KiB/s）：", _uploadLimit);
+        AddNumber(table, ref row, "下载限速（KiB/s）：", _downloadLimit);
+        var note = new Label
+        {
+            Text = "限速设为 0 表示不限速；重试采用指数退避。分片大小最小为 5 MiB。",
+            AutoSize = true, MaximumSize = new Size(560, 0), Margin = new Padding(3, 12, 3, 3)
+        };
+        table.Controls.Add(note, 0, row);
+        table.SetColumnSpan(note, 2);
         page.Controls.Add(table);
         return page;
     }

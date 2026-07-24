@@ -122,6 +122,8 @@ public sealed record TransferTaskRecord
     public long TransferredBytes { get; init; }
     public int AttemptCount { get; init; }
     public int MaxAttempts { get; init; } = 3;
+    public int RetryBaseDelaySeconds { get; init; } = 2;
+    public DateTimeOffset? NextAttemptAt { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? StartedAt { get; init; }
@@ -145,6 +147,8 @@ public sealed record TransferTaskRecord
             throw new ArgumentOutOfRangeException(nameof(TransferredBytes));
         if (AttemptCount < 0 || MaxAttempts < 1 || AttemptCount > MaxAttempts)
             throw new ArgumentOutOfRangeException(nameof(AttemptCount));
+        if (RetryBaseDelaySeconds is < 0 or > 3600)
+            throw new ArgumentOutOfRangeException(nameof(RetryBaseDelaySeconds));
         DownloadCheckpoint?.Validate();
         MultipartCheckpoint?.Validate();
     }
@@ -198,7 +202,7 @@ public static class TransferTaskStateMachine
         new Dictionary<TransferTaskState, HashSet<TransferTaskState>>
         {
             [TransferTaskState.Queued] = [TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
-            [TransferTaskState.Running] = [TransferTaskState.Paused, TransferTaskState.Completed, TransferTaskState.Failed, TransferTaskState.Cancelled, TransferTaskState.Interrupted, TransferTaskState.CleanupPending],
+            [TransferTaskState.Running] = [TransferTaskState.Paused, TransferTaskState.RetryPending, TransferTaskState.Completed, TransferTaskState.Failed, TransferTaskState.Cancelled, TransferTaskState.Interrupted, TransferTaskState.CleanupPending],
             [TransferTaskState.Paused] = [TransferTaskState.Queued, TransferTaskState.Cancelled],
             [TransferTaskState.RetryPending] = [TransferTaskState.Queued, TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
             [TransferTaskState.Interrupted] = [TransferTaskState.Queued, TransferTaskState.Paused, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
@@ -231,9 +235,24 @@ public static class TransferTaskStateMachine
         };
 
         if (target == TransferTaskState.Running)
-            updated = updated with { StartedAt = task.StartedAt ?? now, AttemptCount = Math.Min(task.MaxAttempts, task.AttemptCount + 1), CompletedAt = null };
+            updated = updated with
+            {
+                StartedAt = task.StartedAt ?? now,
+                AttemptCount = Math.Min(task.MaxAttempts, task.AttemptCount + 1),
+                CompletedAt = null,
+                NextAttemptAt = null
+            };
+        if (target is TransferTaskState.Queued or TransferTaskState.Paused)
+            updated = updated with { NextAttemptAt = null };
         if (target == TransferTaskState.Completed)
-            updated = updated with { CompletedAt = now, TransferredBytes = task.TotalBytes };
+            updated = updated with
+            {
+                CompletedAt = now,
+                TransferredBytes = task.TotalBytes,
+                NextAttemptAt = null,
+                DownloadCheckpoint = null,
+                MultipartCheckpoint = null
+            };
         if (target == TransferTaskState.Cancelled)
             updated = updated with { CompletedAt = now };
         return updated;
