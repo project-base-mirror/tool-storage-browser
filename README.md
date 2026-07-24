@@ -63,6 +63,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 局域网 MinIO 环境、凭据获取、临时测试账户、真实 CRUD 测试和 UI 回归步骤见 [`docs/MinIO-Testing.md`](docs/MinIO-Testing.md)。
 
+`0.2.1` 至 `0.3.4` 的版本边界、需求拆分、验收标准和实时完成情况见 [`docs/Release-Plan-v0.2-v0.3.md`](docs/Release-Plan-v0.2-v0.3.md)。
+
 ## 发布
 
 仓库根目录提供可直接双击的发布入口：
@@ -127,6 +129,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       S3Explorer.Infrastructure.S3.Tests
     docs/
       MinIO-Testing.md
+      Release-Plan-v0.2-v0.3.md
     scripts/
       Build.ps1
       Publish.ps1
