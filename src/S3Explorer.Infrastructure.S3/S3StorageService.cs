@@ -19,25 +19,33 @@ public sealed class S3StorageService : IS3StorageService
     public async Task<ConnectionTestResult> TestConnectionAsync(ConnectionProfile profile, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        using var connectionTimeout = CreateConnectionTimeout(profile, cancellationToken);
         try
         {
             using var client = _factory.Create(profile);
-            var response = await client.ListBucketsAsync(cancellationToken).ConfigureAwait(false);
+            var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
             stopwatch.Stop();
-            return new(true, stopwatch.Elapsed, response.Buckets.Count,
-                $"连接成功，发现 {response.Buckets.Count} 个 Bucket。");
+            var bucketCount = response.Buckets
+                .Select(bucket => bucket.BucketName)
+                .Concat(profile.KnownBuckets)
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+            return new(true, stopwatch.Elapsed, bucketCount,
+                $"连接成功，发现或配置了 {bucketCount} 个 Bucket。");
         }
         catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex))
         {
             stopwatch.Stop();
-            return new(
-                true,
-                stopwatch.Elapsed,
-                0,
-                "已到达 S3 服务，但当前凭据无权列出全部 Bucket。可继续使用已知 Bucket 路径。",
-                (int)ex.StatusCode,
-                ex.ErrorCode,
-                ex.RequestId);
+            var configuredCount = profile.KnownBuckets.Count;
+            var message = configuredCount > 0
+                ? $"已到达 S3 服务；当前凭据无权列出全部 Bucket，将使用已配置的 {configuredCount} 个 Bucket。"
+                : "已到达 S3 服务，但当前凭据无权列出全部 Bucket。请配置默认 Bucket 或外部 Bucket。";
+            return new(true, stopwatch.Elapsed, configuredCount, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && connectionTimeout.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            return new(false, stopwatch.Elapsed, 0, $"连接超时（{profile.ConnectionTimeoutSeconds} 秒）。", null, "ConnectionTimeout");
         }
         catch (AmazonS3Exception ex)
         {
@@ -57,12 +65,37 @@ public sealed class S3StorageService : IS3StorageService
 
     public async Task<IReadOnlyList<CoreBucketInfo>> ListBucketsAsync(ConnectionProfile profile, CancellationToken cancellationToken)
     {
-        using var client = _factory.Create(profile);
-        var response = await client.ListBucketsAsync(cancellationToken).ConfigureAwait(false);
-        return response.Buckets
-            .OrderBy(bucket => bucket.BucketName, StringComparer.OrdinalIgnoreCase)
-            .Select(bucket => new CoreBucketInfo(bucket.BucketName, bucket.CreationDate))
-            .ToArray();
+        using var connectionTimeout = CreateConnectionTimeout(profile, cancellationToken);
+        try
+        {
+            using var client = _factory.Create(profile);
+            var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
+            return response.Buckets
+                .Select(bucket => new CoreBucketInfo(bucket.BucketName, bucket.CreationDate))
+                .Concat(profile.KnownBuckets.Select(bucket => new CoreBucketInfo(bucket, null)))
+                .GroupBy(bucket => bucket.Name, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(bucket => bucket.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex) && profile.KnownBuckets.Count > 0)
+        {
+            return profile.KnownBuckets
+                .Select(bucket => new CoreBucketInfo(bucket, null))
+                .OrderBy(bucket => bucket.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && connectionTimeout.IsCancellationRequested)
+        {
+            throw new TimeoutException($"连接在 {profile.ConnectionTimeoutSeconds} 秒内未响应。");
+        }
+    }
+
+    private static CancellationTokenSource CreateConnectionTimeout(ConnectionProfile profile, CancellationToken cancellationToken)
+    {
+        var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        source.CancelAfter(TimeSpan.FromSeconds(profile.ConnectionTimeoutSeconds));
+        return source;
     }
 
     public async Task CreateBucketAsync(ConnectionProfile profile, string bucket, string region, CancellationToken cancellationToken)

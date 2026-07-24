@@ -34,9 +34,9 @@ internal sealed class ErrorDialog : Form
         AddRow(table, 5, "消息：", exception.Message);
         AddRow(table, 6, "建议：", suggestion);
 
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
-        var close = new Button { Text = "关闭", DialogResult = DialogResult.OK, Width = 85 };
-        var copy = new Button { Text = "复制详细信息", AutoSize = true };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
+        var close = new Button { Text = "关闭", DialogResult = DialogResult.OK, Size = new Size(112, 32) };
+        var copy = new Button { Text = "复制详细信息", Size = new Size(112, 32) };
         copy.Click += (_, _) => Clipboard.SetText(
             $"操作: {operation}\r\n位置: {location}\r\n类型: {type}\r\nHTTP: {status}\r\nRequestId: {requestId}\r\n消息: {exception.Message}\r\n建议: {suggestion}");
         buttons.Controls.AddRange([close, copy]);
@@ -68,7 +68,7 @@ internal sealed class ErrorDialog : Form
         {
             return s3.ErrorCode switch
             {
-                "AccessDenied" => "检查当前凭据是否拥有对应的 S3 权限，以及 Bucket Policy 和 Public Access Block。",
+                "AccessDenied" => "检查当前凭据的 S3 权限。若仅缺少 ListBuckets 权限，请在连接设置中配置默认 Bucket 或外部 Bucket。",
                 "InvalidAccessKeyId" => "检查 Access Key 是否正确且仍然有效。",
                 "SignatureDoesNotMatch" => "检查 Secret Key、Region、Endpoint、系统时间和地址风格。",
                 "NoSuchBucket" => "Bucket 不存在，或当前 Endpoint / Region 不正确。",
@@ -79,6 +79,7 @@ internal sealed class ErrorDialog : Form
                 _ => "检查 Endpoint、Region、凭据、网络连接和服务端日志。"
             };
         }
+        if (exception is TimeoutException) return "连接未在设定时间内响应，请检查 Endpoint、代理、防火墙和 DNS。";
         if (exception is IOException) return "检查本地磁盘空间、文件占用和目录写入权限。";
         return "查看日志获取完整信息，并检查网络与当前配置。";
     }

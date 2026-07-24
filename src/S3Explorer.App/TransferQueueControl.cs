@@ -45,14 +45,14 @@ internal sealed class TransferQueueControl : UserControl
     {
         Dock = DockStyle.Fill;
         var strip = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        var cancelAll = new ToolStripButton("取消全部", UiIcons.Create("■"));
+        var cancelAll = new ToolStripButton("取消全部", UiIcons.Create(UiIconKind.Delete, 16));
         cancelAll.ToolTipText = "取消所有进行中的任务";
         cancelAll.Click += (_, _) =>
         {
             foreach (var task in _items.Keys.Where(item => item.State is TransferState.Queued or TransferState.Running))
                 task.Cancellation.Cancel();
         };
-        var clear = new ToolStripButton("清除已完成", UiIcons.Create("×"));
+        var clear = new ToolStripButton("清除已完成", UiIcons.Create(UiIconKind.Delete, 16));
         clear.ToolTipText = "清除已完成和已取消任务";
         clear.Click += (_, _) =>
         {

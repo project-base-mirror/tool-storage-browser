@@ -32,6 +32,8 @@ internal sealed class MainForm : Form
         GridLines = false,
         AllowDrop = true
     };
+    private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
+    private readonly ContextMenuStrip _accountMenu = new();
     private readonly TransferQueueControl _transfers = new();
     private readonly StatusStrip _status = new();
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
@@ -61,6 +63,7 @@ internal sealed class MainForm : Form
     private bool _sortAscending = true;
     private long _navigationRevision;
     private bool _closing;
+    private bool _suppressTreeSelection;
 
     public MainForm(IProfileStore profileStore, IS3StorageService storage, AppSettingsStore settingsStore, SimpleFileLogger logger)
     {
@@ -79,6 +82,7 @@ internal sealed class MainForm : Form
         BuildToolbar();
         BuildAddressBar();
         BuildBody();
+        BuildAccountContextMenu();
         BuildStatus();
         WireEvents();
 
@@ -181,54 +185,58 @@ internal sealed class MainForm : Form
         help.DropDownItems.Add(Unsupported("打开项目主页"));
         help.DropDownItems.Add(Unsupported("报告问题"));
         help.DropDownItems.Add(new ToolStripMenuItem("关于", null, (_, _) =>
-            MessageBox.Show(this, "S3 Explorer v0.1\n\n原生 Windows S3 / S3-compatible 对象存储管理工具。\n.NET 10 · WinForms · AWS SDK for .NET", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+            MessageBox.Show(this, $"S3 Explorer v{Application.ProductVersion}\n\n原生 Windows S3 / S3-compatible 对象存储管理工具。\n.NET 10 · WinForms · AWS SDK for .NET", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information)));
 
         _menu.Items.AddRange([file, edit, view, bucket, objects, tools, help]);
     }
 
     private void BuildToolbar()
     {
-        AddToolbarButton("new-connection", "新建连接", "＋", (_, _) => NewConnection());
-        AddToolbarButton("connect-toolbar", "连接/断开", "⇄", async (_, _) =>
+        AddToolbarButton("new-connection", "新建连接", UiIconKind.NewConnection, (_, _) => NewConnection());
+        AddToolbarButton("connect-toolbar", "连接/断开", UiIconKind.Connect, async (_, _) =>
         {
             if (_currentProfile is null) await ConnectSelectedAsync(); else Disconnect();
         });
         _toolbar.Items.Add(new ToolStripSeparator());
-        AddToolbarButton("back-toolbar", "返回 (Alt+Left)", "←", (_, _) => NavigateHistory(-1));
-        AddToolbarButton("forward-toolbar", "前进 (Alt+Right)", "→", (_, _) => NavigateHistory(1));
-        AddToolbarButton("up-toolbar", "上一级 (Alt+Up)", "↑", async (_, _) => await NavigateUpAsync());
-        AddToolbarButton("refresh-toolbar", "刷新 (F5)", "↻", async (_, _) => await RefreshAsync());
+        AddToolbarButton("back-toolbar", "返回 (Alt+Left)", UiIconKind.Back, (_, _) => NavigateHistory(-1));
+        AddToolbarButton("forward-toolbar", "前进 (Alt+Right)", UiIconKind.Forward, (_, _) => NavigateHistory(1));
+        AddToolbarButton("up-toolbar", "上一级 (Alt+Up)", UiIconKind.Up, async (_, _) => await NavigateUpAsync());
+        AddToolbarButton("refresh-toolbar", "刷新 (F5)", UiIconKind.Refresh, async (_, _) => await RefreshAsync());
         _toolbar.Items.Add(new ToolStripSeparator());
-        AddToolbarButton("create-bucket-toolbar", "新建 Bucket", "▣", async (_, _) => await CreateBucketAsync());
-        AddToolbarButton("create-folder-toolbar", "新建文件夹", "□", async (_, _) => await CreateFolderAsync());
+        AddToolbarButton("create-bucket-toolbar", "新建 Bucket", UiIconKind.Bucket, async (_, _) => await CreateBucketAsync());
+        AddToolbarButton("create-folder-toolbar", "新建文件夹", UiIconKind.Folder, async (_, _) => await CreateFolderAsync());
 
-        var upload = new ToolStripDropDownButton("上传", UiIcons.Create("⇧")) { ToolTipText = "上传文件或文件夹" };
-        upload.DropDownItems.Add("上传文件...", null, async (_, _) => await UploadFilesAsync());
-        upload.DropDownItems.Add("上传文件夹...", null, async (_, _) => await UploadFolderAsync());
+        var upload = new ToolStripDropDownButton("上传", UiIcons.Create(UiIconKind.Upload))
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.Image,
+            ToolTipText = "上传文件或文件夹"
+        };
+        upload.DropDownItems.Add("上传文件...", UiIcons.Create(UiIconKind.Upload, 16), async (_, _) => await UploadFilesAsync());
+        upload.DropDownItems.Add("上传文件夹...", UiIcons.Create(UiIconKind.Folder, 16), async (_, _) => await UploadFolderAsync());
         _toolbar.Items.Add(upload);
         _commands["upload-toolbar"] = upload;
 
-        AddToolbarButton("download-toolbar", "下载", "⇩", async (_, _) => await DownloadSelectedAsync());
+        AddToolbarButton("download-toolbar", "下载", UiIconKind.Download, async (_, _) => await DownloadSelectedAsync());
         _toolbar.Items.Add(new ToolStripSeparator());
-        AddToolbarButton("copy-toolbar", "复制", "⧉", async (_, _) => await CopyOrMoveSelectedAsync(false));
-        AddToolbarButton("move-toolbar", "移动", "⇥", async (_, _) => await CopyOrMoveSelectedAsync(true));
-        AddToolbarButton("delete-toolbar", "删除", "×", async (_, _) => await DeleteSelectedAsync());
-        AddToolbarButton("properties-toolbar", "属性", "ⓘ", async (_, _) => await ShowPropertiesAsync());
+        AddToolbarButton("copy-toolbar", "复制", UiIconKind.Copy, async (_, _) => await CopyOrMoveSelectedAsync(false));
+        AddToolbarButton("move-toolbar", "移动", UiIconKind.Move, async (_, _) => await CopyOrMoveSelectedAsync(true));
+        AddToolbarButton("delete-toolbar", "删除", UiIconKind.Delete, async (_, _) => await DeleteSelectedAsync());
+        AddToolbarButton("properties-toolbar", "属性", UiIconKind.Properties, async (_, _) => await ShowPropertiesAsync());
         _toolbar.Items.Add(new ToolStripSeparator());
-        AddToolbarButton("transfers-toolbar", "传输队列", "≡", (_, _) => SetTransferVisibility(!_outerSplit.Panel2Collapsed));
-        AddToolbarButton("settings-toolbar", "设置", "⚙", async (_, _) => await ShowSettingsAsync());
+        AddToolbarButton("transfers-toolbar", "传输队列", UiIconKind.Transfers, (_, _) => SetTransferVisibility(!_outerSplit.Panel2Collapsed));
+        AddToolbarButton("settings-toolbar", "设置", UiIconKind.Settings, async (_, _) => await ShowSettingsAsync());
         _toolbar.Dock = DockStyle.Top;
     }
 
     private void BuildAddressBar()
     {
-        var back = new ToolStripButton(UiIcons.Create("←")) { ToolTipText = "返回" };
+        var back = new ToolStripButton(UiIcons.Create(UiIconKind.Back, 18)) { ToolTipText = "返回" };
         back.Click += (_, _) => NavigateHistory(-1);
-        var forward = new ToolStripButton(UiIcons.Create("→")) { ToolTipText = "前进" };
+        var forward = new ToolStripButton(UiIcons.Create(UiIconKind.Forward, 18)) { ToolTipText = "前进" };
         forward.Click += (_, _) => NavigateHistory(1);
-        var up = new ToolStripButton(UiIcons.Create("↑")) { ToolTipText = "上一级" };
+        var up = new ToolStripButton(UiIcons.Create(UiIconKind.Up, 18)) { ToolTipText = "上一级" };
         up.Click += async (_, _) => await NavigateUpAsync();
-        var refresh = new ToolStripButton(UiIcons.Create("↻")) { ToolTipText = "刷新" };
+        var refresh = new ToolStripButton(UiIcons.Create(UiIconKind.Refresh, 18)) { ToolTipText = "刷新" };
         refresh.Click += async (_, _) => await RefreshAsync();
         _address.ToolTipText = "输入 s3://<profile>/<bucket>/<prefix> 并按 Enter";
         _search.Text = string.Empty;
@@ -240,13 +248,20 @@ internal sealed class MainForm : Form
 
     private void BuildBody()
     {
+        _tree.ImageList = _smallImages;
+        _objects.SmallImageList = _smallImages;
         _objects.Columns.Add("名称", 320);
         _objects.Columns.Add("大小", 110, HorizontalAlignment.Right);
         _objects.Columns.Add("类型", 120);
         _objects.Columns.Add("修改时间", 165);
         _objects.Columns.Add("存储类型", 120);
 
-        var root = new TreeNode("Accounts") { Name = "Accounts", ImageIndex = 0, SelectedImageIndex = 0 };
+        var root = new TreeNode("Accounts")
+        {
+            Name = "Accounts",
+            ImageKey = "accounts",
+            SelectedImageKey = "accounts"
+        };
         _tree.Nodes.Add(root);
 
         _mainSplit.Panel1.Controls.Add(_tree);
@@ -255,6 +270,25 @@ internal sealed class MainForm : Form
         _outerSplit.Panel2.Controls.Add(_transfers);
         _outerSplit.SplitterWidth = 6;
         _mainSplit.SplitterWidth = 6;
+    }
+
+    private void BuildAccountContextMenu()
+    {
+        var connect = new ToolStripMenuItem("连接", UiIcons.Create(UiIconKind.Connect, 16));
+        connect.Click += async (_, _) => await ConnectSelectedAsync();
+        var edit = new ToolStripMenuItem("修改...", UiIcons.Create(UiIconKind.Properties, 16));
+        edit.Click += (_, _) => EditCurrentConnection();
+        var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
+        delete.Click += async (_, _) => await DeleteCurrentConnectionAsync();
+        _accountMenu.Items.AddRange([connect, edit, new ToolStripSeparator(), delete]);
+        _accountMenu.Opening += (_, args) =>
+        {
+            var accountSelected = _tree.SelectedNode?.Tag is ConnectionProfile;
+            args.Cancel = !accountSelected;
+            connect.Enabled = accountSelected;
+            edit.Enabled = accountSelected;
+            delete.Enabled = accountSelected;
+        };
     }
 
     private void BuildStatus()
@@ -277,6 +311,13 @@ internal sealed class MainForm : Form
 
     private void WireEvents()
     {
+        _tree.NodeMouseClick += (_, args) =>
+        {
+            var node = args.Node;
+            if (args.Button != MouseButtons.Right || node?.Tag is not ConnectionProfile) return;
+            _tree.SelectedNode = node;
+            _accountMenu.Show(_tree, args.Location);
+        };
         _tree.NodeMouseDoubleClick += async (_, args) =>
         {
             var node = args.Node;
@@ -289,6 +330,7 @@ internal sealed class MainForm : Form
         _tree.AfterSelect += async (_, args) =>
         {
             UpdateCommandStates();
+            if (_suppressTreeSelection) return;
             var node = args.Node;
             if (node is null) return;
             if (node.Tag is ConnectionProfile profile)
@@ -410,12 +452,20 @@ internal sealed class MainForm : Form
         root.Nodes.Clear();
         foreach (var profile in _profiles.OrderBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase))
         {
+            var defaultBucket = string.IsNullOrWhiteSpace(profile.DefaultBucket) ? string.Empty : $"\n默认 Bucket: {profile.DefaultBucket}";
             var node = new TreeNode(profile.Name)
             {
                 Tag = profile,
-                ToolTipText = $"{profile.Endpoint}\n{profile.Region}\n未连接"
+                ImageKey = "account",
+                SelectedImageKey = "account",
+                ToolTipText = $"{profile.Endpoint}\n签名 Region: {profile.EffectiveSignatureRegion}{defaultBucket}\n未连接"
             };
-            node.Nodes.Add(new TreeNode("(双击连接)") { ForeColor = SystemColors.GrayText });
+            node.Nodes.Add(new TreeNode("(双击连接)")
+            {
+                ForeColor = SystemColors.GrayText,
+                ImageKey = "connect",
+                SelectedImageKey = "connect"
+            });
             root.Nodes.Add(node);
         }
         root.Expand();
@@ -495,13 +545,37 @@ internal sealed class MainForm : Form
                 profileNode.Nodes.Add(new TreeNode(bucket.Name)
                 {
                     Tag = new BucketNodeTag(profile, bucket.Name),
+                    ImageKey = "bucket",
+                    SelectedImageKey = "bucket",
                     ToolTipText = bucket.Region is null ? bucket.Name : $"{bucket.Name}\nRegion: {bucket.Region}"
                 });
             }
             if (buckets.Count == 0)
-                profileNode.Nodes.Add(new TreeNode("(没有 Bucket)") { ForeColor = SystemColors.GrayText });
+            {
+                profileNode.Nodes.Add(new TreeNode("(没有 Bucket；可在连接设置中添加外部 Bucket)")
+                {
+                    ForeColor = SystemColors.GrayText,
+                    ImageKey = "info",
+                    SelectedImageKey = "info"
+                });
+            }
             profileNode.Expand();
-            ShowConnectionSummary(profile, profileNode, buckets.Count);
+            var defaultNode = string.IsNullOrWhiteSpace(profile.DefaultBucket)
+                ? null
+                : profileNode.Nodes.Cast<TreeNode>()
+                    .FirstOrDefault(item => item.Tag is BucketNodeTag tag &&
+                        string.Equals(tag.Bucket, profile.DefaultBucket, StringComparison.Ordinal));
+            if (defaultNode?.Tag is BucketNodeTag defaultBucket)
+            {
+                _suppressTreeSelection = true;
+                _tree.SelectedNode = defaultNode;
+                _suppressTreeSelection = false;
+                await NavigateAsync(defaultBucket.Profile, defaultBucket.Bucket, string.Empty, true);
+            }
+            else
+            {
+                ShowConnectionSummary(profile, profileNode, buckets.Count);
+            }
             _logger.Info($"Connected profile={profile.Name} endpoint={profile.Endpoint} buckets={buckets.Count}");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -544,8 +618,10 @@ internal sealed class MainForm : Form
             _loadedItems.Clear();
             AddSummaryItem("连接名称", profile.Name);
             AddSummaryItem("Endpoint", profile.Endpoint);
-            AddSummaryItem("Region", profile.Region);
+            AddSummaryItem("签名 Region", profile.EffectiveSignatureRegion);
             AddSummaryItem("服务类型", profile.ServiceType.ToString());
+            AddSummaryItem("默认 Bucket", string.IsNullOrWhiteSpace(profile.DefaultBucket) ? "未配置" : profile.DefaultBucket);
+            AddSummaryItem("外部 Bucket", profile.ExternalBuckets.Count == 0 ? "未配置" : string.Join(", ", profile.ExternalBuckets));
             AddSummaryItem("Bucket 数量", bucketCount?.ToString() ?? Math.Max(0, node.Nodes.Count).ToString());
             AddSummaryItem("当前状态", _currentProfile?.Id == profile.Id ? "已连接" : "未连接");
             AddSummaryItem("凭据存储", "SecretKey 与 SessionToken 使用 DPAPI CurrentUser 加密");
@@ -557,7 +633,7 @@ internal sealed class MainForm : Form
 
     private void AddSummaryItem(string name, string value)
     {
-        var item = new ListViewItem(name);
+        var item = new ListViewItem(name) { ImageKey = "info" };
         item.SubItems.Add(string.Empty);
         item.SubItems.Add(value);
         item.SubItems.Add(string.Empty);
@@ -684,7 +760,13 @@ internal sealed class MainForm : Form
                 _objects.Items.Add(CreateObjectItem(entry));
             if (_hasMore)
             {
-                var more = new ListViewItem("加载更多...") { Tag = new LoadMoreTag(), Font = new Font(_objects.Font, FontStyle.Bold), ForeColor = SystemColors.HotTrack };
+                var more = new ListViewItem("加载更多...")
+                {
+                    Tag = new LoadMoreTag(),
+                    ImageKey = "refresh",
+                    Font = new Font(_objects.Font, FontStyle.Bold),
+                    ForeColor = SystemColors.HotTrack
+                };
                 more.SubItems.AddRange(["", "分页", "", ""]);
                 _objects.Items.Add(more);
             }
@@ -708,7 +790,11 @@ internal sealed class MainForm : Form
 
     private static ListViewItem CreateObjectItem(S3ObjectEntry entry)
     {
-        var item = new ListViewItem(entry.Name) { Tag = entry };
+        var item = new ListViewItem(entry.Name)
+        {
+            Tag = entry,
+            ImageKey = UiIcons.ObjectImageKey(entry.Name, entry.IsDirectory)
+        };
         item.SubItems.Add(entry.IsDirectory ? string.Empty : FileSizeFormatter.Format(entry.Size));
         item.SubItems.Add(ObjectTypeDetector.Detect(entry.Name, entry.IsDirectory));
         item.SubItems.Add(entry.LastModified?.LocalDateTime.ToString("G") ?? string.Empty);
@@ -1334,9 +1420,9 @@ internal sealed class MainForm : Form
     private static ToolStripMenuItem Unsupported(string text) =>
         new(text) { Enabled = false, ToolTipText = "当前版本尚未支持" };
 
-    private void AddToolbarButton(string id, string text, string glyph, EventHandler handler)
+    private void AddToolbarButton(string id, string text, UiIconKind icon, EventHandler handler)
     {
-        var button = new ToolStripButton(text, UiIcons.Create(glyph), handler)
+        var button = new ToolStripButton(text, UiIcons.Create(icon), handler)
         {
             DisplayStyle = ToolStripItemDisplayStyle.Image,
             ToolTipText = text,

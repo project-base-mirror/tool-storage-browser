@@ -40,9 +40,31 @@ public sealed record ConnectionProfile
     public bool EnableMultipartCopy { get; init; } = true;
     public string DefaultStorageClass { get; init; } = "STANDARD";
     public int RequestTimeoutSeconds { get; init; } = 100;
+    public int ConnectionTimeoutSeconds { get; init; } = 10;
+    public string DefaultBucket { get; init; } = string.Empty;
+    public IReadOnlyList<string> ExternalBuckets { get; init; } = Array.Empty<string>();
 
-    public string EffectiveSignatureRegion =>
-        string.IsNullOrWhiteSpace(SignatureRegion) ? Region : SignatureRegion.Trim();
+    public string EffectiveSignatureRegion
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(SignatureRegion))
+                return SignatureRegion.Trim();
+            if (!string.IsNullOrWhiteSpace(Region))
+                return Region.Trim();
+            return ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.GoogleCloudStorage
+                ? "auto"
+                : "us-east-1";
+        }
+    }
+
+    public IReadOnlyList<string> KnownBuckets =>
+        new[] { DefaultBucket }
+            .Concat(ExternalBuckets ?? Array.Empty<string>())
+            .Select(NormalizeKnownBucket)
+            .Where(bucket => bucket.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
     public Uri NormalizedEndpoint => EndpointCompatibility.NormalizeEndpoint(Endpoint);
 
@@ -54,8 +76,6 @@ public sealed record ConnectionProfile
         var endpoint = EndpointCompatibility.NormalizeEndpoint(Endpoint);
         if (!string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment))
             throw new ArgumentException("Endpoint 不能包含查询参数或片段。", nameof(Endpoint));
-        if (string.IsNullOrWhiteSpace(Region))
-            throw new ArgumentException("Region 不能为空。", nameof(Region));
         if (string.IsNullOrWhiteSpace(EffectiveSignatureRegion))
             throw new ArgumentException("签名 Region 不能为空。", nameof(SignatureRegion));
         if (string.IsNullOrWhiteSpace(AccessKey))
@@ -64,8 +84,20 @@ public sealed record ConnectionProfile
             throw new ArgumentException("Secret Key 不能为空。", nameof(SecretKey));
         if (RequestTimeoutSeconds is < 5 or > 3600)
             throw new ArgumentOutOfRangeException(nameof(RequestTimeoutSeconds), "请求超时必须在 5 到 3600 秒之间。");
+        if (ConnectionTimeoutSeconds is < 1 or > 120)
+            throw new ArgumentOutOfRangeException(nameof(ConnectionTimeoutSeconds), "连接超时必须在 1 到 120 秒之间。");
+        foreach (var bucket in KnownBuckets)
+            ValidateKnownBucket(bucket);
 
         EndpointCompatibility.ValidateHostHeader(CustomHostHeader);
+    }
+
+    private static string NormalizeKnownBucket(string? bucket) => bucket?.Trim() ?? string.Empty;
+
+    private static void ValidateKnownBucket(string bucket)
+    {
+        if (bucket.Any(char.IsControl) || bucket.Contains('/') || bucket.Contains('\\'))
+            throw new ArgumentException($"Bucket 名称无效：{bucket}", nameof(ExternalBuckets));
     }
 
     public static ConnectionProfile CreatePreset(S3ServiceType type) => type switch
@@ -73,7 +105,7 @@ public sealed record ConnectionProfile
         S3ServiceType.AmazonS3 => new() { ServiceType = type, Endpoint = "https://s3.amazonaws.com", Region = "us-east-1" },
         S3ServiceType.MinIO => new() { ServiceType = type, Endpoint = "http://127.0.0.1:9000", Region = "us-east-1", AddressingStyle = AddressingStyle.PathStyle, UseHttps = false },
         S3ServiceType.CloudflareR2 => new() { ServiceType = type, Endpoint = "https://<account-id>.r2.cloudflarestorage.com", Region = "auto", SignatureRegion = "auto", AddressingStyle = AddressingStyle.PathStyle },
-        S3ServiceType.BackblazeB2 => new() { ServiceType = type, Endpoint = "https://s3.<region>.backblazeb2.com", Region = "us-west-004" },
+        S3ServiceType.BackblazeB2 => new() { ServiceType = type, Endpoint = "https://s3.us-west-004.backblazeb2.com", Region = "us-west-004" },
         S3ServiceType.AliyunOss => new() { ServiceType = type, Endpoint = "https://oss-cn-hangzhou.aliyuncs.com", Region = "oss-cn-hangzhou" },
         S3ServiceType.TencentCos => new() { ServiceType = type, Endpoint = "https://cos.ap-guangzhou.myqcloud.com", Region = "ap-guangzhou" },
         S3ServiceType.GoogleCloudStorage => new() { ServiceType = type, Endpoint = "https://storage.googleapis.com", Region = "auto", SignatureRegion = "auto", AddressingStyle = AddressingStyle.PathStyle },

@@ -69,11 +69,51 @@ public sealed class CoreBehaviorTests
     }
 
     [Fact]
-    public void SignatureRegionFallsBackToRegion()
+    public void SignatureRegionUsesExplicitOverrideThenRegionThenProviderDefault()
     {
         var profile = new ConnectionProfile { Region = "ap-guangzhou" };
         Assert.Equal("ap-guangzhou", profile.EffectiveSignatureRegion);
         Assert.Equal("auto", (profile with { SignatureRegion = " auto " }).EffectiveSignatureRegion);
+        Assert.Equal("us-east-1", (profile with { Region = string.Empty }).EffectiveSignatureRegion);
+        Assert.Equal("auto", (profile with { ServiceType = S3ServiceType.CloudflareR2, Region = string.Empty }).EffectiveSignatureRegion);
+    }
+
+    [Fact]
+    public void KnownBucketsIncludeDefaultAndDistinctExternalBuckets()
+    {
+        var profile = new ConnectionProfile
+        {
+            DefaultBucket = " primary " ,
+            ExternalBuckets = ["archive", "primary", " archive "]
+        };
+
+        Assert.Equal(["primary", "archive"], profile.KnownBuckets);
+    }
+
+    [Fact]
+    public void BackblazePresetUsesValidConcreteEndpoint()
+    {
+        var preset = ConnectionProfile.CreatePreset(S3ServiceType.BackblazeB2);
+        Assert.True(Uri.TryCreate(preset.Endpoint, UriKind.Absolute, out var endpoint));
+        Assert.Equal(Uri.UriSchemeHttps, endpoint!.Scheme);
+        Assert.DoesNotContain('<', preset.Endpoint);
+    }
+
+    [Fact]
+    public void ConnectionTimeoutDefaultsToTenSecondsAndRegionMayBeEmpty()
+    {
+        var profile = new ConnectionProfile
+        {
+            Name = "Custom",
+            Endpoint = "https://s3.example.test",
+            Region = string.Empty,
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        Assert.Equal(10, profile.ConnectionTimeoutSeconds);
+        profile.Validate();
+        Assert.Throws<ArgumentOutOfRangeException>(() => (profile with { ConnectionTimeoutSeconds = 0 }).Validate());
     }
 
     [Theory]

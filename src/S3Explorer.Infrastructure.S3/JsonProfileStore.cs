@@ -85,6 +85,9 @@ public sealed class JsonProfileStore : IProfileStore
         public bool EnableMultipartCopy { get; set; } = true;
         public string DefaultStorageClass { get; set; } = "STANDARD";
         public int RequestTimeoutSeconds { get; set; }
+        public int ConnectionTimeoutSeconds { get; set; } = 10;
+        public string DefaultBucket { get; set; } = string.Empty;
+        public List<string> ExternalBuckets { get; set; } = [];
 
         public static PersistedProfile FromRuntime(ConnectionProfile source, ICredentialProtector protector) => new()
         {
@@ -105,7 +108,10 @@ public sealed class JsonProfileStore : IProfileStore
             EnableMultiObjectDelete = source.EnableMultiObjectDelete,
             EnableMultipartCopy = source.EnableMultipartCopy,
             DefaultStorageClass = source.DefaultStorageClass,
-            RequestTimeoutSeconds = source.RequestTimeoutSeconds
+            RequestTimeoutSeconds = source.RequestTimeoutSeconds,
+            ConnectionTimeoutSeconds = source.ConnectionTimeoutSeconds,
+            DefaultBucket = source.DefaultBucket,
+            ExternalBuckets = source.ExternalBuckets.ToList()
         };
 
         public ConnectionProfile ToRuntime(ICredentialProtector protector) => new()
@@ -127,7 +133,10 @@ public sealed class JsonProfileStore : IProfileStore
             EnableMultiObjectDelete = EnableMultiObjectDelete,
             EnableMultipartCopy = EnableMultipartCopy,
             DefaultStorageClass = DefaultStorageClass,
-            RequestTimeoutSeconds = RequestTimeoutSeconds
+            RequestTimeoutSeconds = RequestTimeoutSeconds <= 0 ? 100 : RequestTimeoutSeconds,
+            ConnectionTimeoutSeconds = ConnectionTimeoutSeconds <= 0 ? 10 : ConnectionTimeoutSeconds,
+            DefaultBucket = DefaultBucket,
+            ExternalBuckets = ExternalBuckets ?? []
         };
     }
 }

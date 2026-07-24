@@ -35,6 +35,25 @@ public sealed class S3ClientFactoryTests
     }
 
     [Fact]
+    public void EndpointControlsRoutingWhenRegionIsEmpty()
+    {
+        var profile = new ConnectionProfile
+        {
+            Name = "Endpoint only",
+            ServiceType = S3ServiceType.Custom,
+            Endpoint = "https://storage.example.test/base",
+            Region = string.Empty,
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var snapshot = new S3ClientFactory().Describe(profile);
+
+        Assert.Equal("https://storage.example.test/base", snapshot.ServiceUrl);
+        Assert.Equal("us-east-1", snapshot.AuthenticationRegion);
+    }
+
+    [Fact]
     public void VirtualHostedStyleDoesNotForcePathAddressing()
     {
         var profile = new ConnectionProfile
