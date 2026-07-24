@@ -10,6 +10,8 @@ namespace S3Explorer.Infrastructure.S3;
 
 public sealed class S3StorageService : IS3StorageService
 {
+    private const long MaximumSingleCopyBytes = 5L * 1024 * 1024 * 1024;
+
     private readonly S3ClientFactory _factory;
 
     public S3StorageService(S3ClientFactory factory) => _factory = factory;
@@ -24,6 +26,18 @@ public sealed class S3StorageService : IS3StorageService
             stopwatch.Stop();
             return new(true, stopwatch.Elapsed, response.Buckets.Count,
                 $"连接成功，发现 {response.Buckets.Count} 个 Bucket。");
+        }
+        catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex))
+        {
+            stopwatch.Stop();
+            return new(
+                true,
+                stopwatch.Elapsed,
+                0,
+                "已到达 S3 服务，但当前凭据无权列出全部 Bucket。可继续使用已知 Bucket 路径。",
+                (int)ex.StatusCode,
+                ex.ErrorCode,
+                ex.RequestId);
         }
         catch (AmazonS3Exception ex)
         {
@@ -209,12 +223,28 @@ public sealed class S3StorageService : IS3StorageService
 
     public async Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken)
     {
+        if (keys.Count == 0)
+            return;
+
         using var client = _factory.Create(profile);
+        if (!profile.EnableMultiObjectDelete)
+        {
+            await DeleteOneByOneAsync(client, bucket, keys, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         foreach (var batch in keys.Chunk(1000))
         {
             var request = new DeleteObjectsRequest { BucketName = bucket };
             request.Objects.AddRange(batch.Select(key => new KeyVersion { Key = key }));
-            await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.ShouldFallbackToSingleDelete(ex))
+            {
+                await DeleteOneByOneAsync(client, bucket, batch, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -227,13 +257,31 @@ public sealed class S3StorageService : IS3StorageService
         CancellationToken cancellationToken)
     {
         using var client = _factory.Create(profile);
-        await client.CopyObjectAsync(new CopyObjectRequest
+
+        long? objectSize = null;
+        if (profile.EnableMultipartCopy)
         {
-            SourceBucket = sourceBucket,
-            SourceKey = sourceKey,
-            DestinationBucket = destinationBucket,
-            DestinationKey = destinationKey
-        }, cancellationToken).ConfigureAwait(false);
+            var metadata = await client.GetObjectMetadataAsync(sourceBucket, sourceKey, cancellationToken).ConfigureAwait(false);
+            objectSize = metadata.ContentLength;
+            if (objectSize > MaximumSingleCopyBytes)
+            {
+                await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+        }
+
+        try
+        {
+            await CopyObjectSimpleAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception ex) when (profile.EnableMultipartCopy && S3CompatibilityPolicy.RequiresMultipartCopy(ex))
+        {
+            objectSize ??= (await client.GetObjectMetadataAsync(sourceBucket, sourceKey, cancellationToken).ConfigureAwait(false)).ContentLength;
+            await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     public async Task MoveObjectAsync(
@@ -295,6 +343,99 @@ public sealed class S3StorageService : IS3StorageService
             Verb = HttpVerb.GET,
             Expires = DateTime.UtcNow.Add(lifetime)
         });
+    }
+
+    private static async Task DeleteOneByOneAsync(
+        IAmazonS3 client,
+        string bucket,
+        IEnumerable<string> keys,
+        CancellationToken cancellationToken)
+    {
+        foreach (var key in keys)
+            await client.DeleteObjectAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static Task CopyObjectSimpleAsync(
+        IAmazonS3 client,
+        string sourceBucket,
+        string sourceKey,
+        string destinationBucket,
+        string destinationKey,
+        CancellationToken cancellationToken) =>
+        client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucket,
+            SourceKey = sourceKey,
+            DestinationBucket = destinationBucket,
+            DestinationKey = destinationKey
+        }, cancellationToken);
+
+    private static async Task MultipartCopyAsync(
+        IAmazonS3 client,
+        string sourceBucket,
+        string sourceKey,
+        string destinationBucket,
+        string destinationKey,
+        long objectSize,
+        CancellationToken cancellationToken)
+    {
+        if (objectSize <= 0)
+            throw new InvalidOperationException("无法对空对象执行 Multipart Copy。");
+
+        var initiate = await client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = destinationBucket,
+            Key = destinationKey
+        }, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var partSize = S3CompatibilityPolicy.CalculateCopyPartSize(objectSize);
+            var partEtags = new List<PartETag>();
+            var partNumber = 1;
+            for (long offset = 0; offset < objectSize; offset += partSize, partNumber++)
+            {
+                var lastByte = Math.Min(objectSize - 1, offset + partSize - 1);
+                var response = await client.UploadPartCopyAsync(new UploadPartCopyRequest
+                {
+                    SourceBucket = sourceBucket,
+                    SourceKey = sourceKey,
+                    DestinationBucket = destinationBucket,
+                    DestinationKey = destinationKey,
+                    UploadId = initiate.UploadId,
+                    PartNumber = partNumber,
+                    FirstByte = offset,
+                    LastByte = lastByte
+                }, cancellationToken).ConfigureAwait(false);
+                partEtags.Add(new PartETag(partNumber, response.ETag));
+            }
+
+            var complete = new CompleteMultipartUploadRequest
+            {
+                BucketName = destinationBucket,
+                Key = destinationKey,
+                UploadId = initiate.UploadId
+            };
+            complete.AddPartETags(partEtags);
+            await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                await client.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+                {
+                    BucketName = destinationBucket,
+                    Key = destinationKey,
+                    UploadId = initiate.UploadId
+                }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original copy error. Cleanup can be retried from the MPU manager.
+            }
+            throw;
+        }
     }
 
     private static void ValidateBucketName(string bucket)
