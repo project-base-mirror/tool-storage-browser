@@ -985,21 +985,69 @@ internal sealed class MainForm : Form
     private async Task UploadPathsAsync(IEnumerable<string> paths)
     {
         if (!EnsureLocation()) return;
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
+        var prefix = _currentPrefix;
+
         foreach (var path in paths)
         {
             if (File.Exists(path))
             {
-                await EnqueueUploadAsync(path, _currentPrefix + Path.GetFileName(path));
+                await EnqueueUploadAsync(path, prefix + Path.GetFileName(path));
+                continue;
             }
-            else if (Directory.Exists(path))
+            if (!Directory.Exists(path))
+                continue;
+
+            var rootName = new DirectoryInfo(path).Name;
+            var batch = await _transfers.CreateBatchAsync(
+                profile,
+                bucket,
+                $"上传 {rootName}",
+                path,
+                TransferDirection.Upload);
+            var chunk = new List<UploadBatchItem>(256);
+            var skipped = 0;
+            try
             {
-                var rootName = new DirectoryInfo(path).Name;
-                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                foreach (var file in EnumerateFilesSafely(path, (directory, exception) =>
+                         {
+                             skipped++;
+                             _logger.Error($"Folder upload discovery skipped directory={directory}", exception);
+                         }))
                 {
+                    var info = new FileInfo(file);
                     var relative = Path.GetRelativePath(path, file).Replace('\\', '/');
-                    await EnqueueUploadAsync(file, S3Path.Combine(_currentPrefix, $"{rootName}/{relative}"));
+                    chunk.Add(new UploadBatchItem(
+                        file,
+                        S3Path.Combine(prefix, $"{rootName}/{relative}"),
+                        relative,
+                        info.Length,
+                        profile.DefaultStorageClass));
+                    if (chunk.Count < 256)
+                        continue;
+                    await _transfers.AddUploadBatchItemsAsync(batch, chunk);
+                    chunk.Clear();
                 }
+                if (chunk.Count > 0)
+                    await _transfers.AddUploadBatchItemsAsync(batch, chunk);
             }
+            catch (Exception exception)
+            {
+                skipped++;
+                _logger.Error($"Folder upload discovery failed root={path}", exception);
+                MessageBox.Show(
+                    this,
+                    $"文件夹发现提前停止：{exception.Message}\n\n已发现的文件仍会继续传输。",
+                    "文件夹上传",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                await _transfers.CompleteBatchDiscoveryAsync(batch.Id, skipped);
+            }
+            _logger.Info($"Upload batch queued profile={profile.Name} bucket={bucket} batch={batch.Id} root={path} skipped={skipped}");
         }
         SetTransferVisibility(true);
     }
@@ -1044,44 +1092,86 @@ internal sealed class MainForm : Form
             targetRoot = folder.SelectedPath;
         }
 
-        var downloads = new List<(S3ObjectEntry Entry, string LocalPath)>();
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
+        var batchName = selected.Count == 1
+            ? $"下载 {selected[0].Name}"
+            : $"下载 {selected.Count:N0} 项";
+        var batch = await _transfers.CreateBatchAsync(
+            profile,
+            bucket,
+            batchName,
+            targetRoot,
+            TransferDirection.Download);
+        var chunk = new List<DownloadBatchItem>(256);
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        var skipped = 0;
+
         try
         {
             foreach (var entry in selected)
             {
                 if (!entry.IsDirectory)
                 {
-                    downloads.Add((entry, LocalObjectPath.MapRelativeKey(targetRoot, entry.Name)));
-                    continue;
+                    if (seenKeys.Add(entry.Key))
+                    {
+                        var relative = entry.Name;
+                        chunk.Add(new DownloadBatchItem(
+                            entry.Key,
+                            LocalObjectPath.MapRelativeKey(targetRoot, relative),
+                            relative,
+                            entry.Size));
+                    }
+                }
+                else
+                {
+                    await foreach (var child in EnumerateAllObjectsAsync(entry.Key))
+                    {
+                        if (child.IsDirectory || !seenKeys.Add(child.Key))
+                            continue;
+                        if (!child.Key.StartsWith(entry.Key, StringComparison.Ordinal))
+                            throw new InvalidOperationException("对象 Key 不属于所选文件夹。");
+
+                        var childRelative = child.Key[entry.Key.Length..].TrimStart('/');
+                        var relative = $"{entry.Name}/{childRelative}";
+                        chunk.Add(new DownloadBatchItem(
+                            child.Key,
+                            LocalObjectPath.MapRelativeKey(targetRoot, relative),
+                            relative,
+                            child.Size));
+                        if (chunk.Count < 256)
+                            continue;
+                        await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
+                        chunk.Clear();
+                    }
                 }
 
-                var descendants = await ListAllObjectsAsync(entry.Key);
-                foreach (var child in descendants.Where(item => !item.IsDirectory))
+                if (chunk.Count >= 256)
                 {
-                    if (!child.Key.StartsWith(entry.Key, StringComparison.Ordinal))
-                        throw new InvalidOperationException("对象 Key 不属于所选文件夹。");
-
-                    var relative = child.Key[entry.Key.Length..].TrimStart('/');
-                    downloads.Add((
-                        child,
-                        LocalObjectPath.MapRelativeKey(targetRoot, $"{entry.Name}/{relative}")));
+                    await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
+                    chunk.Clear();
                 }
             }
+            if (chunk.Count > 0)
+                await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
         }
-        catch (InvalidOperationException exception)
+        catch (Exception exception)
         {
-            _logger.Error($"Download path validation failed target={targetRoot}", exception);
+            skipped++;
+            _logger.Error($"Folder download discovery failed target={targetRoot}", exception);
             MessageBox.Show(
                 this,
-                exception.Message,
-                "下载路径不安全",
+                $"递归发现提前停止：{exception.Message}\n\n已发现的对象仍会继续下载。",
+                "文件夹下载",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
-            return;
+        }
+        finally
+        {
+            await _transfers.CompleteBatchDiscoveryAsync(batch.Id, skipped);
         }
 
-        foreach (var download in downloads)
-            await EnqueueDownloadAsync(download.Entry, download.LocalPath);
+        _logger.Info($"Download batch queued profile={profile.Name} bucket={bucket} batch={batch.Id} target={targetRoot} skipped={skipped}");
         SetTransferVisibility(true);
     }
 
@@ -1259,6 +1349,87 @@ internal sealed class MainForm : Form
                 result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
         finally { SetIdle(); }
+    }
+
+    private static IEnumerable<string> EnumerateFilesSafely(
+        string root,
+        Action<string, Exception> onDirectoryError)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(directory);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                onDirectoryError(directory, exception);
+                continue;
+            }
+
+            foreach (var file in files)
+                yield return file;
+
+            string[] children;
+            try
+            {
+                children = Directory.GetDirectories(directory);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                onDirectoryError(directory, exception);
+                continue;
+            }
+            for (var index = children.Length - 1; index >= 0; index--)
+                pending.Push(children[index]);
+        }
+    }
+
+    private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix)
+    {
+        var profile = _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
+        var bucket = _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
+        var limit = Math.Clamp(
+            _settings.ObjectCacheLimit,
+            ObjectListingLimits.MinimumCacheLimit,
+            ObjectListingLimits.MaximumCacheLimit);
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
+        string? token = null;
+
+        while (true)
+        {
+            var page = await _storage.ListObjectsAsync(
+                profile,
+                bucket,
+                prefix,
+                token,
+                Math.Clamp(
+                    _settings.ObjectPageSize,
+                    ObjectListingLimits.MinimumPageSize,
+                    ObjectListingLimits.MaximumPageSize),
+                CancellationToken.None);
+            foreach (var item in page.Items)
+            {
+                if (!seenKeys.Add(item.Key))
+                    continue;
+                if (seenKeys.Count > limit)
+                    throw new InvalidOperationException(
+                        $"文件夹对象数量达到内存保护上限 {limit:N0}，已停止递归下载。");
+                yield return item;
+            }
+
+            if (!page.HasMore)
+                yield break;
+            var nextToken = page.ContinuationToken;
+            if (string.IsNullOrEmpty(nextToken) || !seenTokens.Add(nextToken))
+                throw new InvalidOperationException("对象列表分页令牌无效或重复，已停止递归下载。");
+            token = nextToken;
+        }
     }
 
     private async Task<IReadOnlyList<S3ObjectEntry>> ListAllObjectsAsync(string prefix)
