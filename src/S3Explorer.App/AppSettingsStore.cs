@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using S3Explorer.Core;
 
 namespace S3Explorer.App;
 
@@ -18,6 +19,8 @@ internal sealed record AppSettings
     public bool AutoConnectLastProfile { get; init; }
     public string DefaultDownloadDirectory { get; init; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+    public int ObjectPageSize { get; init; } = ObjectListingLimits.DefaultPageSize;
+    public int ObjectCacheLimit { get; init; } = ObjectListingLimits.DefaultCacheLimit;
     public int ConcurrentTransfers { get; init; } = 4;
     public int MultipartConcurrency { get; init; } = 4;
     public int MultipartThresholdMb { get; init; } = 64;

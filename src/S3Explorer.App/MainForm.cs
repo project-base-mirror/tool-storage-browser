@@ -43,7 +43,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _downloadSpeed = new("↓ 0 B/s");
     private readonly System.Windows.Forms.Timer _searchTimer = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _speedTimer = new() { Interval = 1000 };
-    private readonly List<S3ObjectEntry> _loadedItems = [];
+    private readonly BoundedObjectCache _loadedItems = new(ObjectListingLimits.DefaultCacheLimit);
     private readonly List<S3Location> _history = [];
     private readonly Dictionary<string, ToolStripItem> _commands = new(StringComparer.OrdinalIgnoreCase);
     private readonly OperationCancellation _navigationCancellation = new();
@@ -55,6 +55,7 @@ internal sealed class MainForm : Form
     private string _currentPrefix = string.Empty;
     private string? _continuationToken;
     private bool _hasMore;
+    private bool _objectLimitReached;
     private int _historyIndex = -1;
     private int _sortColumn;
     private bool _sortAscending = true;
@@ -584,15 +585,23 @@ internal sealed class MainForm : Form
     {
         if (_currentProfile is null || _currentBucket is null) return;
 
+        var profile = _currentProfile;
+        var bucket = _currentBucket;
+        var prefix = _currentPrefix;
+        var continuationToken = reset ? null : _continuationToken;
         var cancellationToken = reset
             ? _navigationCancellation.StartNew()
             : _navigationCancellation.CurrentOrStart();
 
         if (reset)
         {
-            _loadedItems.Clear();
+            _loadedItems.Reset(Math.Clamp(
+                _settings.ObjectCacheLimit,
+                ObjectListingLimits.MinimumCacheLimit,
+                ObjectListingLimits.MaximumCacheLimit));
             _continuationToken = null;
             _hasMore = false;
+            _objectLimitReached = false;
             _objects.Items.Clear();
         }
 
@@ -601,27 +610,39 @@ internal sealed class MainForm : Form
         try
         {
             var page = await _storage.ListObjectsAsync(
-                _currentProfile,
-                _currentBucket,
-                _currentPrefix,
-                reset ? null : _continuationToken,
-                1000,
+                profile,
+                bucket,
+                prefix,
+                continuationToken,
+                Math.Clamp(
+                    _settings.ObjectPageSize,
+                    ObjectListingLimits.MinimumPageSize,
+                    ObjectListingLimits.MaximumPageSize),
                 cancellationToken);
-            if (revision != _navigationRevision || cancellationToken.IsCancellationRequested)
+            if (revision != _navigationRevision ||
+                cancellationToken.IsCancellationRequested ||
+                _currentProfile?.Id != profile.Id ||
+                !string.Equals(_currentBucket, bucket, StringComparison.Ordinal) ||
+                !string.Equals(_currentPrefix, prefix, StringComparison.Ordinal))
+            {
                 return;
+            }
 
-            _loadedItems.AddRange(page.Items.Where(item =>
-                !_loadedItems.Any(existing => string.Equals(existing.Key, item.Key, StringComparison.Ordinal) && existing.IsDirectory == item.IsDirectory)));
-            _continuationToken = page.ContinuationToken;
-            _hasMore = page.HasMore;
+            var addResult = _loadedItems.AddRange(page.Items);
+            _objectLimitReached = addResult.Truncated || (_loadedItems.LimitReached && page.HasMore);
+            _hasMore = page.HasMore &&
+                !_objectLimitReached &&
+                !string.IsNullOrEmpty(page.ContinuationToken);
+            _continuationToken = _hasMore ? page.ContinuationToken : null;
             ApplyFilterAndSort();
-            _logger.Info($"ListObjects profile={_currentProfile.Name} bucket={_currentBucket} prefix={_currentPrefix} count={page.Items.Count} hasMore={page.HasMore}");
+            _logger.Info(
+                $"ListObjects profile={profile.Name} bucket={bucket} prefix={prefix} received={page.Items.Count} added={addResult.AddedCount} total={_loadedItems.Count} hasMore={_hasMore} limitReached={_objectLimitReached}");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            _logger.Error($"ListObjects failed bucket={_currentBucket} prefix={_currentPrefix}", exception);
-            ErrorDialog.ShowException(this, "加载失败", "列出对象", exception, CurrentLocationText());
+            _logger.Error($"ListObjects failed bucket={bucket} prefix={prefix}", exception);
+            ErrorDialog.ShowException(this, "加载失败", "列出对象", exception, $"s3://{profile.Name}/{bucket}/{prefix}");
         }
         finally
         {
@@ -633,7 +654,7 @@ internal sealed class MainForm : Form
     private void ApplyFilterAndSort()
     {
         var query = _search.Text.Trim();
-        IEnumerable<S3ObjectEntry> items = _loadedItems;
+        IEnumerable<S3ObjectEntry> items = _loadedItems.Items;
         if (!string.IsNullOrEmpty(query))
         {
             items = items.Where(item =>
@@ -670,9 +691,11 @@ internal sealed class MainForm : Form
         }
         finally { _objects.EndUpdate(); }
 
-        _objectStatus.Text = _hasMore
-            ? $"已显示 {_loadedItems.Count:N0} 个对象，还有更多"
-            : $"{_loadedItems.Count:N0} 个对象";
+        _objectStatus.Text = _objectLimitReached
+            ? $"已显示 {_loadedItems.Count:N0} 个对象，已达到内存保护上限"
+            : _hasMore
+                ? $"已显示 {_loadedItems.Count:N0} 个对象，还有更多"
+                : $"{_loadedItems.Count:N0} 个对象";
         UpdateSelectionStatus();
     }
 
@@ -904,25 +927,50 @@ internal sealed class MainForm : Form
             targetRoot = folder.SelectedPath;
         }
 
-        foreach (var entry in selected)
+        var downloads = new List<(S3ObjectEntry Entry, string LocalPath)>();
+        try
         {
-            if (!entry.IsDirectory)
+            foreach (var entry in selected)
             {
-                EnqueueDownload(entry, Path.Combine(targetRoot, entry.Name));
-                continue;
-            }
-            var descendants = await ListAllObjectsAsync(entry.Key);
-            foreach (var child in descendants.Where(item => !item.IsDirectory))
-            {
-                var relative = child.Key[entry.Key.Length..].Replace('/', Path.DirectorySeparatorChar);
-                EnqueueDownload(child, Path.Combine(targetRoot, entry.Name, relative));
+                if (!entry.IsDirectory)
+                {
+                    downloads.Add((entry, LocalObjectPath.MapRelativeKey(targetRoot, entry.Name)));
+                    continue;
+                }
+
+                var descendants = await ListAllObjectsAsync(entry.Key);
+                foreach (var child in descendants.Where(item => !item.IsDirectory))
+                {
+                    if (!child.Key.StartsWith(entry.Key, StringComparison.Ordinal))
+                        throw new InvalidOperationException("对象 Key 不属于所选文件夹。");
+
+                    var relative = child.Key[entry.Key.Length..].TrimStart('/');
+                    downloads.Add((
+                        child,
+                        LocalObjectPath.MapRelativeKey(targetRoot, $"{entry.Name}/{relative}")));
+                }
             }
         }
+        catch (InvalidOperationException exception)
+        {
+            _logger.Error($"Download path validation failed target={targetRoot}", exception);
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "下载路径不安全",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        foreach (var download in downloads)
+            EnqueueDownload(download.Entry, download.LocalPath);
         SetTransferVisibility(true);
     }
 
     private void EnqueueDownload(S3ObjectEntry entry, string localPath)
     {
+        localPath = LocalObjectPath.ToExtendedLengthPath(localPath);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
         _transfers.Enqueue(new TransferItem
@@ -1106,16 +1154,42 @@ internal sealed class MainForm : Form
 
     private async Task<IReadOnlyList<S3ObjectEntry>> ListAllObjectsAsync(string prefix)
     {
-        var result = new List<S3ObjectEntry>();
+        var profile = _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
+        var bucket = _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
+        var cache = new BoundedObjectCache(Math.Clamp(
+            _settings.ObjectCacheLimit,
+            ObjectListingLimits.MinimumCacheLimit,
+            ObjectListingLimits.MaximumCacheLimit));
+        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
         string? token = null;
-        do
+
+        while (true)
         {
-            var page = await _storage.ListObjectsAsync(_currentProfile!, _currentBucket!, prefix, token, 1000, CancellationToken.None);
-            result.AddRange(page.Items);
-            token = page.ContinuationToken;
-            if (!page.HasMore) break;
-        } while (true);
-        return result;
+            var page = await _storage.ListObjectsAsync(
+                profile,
+                bucket,
+                prefix,
+                token,
+                Math.Clamp(
+                    _settings.ObjectPageSize,
+                    ObjectListingLimits.MinimumPageSize,
+                    ObjectListingLimits.MaximumPageSize),
+                CancellationToken.None);
+            var addResult = cache.AddRange(page.Items);
+            if (addResult.Truncated || (cache.LimitReached && page.HasMore))
+            {
+                throw new InvalidOperationException(
+                    $"文件夹对象数量达到内存保护上限 {cache.Limit:N0}，已停止递归下载。");
+            }
+
+            if (!page.HasMore)
+                return cache.Items.ToArray();
+
+            var nextToken = page.ContinuationToken;
+            if (string.IsNullOrEmpty(nextToken) || !seenTokens.Add(nextToken))
+                throw new InvalidOperationException("对象列表分页令牌无效或重复，已停止递归下载。");
+            token = nextToken;
+        }
     }
 
     private async Task ShowSettingsAsync()
@@ -1125,6 +1199,8 @@ internal sealed class MainForm : Form
         _settings = dialog.Settings;
         _transfers.SetConcurrency(_settings.ConcurrentTransfers);
         await SaveSettingsAsync();
+        if (_currentProfile is not null && _currentBucket is not null)
+            await LoadObjectsPageAsync(true);
     }
 
     private void OpenLog()

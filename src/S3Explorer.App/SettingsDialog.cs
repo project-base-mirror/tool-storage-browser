@@ -1,3 +1,5 @@
+using S3Explorer.Core;
+
 namespace S3Explorer.App;
 
 internal sealed class SettingsDialog : Form
@@ -7,6 +9,20 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _overwrite = new() { Text = "覆盖前确认", AutoSize = true };
     private readonly CheckBox _autoConnect = new() { Text = "启动时自动连接最后账户", AutoSize = true };
     private readonly TextBox _download = new();
+    private readonly NumericUpDown _pageSize = new()
+    {
+        Minimum = ObjectListingLimits.MinimumPageSize,
+        Maximum = ObjectListingLimits.MaximumPageSize,
+        Increment = 100,
+        ThousandsSeparator = true
+    };
+    private readonly NumericUpDown _cacheLimit = new()
+    {
+        Minimum = ObjectListingLimits.MinimumCacheLimit,
+        Maximum = ObjectListingLimits.MaximumCacheLimit,
+        Increment = 10_000,
+        ThousandsSeparator = true
+    };
     private readonly NumericUpDown _files = new() { Minimum = 1, Maximum = 32 };
     private readonly NumericUpDown _parts = new() { Minimum = 1, Maximum = 32 };
     private readonly NumericUpDown _threshold = new() { Minimum = 5, Maximum = 10240 };
@@ -27,6 +43,7 @@ internal sealed class SettingsDialog : Form
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneral());
+        tabs.TabPages.Add(BuildListing());
         tabs.TabPages.Add(BuildTransfer());
         tabs.TabPages.Add(BuildSecurity());
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };
@@ -39,6 +56,8 @@ internal sealed class SettingsDialog : Form
             ConfirmOverwrite = _overwrite.Checked,
             AutoConnectLastProfile = _autoConnect.Checked,
             DefaultDownloadDirectory = _download.Text.Trim(),
+            ObjectPageSize = (int)_pageSize.Value,
+            ObjectCacheLimit = (int)_cacheLimit.Value,
             ConcurrentTransfers = (int)_files.Value,
             MultipartConcurrency = (int)_parts.Value,
             MultipartThresholdMb = (int)_threshold.Value,
@@ -57,6 +76,14 @@ internal sealed class SettingsDialog : Form
         _overwrite.Checked = settings.ConfirmOverwrite;
         _autoConnect.Checked = settings.AutoConnectLastProfile;
         _download.Text = settings.DefaultDownloadDirectory;
+        _pageSize.Value = Math.Clamp(
+            settings.ObjectPageSize,
+            ObjectListingLimits.MinimumPageSize,
+            ObjectListingLimits.MaximumPageSize);
+        _cacheLimit.Value = Math.Clamp(
+            settings.ObjectCacheLimit,
+            ObjectListingLimits.MinimumCacheLimit,
+            ObjectListingLimits.MaximumCacheLimit);
         _files.Value = settings.ConcurrentTransfers;
         _parts.Value = settings.MultipartConcurrency;
         _threshold.Value = settings.MultipartThresholdMb;
@@ -83,6 +110,27 @@ internal sealed class SettingsDialog : Form
         downloadPanel.Controls.Add(browse);
         panel.Controls.Add(downloadPanel);
         page.Controls.Add(panel);
+        return page;
+    }
+
+    private TabPage BuildListing()
+    {
+        var page = new TabPage("对象列表");
+        var table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14), ColumnCount = 2 };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+        var row = 0;
+        AddNumber(table, ref row, "每页请求对象数：", _pageSize);
+        AddNumber(table, ref row, "内存缓存对象上限：", _cacheLimit);
+        table.Controls.Add(new Label
+        {
+            Text = "达到缓存上限后停止加载，并在状态栏显示提示。最大可配置为 1,000,000。",
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            Margin = new Padding(3, 14, 3, 3)
+        }, 0, row);
+        table.SetColumnSpan(table.GetControlFromPosition(0, row)!, 2);
+        page.Controls.Add(table);
         return page;
     }
 
