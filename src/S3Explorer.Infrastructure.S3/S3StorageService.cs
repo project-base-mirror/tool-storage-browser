@@ -396,7 +396,7 @@ public sealed class S3StorageService : IS3StorageService
             for (long offset = 0; offset < objectSize; offset += partSize, partNumber++)
             {
                 var lastByte = Math.Min(objectSize - 1, offset + partSize - 1);
-                var response = await client.UploadPartCopyAsync(new UploadPartCopyRequest
+                var response = await client.CopyPartAsync(new CopyPartRequest
                 {
                     SourceBucket = sourceBucket,
                     SourceKey = sourceKey,
