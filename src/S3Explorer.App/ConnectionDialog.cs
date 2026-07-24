@@ -80,7 +80,7 @@ internal sealed class ConnectionDialog : Form
         AddField(table, ref row, "服务类型：", _service);
         AddField(table, ref row, "Endpoint：", _endpoint);
         AddField(table, ref row, "签名 Region（可选）：", _region);
-        AddHint(table, ref row, "Endpoint 决定请求地址；Region 仅用于 AWS 区域与 SigV4 签名。大多数 S3-compatible 服务可留空，由程序选择兼容默认值。");
+        AddHint(table, ref row, "Endpoint 决定请求地址；Region 仅用于 AWS 区域与 SigV4 签名。MinIO 必须填写 S3 API 地址（默认端口 9000），不能使用 Console 地址（默认端口 9001）。");
         AddField(table, ref row, "Access Key：", _accessKey);
 
         var secretPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };

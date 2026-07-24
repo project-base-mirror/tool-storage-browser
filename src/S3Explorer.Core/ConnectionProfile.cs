@@ -77,6 +77,7 @@ public sealed record ConnectionProfile
         var endpoint = EndpointCompatibility.NormalizeEndpoint(Endpoint);
         if (!string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment))
             throw new ArgumentException("Endpoint 不能包含查询参数或片段。", nameof(Endpoint));
+        EndpointCompatibility.ValidateForService(ServiceType, endpoint);
         if (string.IsNullOrWhiteSpace(EffectiveSignatureRegion))
             throw new ArgumentException("签名 Region 不能为空。", nameof(SignatureRegion));
         if (string.IsNullOrWhiteSpace(AccessKey))
@@ -137,6 +138,24 @@ public static class EndpointCompatibility
     {
         var uri = NormalizeEndpoint(endpoint);
         return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+    }
+
+    public static void ValidateForService(S3ServiceType serviceType, Uri endpoint)
+    {
+        if (serviceType != S3ServiceType.MinIO)
+            return;
+
+        var firstSegment = endpoint.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        if (endpoint.Port == 9001 ||
+            string.Equals(firstSegment, "browser", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(firstSegment, "login", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "MinIO Endpoint 必须指向 S3 API 端口（默认 9000），不能使用 Console 端口或 /browser、/login 地址。",
+                nameof(endpoint));
+        }
     }
 
     public static void ValidateHostHeader(string hostHeader)

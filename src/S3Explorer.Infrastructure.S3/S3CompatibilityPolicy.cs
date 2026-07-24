@@ -33,6 +33,12 @@ public static class S3CompatibilityPolicy
         profile.AddressingStyle == AddressingStyle.PathStyle ||
         (profile.ServiceType == S3ServiceType.MinIO && profile.AddressingStyle == AddressingStyle.Auto);
 
+    public static bool IsMinioApiPortError(ConnectionProfile profile, AmazonS3Exception exception) =>
+        profile.ServiceType == S3ServiceType.MinIO &&
+        exception.Message.Contains(
+            "S3 API Requests must be made to API port",
+            StringComparison.OrdinalIgnoreCase);
+
     public static PutBucketRequest CreateBucketRequest(
         ConnectionProfile profile,
         string bucket,

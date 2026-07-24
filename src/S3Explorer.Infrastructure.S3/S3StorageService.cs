@@ -103,7 +103,16 @@ public sealed class S3StorageService : IS3StorageService
         ValidateBucketName(bucket);
         using var client = _factory.Create(profile);
         var request = S3CompatibilityPolicy.CreateBucketRequest(profile, bucket, region);
-        await client.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await client.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (S3CompatibilityPolicy.IsMinioApiPortError(profile, exception))
+        {
+            throw new InvalidOperationException(
+                "MinIO Endpoint 指向了 Console，而不是 S3 API。请使用 S3 API 地址（默认端口 9000；Console 默认端口 9001）。",
+                exception);
+        }
     }
 
     public async Task DeleteEmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken)

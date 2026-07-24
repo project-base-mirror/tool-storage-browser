@@ -64,6 +64,8 @@ internal sealed class ErrorDialog : Form
     private static string Suggest(Exception exception)
     {
         if (exception is OperationCanceledException) return "操作已取消。";
+        if (exception.Message.Contains("MinIO Endpoint", StringComparison.OrdinalIgnoreCase))
+            return "请把 Endpoint 改为 MinIO S3 API 地址。默认 API 端口是 9000，默认 Console 端口是 9001。";
         if (exception is AmazonS3Exception s3)
         {
             return s3.ErrorCode switch

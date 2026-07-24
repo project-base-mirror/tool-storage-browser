@@ -58,6 +58,18 @@ public sealed class S3CompatibilityPolicyTests
     }
 
     [Fact]
+    public void MinioConsoleResponseIsClassifiedAsApiPortError()
+    {
+        var profile = new ConnectionProfile { ServiceType = S3ServiceType.MinIO };
+        var exception = new AmazonS3Exception("S3 API Requests must be made to API port.");
+
+        Assert.True(S3CompatibilityPolicy.IsMinioApiPortError(profile, exception));
+        Assert.False(S3CompatibilityPolicy.IsMinioApiPortError(
+            profile with { ServiceType = S3ServiceType.Custom },
+            exception));
+    }
+
+    [Fact]
     public void MultipartCopyPartSizeStaysWithinS3Limits()
     {
         var sixTibibytes = 6L * 1024 * 1024 * 1024 * 1024;

@@ -68,6 +68,42 @@ public sealed class CoreBehaviorTests
         Assert.Equal("https://storage.example.test:9443/api/s3", endpoint);
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1:9001")]
+    [InlineData("http://127.0.0.1:19000/browser")]
+    [InlineData("http://127.0.0.1:19000/login")]
+    public void MinioConsoleEndpointIsRejected(string endpoint)
+    {
+        var profile = new ConnectionProfile
+        {
+            Name = "MinIO",
+            ServiceType = S3ServiceType.MinIO,
+            Endpoint = endpoint,
+            Region = "us-east-1",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var exception = Assert.Throws<ArgumentException>(() => profile.Validate());
+        Assert.Contains("S3 API", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MinioRemappedApiPortIsAccepted()
+    {
+        var profile = new ConnectionProfile
+        {
+            Name = "MinIO",
+            ServiceType = S3ServiceType.MinIO,
+            Endpoint = "http://127.0.0.1:19000",
+            Region = "us-east-1",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        profile.Validate();
+    }
+
     [Fact]
     public void SignatureRegionUsesExplicitOverrideThenRegionThenProviderDefault()
     {
