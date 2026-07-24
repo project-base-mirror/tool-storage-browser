@@ -10,9 +10,7 @@ internal sealed class S3TransferTaskExecutor(
     public async Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken)
     {
         var task = context.Task;
-        var available = await profiles.LoadAsync(cancellationToken).ConfigureAwait(false);
-        var profile = available.FirstOrDefault(item => item.Id == task.ProfileId)
-            ?? throw new InvalidOperationException($"找不到传输任务引用的连接：{task.ProfileName} ({task.ProfileId})");
+        var profile = await ResolveProfileAsync(task, cancellationToken).ConfigureAwait(false);
         var transfer = runtime.CreateContext(context);
         using var sleepLease = WindowsSleepInhibitor.Acquire();
 
@@ -31,5 +29,30 @@ internal sealed class S3TransferTaskExecutor(
         await storage.DownloadFileAsync(
             profile, task.Bucket, task.ObjectKey, task.LocalPath, transfer, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task AbortMultipartAsync(
+        ITransferTaskExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var task = context.Task;
+        var checkpoint = task.MultipartCheckpoint;
+        if (checkpoint is null) return;
+        var profile = await ResolveProfileAsync(task, cancellationToken).ConfigureAwait(false);
+        await storage.AbortMultipartUploadAsync(
+            profile,
+            string.IsNullOrWhiteSpace(checkpoint.Bucket) ? task.Bucket : checkpoint.Bucket,
+            string.IsNullOrWhiteSpace(checkpoint.ObjectKey) ? task.ObjectKey : checkpoint.ObjectKey,
+            checkpoint.UploadId,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ConnectionProfile> ResolveProfileAsync(
+        TransferTaskRecord task,
+        CancellationToken cancellationToken)
+    {
+        var available = await profiles.LoadAsync(cancellationToken).ConfigureAwait(false);
+        return available.FirstOrDefault(item => item.Id == task.ProfileId)
+            ?? throw new InvalidOperationException($"找不到传输任务引用的连接：{task.ProfileName} ({task.ProfileId})");
     }
 }

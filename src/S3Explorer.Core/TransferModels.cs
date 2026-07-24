@@ -86,14 +86,37 @@ public sealed record MultipartUploadCheckpoint(
     string UploadId,
     long PartSize,
     IReadOnlyList<MultipartPartCheckpoint> CompletedParts,
-    bool CleanupPending = false)
+    bool CleanupPending = false,
+    string Bucket = "",
+    string ObjectKey = "",
+    long SourceLength = 0,
+    DateTimeOffset SourceLastWriteTimeUtc = default,
+    DateTimeOffset InitiatedAt = default)
 {
+    public bool HasSourceIdentity =>
+        !string.IsNullOrWhiteSpace(Bucket) &&
+        !string.IsNullOrWhiteSpace(ObjectKey) &&
+        SourceLength >= 0 &&
+        SourceLastWriteTimeUtc != default;
+
+    public bool Matches(string bucket, string objectKey, long sourceLength, DateTimeOffset sourceLastWriteTimeUtc, long partSize) =>
+        string.Equals(Bucket, bucket, StringComparison.Ordinal) &&
+        string.Equals(ObjectKey, objectKey, StringComparison.Ordinal) &&
+        SourceLength == sourceLength &&
+        SourceLastWriteTimeUtc == sourceLastWriteTimeUtc &&
+        PartSize == partSize &&
+        !CleanupPending;
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(UploadId))
             throw new ArgumentException("UploadId 不能为空。", nameof(UploadId));
         if (PartSize < 5L * 1024 * 1024)
             throw new ArgumentOutOfRangeException(nameof(PartSize), "分片大小不能小于 5 MiB。");
+        if (SourceLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(SourceLength));
+        if (string.IsNullOrWhiteSpace(Bucket) != string.IsNullOrWhiteSpace(ObjectKey))
+            throw new ArgumentException("Bucket 和 ObjectKey 必须同时提供。");
 
         var seen = new HashSet<int>();
         foreach (var part in CompletedParts ?? Array.Empty<MultipartPartCheckpoint>())

@@ -65,6 +65,9 @@ public interface IS3StorageService
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
+    Task<IReadOnlyList<IncompleteMultipartUpload>> ListIncompleteMultipartUploadsAsync(ConnectionProfile profile, string bucket, string? prefix, DateTimeOffset? initiatedBefore, CancellationToken cancellationToken);
+    Task AbortMultipartUploadAsync(ConnectionProfile profile, string bucket, string key, string uploadId, CancellationToken cancellationToken);
+    Task<MultipartCleanupResult> CleanupMultipartUploadsAsync(ConnectionProfile profile, IReadOnlyCollection<IncompleteMultipartUpload> uploads, CancellationToken cancellationToken);
     Task CreateFolderAsync(ConnectionProfile profile, string bucket, string folderKey, CancellationToken cancellationToken);
     Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);

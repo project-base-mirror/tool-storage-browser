@@ -226,40 +226,9 @@ public sealed class S3StorageService : IS3StorageService
                 return;
             }
 
-            var utilityConfig = new TransferUtilityConfig
-            {
-                ConcurrentServiceRequests = transferContext.Options.MultipartConcurrency
-            };
-            using var utility = new TransferUtility(client, utilityConfig);
-            var request = new TransferUtilityUploadRequest
-            {
-                BucketName = bucket,
-                Key = key,
-                FilePath = localPath,
-                StorageClass = S3StorageClass.FindValue(storageClass),
-                PartSize = transferContext.Options.PartSizeBytes
-            };
-            long previous = 0;
-            request.UploadProgressEvent += (_, args) =>
-            {
-                var delta = args.TransferredBytes - Interlocked.Exchange(ref previous, args.TransferredBytes);
-                if (delta > 0)
-                {
-                    var remaining = delta;
-                    while (remaining > 0)
-                    {
-                        var chunk = (int)Math.Min(int.MaxValue, remaining);
-                        transferContext.BandwidthLimiter
-                            .WaitAsync(TransferDirection.Upload, chunk, cancellationToken)
-                            .AsTask()
-                            .GetAwaiter()
-                            .GetResult();
-                        remaining -= chunk;
-                    }
-                }
-                transferContext.ReportProgress(new TransferProgress(args.TransferredBytes, args.TotalBytes));
-            };
-            await utility.UploadAsync(request, cancellationToken).ConfigureAwait(false);
+            await UploadMultipartFileAsync(
+                client, bucket, key, file, storageClass, transferContext, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -394,6 +363,98 @@ public sealed class S3StorageService : IS3StorageService
         {
             throw ToTransferException(exception);
         }
+    }
+
+    public async Task<IReadOnlyList<IncompleteMultipartUpload>> ListIncompleteMultipartUploadsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string? prefix,
+        DateTimeOffset? initiatedBefore,
+        CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        var uploads = new List<IncompleteMultipartUpload>();
+        string? keyMarker = null;
+        string? uploadIdMarker = null;
+        do
+        {
+            var response = await client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+            {
+                BucketName = bucket,
+                Prefix = string.IsNullOrWhiteSpace(prefix) ? null : prefix.Trim(),
+                KeyMarker = keyMarker,
+                UploadIdMarker = uploadIdMarker,
+                MaxUploads = 1000
+            }, cancellationToken).ConfigureAwait(false);
+
+            foreach (var upload in response.MultipartUploads)
+            {
+                var initiated = new DateTimeOffset(upload.Initiated.ToUniversalTime());
+                if (initiatedBefore is not null && initiated > initiatedBefore.Value)
+                    continue;
+                try
+                {
+                    var parts = await ListMultipartPartsAsync(
+                        client, bucket, upload.Key, upload.UploadId, cancellationToken).ConfigureAwait(false);
+                    uploads.Add(new IncompleteMultipartUpload(
+                        bucket,
+                        upload.Key,
+                        upload.UploadId,
+                        initiated,
+                        parts.Sum(part => part.Size),
+                        parts.Count));
+                }
+                catch (AmazonS3Exception exception) when (IsNoSuchUpload(exception))
+                {
+                }
+            }
+
+            keyMarker = response.IsTruncated ? response.NextKeyMarker : null;
+            uploadIdMarker = response.IsTruncated ? response.NextUploadIdMarker : null;
+        } while (keyMarker is not null || uploadIdMarker is not null);
+
+        return MultipartUploadPlanner.Filter(uploads, prefix, initiatedBefore);
+    }
+
+    public async Task AbortMultipartUploadAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        await AbortMultipartInternalAsync(client, bucket, key, uploadId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<MultipartCleanupResult> CleanupMultipartUploadsAsync(
+        ConnectionProfile profile,
+        IReadOnlyCollection<IncompleteMultipartUpload> uploads,
+        CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        var unique = uploads
+            .GroupBy(upload => (upload.Bucket, upload.ObjectKey, upload.UploadId))
+            .Select(group => group.First())
+            .ToArray();
+        var failed = new List<IncompleteMultipartUpload>();
+        var cleaned = 0;
+        foreach (var upload in unique)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await AbortMultipartInternalAsync(
+                    client, upload.Bucket, upload.ObjectKey, upload.UploadId, cancellationToken)
+                    .ConfigureAwait(false);
+                cleaned++;
+            }
+            catch
+            {
+                failed.Add(upload);
+            }
+        }
+        return new MultipartCleanupResult(unique.Length, cleaned, failed);
     }
 
     public async Task CreateFolderAsync(ConnectionProfile profile, string bucket, string folderKey, CancellationToken cancellationToken)
@@ -542,6 +603,217 @@ public sealed class S3StorageService : IS3StorageService
         foreach (var key in keys)
             await client.DeleteObjectAsync(bucket, key, cancellationToken).ConfigureAwait(false);
     }
+
+    private static async Task UploadMultipartFileAsync(
+        IAmazonS3 client,
+        string bucket,
+        string key,
+        FileInfo file,
+        string storageClass,
+        TransferOperationContext transferContext,
+        CancellationToken cancellationToken)
+    {
+        var partSize = transferContext.Options.PartSizeBytes;
+        var modified = new DateTimeOffset(file.LastWriteTimeUtc);
+        var checkpoint = transferContext.MultipartCheckpoint;
+
+        if (checkpoint is not null &&
+            !checkpoint.Matches(bucket, key, file.Length, modified, partSize))
+        {
+            await AbortMultipartInternalAsync(
+                client,
+                string.IsNullOrWhiteSpace(checkpoint.Bucket) ? bucket : checkpoint.Bucket,
+                string.IsNullOrWhiteSpace(checkpoint.ObjectKey) ? key : checkpoint.ObjectKey,
+                checkpoint.UploadId,
+                cancellationToken).ConfigureAwait(false);
+            checkpoint = null;
+        }
+
+        MultipartUploadReconciliation reconciliation;
+        if (checkpoint is not null)
+        {
+            try
+            {
+                var remoteParts = await ListMultipartPartsAsync(
+                    client, bucket, key, checkpoint.UploadId, cancellationToken).ConfigureAwait(false);
+                reconciliation = MultipartUploadPlanner.Reconcile(file.Length, partSize, remoteParts);
+                checkpoint = checkpoint with { CompletedParts = reconciliation.ConfirmedParts };
+            }
+            catch (AmazonS3Exception exception) when (IsNoSuchUpload(exception))
+            {
+                checkpoint = null;
+                reconciliation = null!;
+            }
+        }
+        else
+        {
+            reconciliation = null!;
+        }
+
+        if (checkpoint is null)
+        {
+            var initiated = await client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                StorageClass = S3StorageClass.FindValue(storageClass)
+            }, cancellationToken).ConfigureAwait(false);
+            checkpoint = new MultipartUploadCheckpoint(
+                initiated.UploadId,
+                partSize,
+                [],
+                false,
+                bucket,
+                key,
+                file.Length,
+                modified,
+                DateTimeOffset.UtcNow);
+            reconciliation = MultipartUploadPlanner.Reconcile(file.Length, partSize, []);
+        }
+
+        var uploadId = checkpoint.UploadId;
+        var completedParts = reconciliation.ConfirmedParts
+            .ToDictionary(part => part.PartNumber);
+        long transferredBytes = reconciliation.ConfirmedBytes;
+        await transferContext.UpdateCheckpointAsync(
+            transferredBytes, null, checkpoint, cancellationToken).ConfigureAwait(false);
+        transferContext.ReportProgress(new TransferProgress(transferredBytes, file.Length));
+
+        using var uploadGate = new SemaphoreSlim(
+            transferContext.Options.MultipartConcurrency,
+            transferContext.Options.MultipartConcurrency);
+        using var checkpointGate = new SemaphoreSlim(1, 1);
+        var uploadTasks = reconciliation.MissingParts.Select(async part =>
+        {
+            await uploadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await using var source = new FileStream(
+                    file.FullName,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    128 * 1024,
+                    FileOptions.Asynchronous | FileOptions.RandomAccess);
+                source.Position = part.Offset;
+                await using var bounded = new BoundedReadStream(source, part.Size, leaveOpen: true);
+                await using var throttled = new ThrottledReadStream(
+                    bounded,
+                    transferContext.BandwidthLimiter,
+                    TransferDirection.Upload,
+                    bytes =>
+                    {
+                        var total = Interlocked.Add(ref transferredBytes, bytes);
+                        transferContext.ReportProgress(new TransferProgress(total, file.Length));
+                    },
+                    leaveOpen: true);
+                var response = await client.UploadPartAsync(new UploadPartRequest
+                {
+                    BucketName = bucket,
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = part.PartNumber,
+                    PartSize = part.Size,
+                    InputStream = throttled,
+                    IsLastPart = part.Offset + part.Size == file.Length
+                }, cancellationToken).ConfigureAwait(false);
+
+                await checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    completedParts[part.PartNumber] = new MultipartPartCheckpoint(
+                        part.PartNumber, response.ETag, part.Size);
+                    checkpoint = checkpoint with
+                    {
+                        CompletedParts = completedParts.Values
+                            .OrderBy(item => item.PartNumber)
+                            .ToArray()
+                    };
+                    var confirmedBytes = completedParts.Values.Sum(item => item.Size);
+                    await transferContext.UpdateCheckpointAsync(
+                        confirmedBytes, null, checkpoint, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    checkpointGate.Release();
+                }
+            }
+            finally
+            {
+                uploadGate.Release();
+            }
+        }).ToArray();
+
+        await Task.WhenAll(uploadTasks).ConfigureAwait(false);
+        var complete = new CompleteMultipartUploadRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            UploadId = uploadId
+        };
+        complete.AddPartETags(completedParts.Values
+            .OrderBy(part => part.PartNumber)
+            .Select(part => new PartETag(part.PartNumber, part.ETag)));
+        await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
+        transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
+    }
+
+    private static async Task<IReadOnlyList<MultipartPartCheckpoint>> ListMultipartPartsAsync(
+        IAmazonS3 client,
+        string bucket,
+        string key,
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        var parts = new List<MultipartPartCheckpoint>();
+        string? marker = null;
+        while (true)
+        {
+            var response = await client.ListPartsAsync(new ListPartsRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                UploadId = uploadId,
+                PartNumberMarker = marker,
+                MaxParts = 1000
+            }, cancellationToken).ConfigureAwait(false);
+            parts.AddRange(response.Parts.Select(part =>
+                new MultipartPartCheckpoint(part.PartNumber, part.ETag, part.Size)));
+            if (!response.IsTruncated) break;
+            var nextMarker = response.Parts.Count == 0
+                ? marker
+                : response.Parts[^1].PartNumber.ToString();
+            if (string.IsNullOrWhiteSpace(nextMarker) || string.Equals(nextMarker, marker, StringComparison.Ordinal))
+                throw new InvalidOperationException("ListParts 返回了无效的分页游标。");
+            marker = nextMarker;
+        }
+        return parts;
+    }
+
+    private static async Task AbortMultipartInternalAsync(
+        IAmazonS3 client,
+        string bucket,
+        string key,
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await client.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                UploadId = uploadId
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsNoSuchUpload(exception))
+        {
+        }
+    }
+
+    private static bool IsNoSuchUpload(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchUpload", StringComparison.OrdinalIgnoreCase);
 
     private static Task CopyObjectSimpleAsync(
         IAmazonS3 client,

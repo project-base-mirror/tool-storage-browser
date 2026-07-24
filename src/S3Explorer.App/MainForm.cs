@@ -199,7 +199,7 @@ internal sealed class MainForm : Form
         var tools = new ToolStripMenuItem("工具(&T)");
         tools.DropDownItems.Add(Command("transfer-queue", "传输队列", (_, _) => SetTransferVisibility(true)));
         tools.DropDownItems.Add(Command("failed-transfers", "失败任务", (_, _) => SetTransferVisibility(true)));
-        tools.DropDownItems.Add(Unsupported("未完成的分片上传"));
+        tools.DropDownItems.Add(Command("multipart-uploads", "未完成的分片上传...", (_, _) => ShowIncompleteMultipartUploads()));
         tools.DropDownItems.Add(new ToolStripSeparator());
         tools.DropDownItems.Add(Command("settings", "选项...", async (_, _) => await ShowSettingsAsync()));
         tools.DropDownItems.Add(Command("logs", "查看日志", (_, _) => OpenLog()));
@@ -1377,6 +1377,14 @@ internal sealed class MainForm : Form
             .Select(entry => $"{endpoint}/{Uri.EscapeDataString(_currentBucket)}/{string.Join("/", entry.Key.Split('/').Select(Uri.EscapeDataString))}")
             .ToArray();
         if (values.Length > 0) Clipboard.SetText(string.Join(Environment.NewLine, values));
+    }
+
+    private void ShowIncompleteMultipartUploads()
+    {
+        if (!EnsureLocation()) return;
+        using var dialog = new MultipartUploadManagerDialog(
+            _currentProfile!, _currentBucket!, _storage, _transferQueue, _logger);
+        dialog.ShowDialog(this);
     }
 
     private void SetTransferVisibility(bool visible)

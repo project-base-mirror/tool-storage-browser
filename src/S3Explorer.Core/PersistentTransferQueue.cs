@@ -14,6 +14,9 @@ public interface ITransferTaskExecutionContext
 public interface ITransferTaskExecutor
 {
     Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken);
+
+    Task AbortMultipartAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
 }
 
 public sealed class TransferQueueChangedEventArgs(TransferStoreSnapshot snapshot, Guid? changedTaskId = null) : EventArgs
@@ -261,6 +264,43 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             Tasks = snapshot.Tasks.Where(task => task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled)).ToArray()
         }, null, cancellationToken);
 
+    public Task MarkMultipartCleanedAsync(
+        Guid profileId,
+        string bucket,
+        string objectKey,
+        string uploadId,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(snapshot => snapshot with
+        {
+            Tasks = snapshot.Tasks.Select(task =>
+            {
+                var checkpoint = task.MultipartCheckpoint;
+                if (task.ProfileId != profileId ||
+                    checkpoint is null ||
+                    !string.Equals(checkpoint.UploadId, uploadId, StringComparison.Ordinal) ||
+                    !string.Equals(task.Bucket, bucket, StringComparison.Ordinal) ||
+                    !string.Equals(task.ObjectKey, objectKey, StringComparison.Ordinal))
+                {
+                    return task;
+                }
+
+                if (task.State == TransferTaskState.CleanupPending)
+                {
+                    return TransferTaskStateMachine.Transition(task, TransferTaskState.Cancelled, _clock()) with
+                    {
+                        MultipartCheckpoint = null,
+                        Failure = null
+                    };
+                }
+
+                return task with
+                {
+                    MultipartCheckpoint = null,
+                    UpdatedAt = _clock()
+                };
+            }).ToArray()
+        }, null, cancellationToken);
+
     public async Task WaitForIdleAsync(CancellationToken cancellationToken = default)
     {
         while (ActiveCount > 0)
@@ -344,14 +384,40 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
 
     private async Task ExecuteAsync(TransferTaskRecord task, RuntimeTransfer runtime)
     {
+        var context = new ExecutionContext(this, task.Id);
         try
         {
-            await _executor.ExecuteAsync(new ExecutionContext(this, task.Id), runtime.Cancellation.Token).ConfigureAwait(false);
+            await _executor.ExecuteAsync(context, runtime.Cancellation.Token).ConfigureAwait(false);
             await CompleteRunningAsync(task.Id, TransferTaskState.Completed, null, null).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (runtime.Cancellation.IsCancellationRequested)
         {
-            await CompleteRunningAsync(task.Id, runtime.RequestedStop, null, null).ConfigureAwait(false);
+            var current = FindTask(_snapshot, task.Id);
+            if (runtime.RequestedStop == TransferTaskState.Cancelled && current.MultipartCheckpoint is { } checkpoint)
+            {
+                try
+                {
+                    await _executor.AbortMultipartAsync(context, CancellationToken.None).ConfigureAwait(false);
+                    await CompleteRunningAsync(
+                        task.Id, TransferTaskState.Cancelled, null, null, null, overrideMultipartCheckpoint: true)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception abortException)
+                {
+                    var failure = TransferFailureClassifier.Classify(abortException);
+                    await CompleteRunningAsync(
+                        task.Id,
+                        TransferTaskState.CleanupPending,
+                        failure,
+                        null,
+                        checkpoint with { CleanupPending = true },
+                        overrideMultipartCheckpoint: true).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await CompleteRunningAsync(task.Id, runtime.RequestedStop, null, null).ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -377,7 +443,9 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         Guid taskId,
         TransferTaskState state,
         TransferFailureInfo? failure,
-        DateTimeOffset? nextAttemptAt)
+        DateTimeOffset? nextAttemptAt,
+        MultipartUploadCheckpoint? multipartCheckpoint = null,
+        bool overrideMultipartCheckpoint = false)
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
@@ -386,9 +454,11 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             var next = ReplaceTask(_snapshot, taskId, task =>
             {
                 var transitioned = TransferTaskStateMachine.Transition(task, state, _clock(), failure);
-                return state == TransferTaskState.RetryPending
-                    ? transitioned with { NextAttemptAt = nextAttemptAt }
-                    : transitioned;
+                if (state == TransferTaskState.RetryPending)
+                    transitioned = transitioned with { NextAttemptAt = nextAttemptAt };
+                if (overrideMultipartCheckpoint)
+                    transitioned = transitioned with { MultipartCheckpoint = multipartCheckpoint };
+                return transitioned;
             });
             await CommitLockedAsync(next, CancellationToken.None).ConfigureAwait(false);
         }

@@ -114,6 +114,61 @@ public sealed class PersistentTransferQueueTests
     }
 
     [Fact]
+    public async Task MultipartCancelAbortsAndClearsCheckpoint()
+    {
+        var executor = new MultipartBlockingExecutor();
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+        var task = CreateMultipartTask();
+
+        await queue.EnqueueAsync(task);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queue.CancelAsync(task.Id);
+        await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Cancelled);
+
+        var result = queue.Snapshot.Tasks.Single();
+        Assert.Equal(1, executor.AbortCount);
+        Assert.Null(result.MultipartCheckpoint);
+    }
+
+    [Fact]
+    public async Task MultipartAbortFailureBecomesCleanupPendingAndRetainsUploadId()
+    {
+        var executor = new MultipartBlockingExecutor { FailAbort = true };
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+        var task = CreateMultipartTask();
+
+        await queue.EnqueueAsync(task);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queue.CancelAsync(task.Id);
+        await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.CleanupPending);
+
+        var result = queue.Snapshot.Tasks.Single();
+        Assert.Equal(1, executor.AbortCount);
+        Assert.Equal("upload-id", result.MultipartCheckpoint!.UploadId);
+        Assert.True(result.MultipartCheckpoint.CleanupPending);
+        Assert.NotNull(result.Failure);
+    }
+
+    [Fact]
+    public async Task MultipartPausePreservesCheckpointWithoutAbort()
+    {
+        var executor = new MultipartBlockingExecutor();
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+        var task = CreateMultipartTask();
+
+        await queue.EnqueueAsync(task);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queue.PauseAsync(task.Id);
+        await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Paused);
+
+        Assert.Equal(0, executor.AbortCount);
+        Assert.Equal("upload-id", queue.Snapshot.Tasks.Single().MultipartCheckpoint!.UploadId);
+    }
+
+    [Fact]
     public async Task RetryAllFailedRequeuesEveryFailure()
     {
         var executor = new SequencedExecutor { FailAll = true };
@@ -143,6 +198,26 @@ public sealed class PersistentTransferQueueTests
         TotalBytes = 10,
         MaxAttempts = 3
     };
+
+    private static TransferTaskRecord CreateMultipartTask()
+    {
+        var modified = DateTimeOffset.Parse("2026-07-24T12:00:00Z");
+        return CreateTask() with
+        {
+            TotalBytes = 10L * 1024 * 1024,
+            MultipartCheckpoint = new MultipartUploadCheckpoint(
+                "upload-id",
+                5L * 1024 * 1024,
+                [],
+                false,
+                "bucket",
+                "object.bin",
+                10L * 1024 * 1024,
+                modified,
+                modified),
+            ObjectKey = "object.bin"
+        };
+    }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
@@ -181,6 +256,31 @@ public sealed class PersistentTransferQueueTests
             if (FailAll || task.Id == FailTaskId)
                 throw new IOException("simulated failure");
             context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class MultipartBlockingExecutor : ITransferTaskExecutor
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool FailAbort { get; init; }
+        public int AbortCount { get; private set; }
+
+        public async Task ExecuteAsync(
+            ITransferTaskExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public Task AbortMultipartAsync(
+            ITransferTaskExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            AbortCount++;
+            if (FailAbort)
+                throw new IOException("abort failed");
             return Task.CompletedTask;
         }
     }
