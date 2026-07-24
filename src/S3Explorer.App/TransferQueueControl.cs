@@ -1,237 +1,236 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using S3Explorer.Core;
 
 namespace S3Explorer.App;
 
-internal enum TransferState
+internal sealed class TransferCompletedEventArgs(TransferTaskRecord task) : EventArgs
 {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled
-}
-
-internal sealed class TransferItem
-{
-    public required string Name { get; init; }
-    public required string Direction { get; init; }
-    public required string Source { get; init; }
-    public required string Target { get; init; }
-    public long Size { get; init; }
-    public TransferState State { get; set; } = TransferState.Queued;
-    public long Transferred { get; set; }
-    public double BytesPerSecond { get; set; }
-    public DateTimeOffset StartedAt { get; set; }
-    public string? Error { get; set; }
-    public CancellationTokenSource Cancellation { get; } = new();
-    public Func<CancellationToken, IProgress<TransferProgress>, Task>? Operation { get; init; }
+    public TransferTaskRecord Task { get; } = task;
 }
 
 internal sealed class TransferQueueControl : UserControl
 {
+    private sealed record ProgressSample(long Bytes, long Total, double BytesPerSecond, DateTimeOffset At);
+
+    private readonly PersistentTransferQueue _queue;
     private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
-    private readonly ListView _running = CreateList();
+    private readonly ListView _active = CreateList();
     private readonly ListView _completed = CreateList();
     private readonly ListView _failed = CreateList();
-    private readonly ConcurrentDictionary<TransferItem, ListViewItem> _items = new();
-    private SemaphoreSlim _semaphore = new(4);
-    private int _maxConcurrency = 4;
+    private readonly ConcurrentDictionary<Guid, ProgressSample> _progress = new();
+    private readonly Dictionary<Guid, TransferTaskState> _knownStates = [];
+    private bool _initializing;
 
-    public event EventHandler? TransferCompleted;
-
-    public TransferQueueControl()
+    public TransferQueueControl(PersistentTransferQueue queue)
     {
+        _queue = queue;
         Dock = DockStyle.Fill;
-        var strip = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        var cancelAll = new ToolStripButton("取消全部", UiIcons.Create(UiIconKind.Delete, 16));
-        cancelAll.ToolTipText = "取消所有进行中的任务";
-        cancelAll.Click += (_, _) =>
-        {
-            foreach (var task in _items.Keys.Where(item => item.State is TransferState.Queued or TransferState.Running))
-                task.Cancellation.Cancel();
-        };
-        var clear = new ToolStripButton("清除已完成", UiIcons.Create(UiIconKind.Delete, 16));
-        clear.ToolTipText = "清除已完成和已取消任务";
-        clear.Click += (_, _) =>
-        {
-            foreach (var pair in _items.Where(pair => pair.Key.State is TransferState.Completed or TransferState.Cancelled).ToArray())
-            {
-                pair.Value.Remove();
-                _items.TryRemove(pair.Key, out _);
-            }
-        };
-        strip.Items.AddRange([cancelAll, clear]);
+        BuildUi();
+        _queue.Changed += QueueChanged;
+        _queue.ProgressChanged += QueueProgressChanged;
+    }
 
-        _tabs.TabPages.Add(new TabPage("进行中") { Controls = { _running } });
-        _tabs.TabPages.Add(new TabPage("已完成") { Controls = { _completed } });
-        _tabs.TabPages.Add(new TabPage("失败") { Controls = { _failed } });
+    public event EventHandler<TransferCompletedEventArgs>? TransferCompleted;
+    public TransferStoreSnapshot Snapshot => _queue.Snapshot;
+    public int ActiveCount => _queue.ActiveCount;
+    public double UploadBytesPerSecond => CurrentSpeed(TransferDirection.Upload);
+    public double DownloadBytesPerSecond => CurrentSpeed(TransferDirection.Download);
 
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        _initializing = true;
+        await _queue.InitializeAsync(cancellationToken);
+        foreach (var task in _queue.Snapshot.Tasks) _knownStates[task.Id] = task.State;
+        _initializing = false;
+        RefreshViews(_queue.Snapshot);
+    }
+
+    public Task SetConcurrencyAsync(int value, CancellationToken cancellationToken = default) => _queue.SetConcurrencyAsync(value, cancellationToken);
+    public Task PauseAllAsync(CancellationToken cancellationToken = default) => _queue.PauseAllAsync(cancellationToken);
+    public Task CancelAllAsync(CancellationToken cancellationToken = default) => _queue.CancelAllAsync(cancellationToken);
+    public Task WaitForIdleAsync(CancellationToken cancellationToken = default) => _queue.WaitForIdleAsync(cancellationToken);
+
+    public Task EnqueueUploadAsync(ConnectionProfile profile, string bucket, string key, string localPath, long size, string storageClass, CancellationToken cancellationToken = default) =>
+        _queue.EnqueueAsync(new TransferTaskRecord
+        {
+            ProfileId = profile.Id, ProfileName = profile.Name, Direction = TransferDirection.Upload, Bucket = bucket,
+            ObjectKey = key, LocalPath = localPath, StorageClass = storageClass, TotalBytes = Math.Max(0, size), MaxAttempts = 3
+        }, cancellationToken);
+
+    public Task EnqueueDownloadAsync(ConnectionProfile profile, string bucket, string key, string localPath, long size, CancellationToken cancellationToken = default) =>
+        _queue.EnqueueAsync(new TransferTaskRecord
+        {
+            ProfileId = profile.Id, ProfileName = profile.Name, Direction = TransferDirection.Download, Bucket = bucket,
+            ObjectKey = key, LocalPath = localPath, TotalBytes = Math.Max(0, size), MaxAttempts = 3
+        }, cancellationToken);
+
+    private void BuildUi()
+    {
+        var toolbar = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+        toolbar.Items.Add(ActionButton("暂停", UiIconKind.Transfers, task => _queue.PauseAsync(task.Id)));
+        toolbar.Items.Add(ActionButton("继续", UiIconKind.Upload, task => _queue.ResumeAsync(task.Id)));
+        toolbar.Items.Add(ActionButton("取消", UiIconKind.Delete, task => _queue.CancelAsync(task.Id)));
+        toolbar.Items.Add(new ToolStripSeparator());
+        toolbar.Items.Add(ActionButton("重试", UiIconKind.Refresh, task => _queue.RetryAsync(task.Id)));
+        toolbar.Items.Add(GlobalButton("重试全部失败", UiIconKind.Refresh, () => _queue.RetryAllFailedAsync()));
+        toolbar.Items.Add(GlobalButton("暂停全部", UiIconKind.Transfers, () => _queue.PauseAllAsync()));
+        toolbar.Items.Add(GlobalButton("取消全部", UiIconKind.Delete, () => _queue.CancelAllAsync()));
+        toolbar.Items.Add(GlobalButton("清除已完成", UiIconKind.Delete, () => _queue.RemoveCompletedAsync()));
+        AddTab("进行中", _active);
+        AddTab("已完成", _completed);
+        AddTab("失败", _failed);
         Controls.Add(_tabs);
-        Controls.Add(strip);
-        strip.Dock = DockStyle.Top;
+        Controls.Add(toolbar);
     }
 
-    public int ActiveCount => _items.Keys.Count(item => item.State is TransferState.Queued or TransferState.Running);
-    public double UploadBytesPerSecond => _items.Keys.Where(item => item.Direction == "上传" && item.State == TransferState.Running).Sum(item => item.BytesPerSecond);
-    public double DownloadBytesPerSecond => _items.Keys.Where(item => item.Direction == "下载" && item.State == TransferState.Running).Sum(item => item.BytesPerSecond);
-
-    public void SetConcurrency(int value)
+    private ToolStripButton ActionButton(string text, UiIconKind icon, Func<TransferTaskRecord, Task> action)
     {
-        value = Math.Clamp(value, 1, 32);
-        if (value == _maxConcurrency)
-            return;
-        _maxConcurrency = value;
-        if (ActiveCount == 0)
+        var button = new ToolStripButton(text, UiIcons.Create(icon, 16));
+        button.Click += async (_, _) =>
         {
-            _semaphore.Dispose();
-            _semaphore = new SemaphoreSlim(value);
-        }
+            var task = SelectedTask();
+            if (task is not null) await ExecuteActionAsync(() => action(task));
+        };
+        return button;
     }
 
-    public void Enqueue(TransferItem item)
+    private ToolStripButton GlobalButton(string text, UiIconKind icon, Func<Task> action)
     {
-        var view = CreateViewItem(item);
-        _items[item] = view;
-        _running.Items.Add(view);
-        _ = ExecuteAsync(item, view);
+        var button = new ToolStripButton(text, UiIcons.Create(icon, 16));
+        button.Click += async (_, _) => await ExecuteActionAsync(action);
+        return button;
     }
 
-    private async Task ExecuteAsync(TransferItem item, ListViewItem view)
+    private void AddTab(string text, ListView list)
     {
-        try
-        {
-            await _semaphore.WaitAsync(item.Cancellation.Token);
-            item.State = TransferState.Running;
-            item.StartedAt = DateTimeOffset.Now;
-            UpdateView(item, view, "传输中");
-
-            var stopwatch = Stopwatch.StartNew();
-            long previousBytes = 0;
-            long previousTicks = 0;
-            var progress = new Progress<TransferProgress>(value =>
-            {
-                item.Transferred = value.TransferredBytes;
-                var ticks = stopwatch.ElapsedTicks;
-                var elapsed = (ticks - previousTicks) / (double)Stopwatch.Frequency;
-                if (elapsed >= 0.25)
-                {
-                    item.BytesPerSecond = Math.Max(0, (value.TransferredBytes - previousBytes) / elapsed);
-                    previousBytes = value.TransferredBytes;
-                    previousTicks = ticks;
-                }
-                UpdateView(item, view, "传输中");
-            });
-
-            if (item.Operation is null)
-                throw new InvalidOperationException("传输任务没有执行操作。");
-            await item.Operation(item.Cancellation.Token, progress);
-            item.State = TransferState.Completed;
-            item.Transferred = item.Size > 0 ? item.Size : item.Transferred;
-            UpdateView(item, view, "已完成");
-            MoveView(view, _completed);
-            TransferCompleted?.Invoke(this, EventArgs.Empty);
-        }
-        catch (OperationCanceledException)
-        {
-            item.State = TransferState.Cancelled;
-            UpdateView(item, view, "已取消");
-            MoveView(view, _completed);
-        }
-        catch (Exception exception)
-        {
-            item.State = TransferState.Failed;
-            item.Error = exception.Message;
-            UpdateView(item, view, $"失败：{exception.Message}");
-            MoveView(view, _failed);
-        }
-        finally
-        {
-            if (item.State != TransferState.Queued)
-            {
-                try { _semaphore.Release(); } catch (SemaphoreFullException) { }
-            }
-        }
-    }
-
-    private void UpdateView(TransferItem item, ListViewItem view, string status)
-    {
-        if (InvokeRequired)
-        {
-            BeginInvoke(() => UpdateView(item, view, status));
-            return;
-        }
-        var percent = item.Size > 0 ? item.Transferred * 100d / item.Size : 0;
-        var remaining = item.BytesPerSecond > 0 && item.Size > item.Transferred
-            ? TimeSpan.FromSeconds((item.Size - item.Transferred) / item.BytesPerSecond).ToString(@"hh\:mm\:ss")
-            : "—";
-        view.SubItems[4].Text = FileSizeFormatter.Format(item.Size);
-        view.SubItems[5].Text = $"{Math.Clamp(percent, 0, 100):N0}%";
-        view.SubItems[6].Text = $"{FileSizeFormatter.Format((long)item.BytesPerSecond)}/s";
-        view.SubItems[7].Text = remaining;
-        view.SubItems[8].Text = status;
-        view.SubItems[9].Text = item.StartedAt == default ? "—" : item.StartedAt.LocalDateTime.ToString("G");
-    }
-
-    private static void MoveView(ListViewItem view, ListView target)
-    {
-        var clone = (ListViewItem)view.Clone();
-        view.Remove();
-        target.Items.Add(clone);
-    }
-
-    private static ListViewItem CreateViewItem(TransferItem item)
-    {
-        var view = new ListViewItem(item.Name);
-        view.SubItems.Add(item.Direction);
-        view.SubItems.Add(item.Source);
-        view.SubItems.Add(item.Target);
-        view.SubItems.Add(FileSizeFormatter.Format(item.Size));
-        view.SubItems.Add("0%");
-        view.SubItems.Add("0 B/s");
-        view.SubItems.Add("—");
-        view.SubItems.Add("等待中");
-        view.SubItems.Add("—");
-        view.Tag = item;
-        return view;
+        var page = new TabPage(text);
+        page.Controls.Add(list);
+        _tabs.TabPages.Add(page);
     }
 
     private static ListView CreateList()
     {
-        var list = new ListView
-        {
-            Dock = DockStyle.Fill,
-            View = View.Details,
-            FullRowSelect = true,
-            GridLines = true,
-            HideSelection = false
-        };
-        list.Columns.Add("文件名", 180);
-        list.Columns.Add("方向", 65);
+        var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false, GridLines = true };
+        list.Columns.Add("文件名", 190);
+        list.Columns.Add("方向", 60);
         list.Columns.Add("来源", 240);
         list.Columns.Add("目标", 240);
-        list.Columns.Add("大小", 95);
-        list.Columns.Add("进度", 70);
-        list.Columns.Add("速度", 95);
-        list.Columns.Add("剩余时间", 85);
-        list.Columns.Add("状态", 210);
-        list.Columns.Add("开始时间", 145);
-
-        var menu = new ContextMenuStrip();
-        var cancel = menu.Items.Add("取消");
-        cancel.Click += (_, _) =>
-        {
-            if (list.SelectedItems.Count > 0 && list.SelectedItems[0].Tag is TransferItem item)
-                item.Cancellation.Cancel();
-        };
-        var copy = menu.Items.Add("复制错误");
-        copy.Click += (_, _) =>
-        {
-            if (list.SelectedItems.Count > 0 && list.SelectedItems[0].Tag is TransferItem item && !string.IsNullOrEmpty(item.Error))
-                Clipboard.SetText(item.Error);
-        };
-        list.ContextMenuStrip = menu;
+        list.Columns.Add("大小", 80);
+        list.Columns.Add("进度", 80);
+        list.Columns.Add("速度", 90);
+        list.Columns.Add("剩余时间", 90);
+        list.Columns.Add("状态", 110);
+        list.Columns.Add("错误", 260);
         return list;
+    }
+
+    private void QueueChanged(object? sender, TransferQueueChangedEventArgs args) => InvokeOnUi(() =>
+    {
+        if (!_initializing)
+        {
+            foreach (var task in args.Snapshot.Tasks)
+            {
+                _knownStates.TryGetValue(task.Id, out var previous);
+                if (task.State == TransferTaskState.Completed && previous != TransferTaskState.Completed)
+                    TransferCompleted?.Invoke(this, new TransferCompletedEventArgs(task));
+                _knownStates[task.Id] = task.State;
+            }
+        }
+        RefreshViews(args.Snapshot);
+    });
+
+    private void QueueProgressChanged(object? sender, TransferTaskProgressEventArgs args)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var speed = 0d;
+        if (_progress.TryGetValue(args.TaskId, out var previous))
+        {
+            var seconds = (now - previous.At).TotalSeconds;
+            speed = seconds > 0.05 ? Math.Max(0, (args.Progress.TransferredBytes - previous.Bytes) / seconds) : previous.BytesPerSecond;
+        }
+        _progress[args.TaskId] = new ProgressSample(args.Progress.TransferredBytes, args.Progress.TotalBytes, speed, now);
+        InvokeOnUi(() => RefreshViews(_queue.Snapshot));
+    }
+
+    private void RefreshViews(TransferStoreSnapshot snapshot)
+    {
+        if (IsDisposed) return;
+        Populate(_active, snapshot.Tasks.Where(task => task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled or TransferTaskState.Failed)));
+        Populate(_completed, snapshot.Tasks.Where(task => task.State is TransferTaskState.Completed or TransferTaskState.Cancelled));
+        Populate(_failed, snapshot.Tasks.Where(task => task.State == TransferTaskState.Failed));
+        _tabs.TabPages[0].Text = $"进行中 ({_active.Items.Count})";
+        _tabs.TabPages[1].Text = $"已完成 ({_completed.Items.Count})";
+        _tabs.TabPages[2].Text = $"失败 ({_failed.Items.Count})";
+    }
+
+    private void Populate(ListView list, IEnumerable<TransferTaskRecord> tasks)
+    {
+        var selectedId = list.SelectedItems.Count == 1 && list.SelectedItems[0].Tag is TransferTaskRecord selected ? selected.Id : Guid.Empty;
+        list.BeginUpdate();
+        try
+        {
+            list.Items.Clear();
+            foreach (var task in tasks.OrderByDescending(item => item.UpdatedAt)) list.Items.Add(CreateItem(task));
+            var selectedItem = list.Items.Cast<ListViewItem>().FirstOrDefault(entry => entry.Tag is TransferTaskRecord task && task.Id == selectedId);
+            if (selectedItem is not null) selectedItem.Selected = true;
+        }
+        finally { list.EndUpdate(); }
+    }
+
+    private ListViewItem CreateItem(TransferTaskRecord task)
+    {
+        _progress.TryGetValue(task.Id, out var sample);
+        var transferred = task.State == TransferTaskState.Completed ? task.TotalBytes : sample?.Bytes ?? task.TransferredBytes;
+        var total = sample?.Total > 0 ? sample.Total : task.TotalBytes;
+        var speed = task.State == TransferTaskState.Running ? sample?.BytesPerSecond ?? 0 : 0;
+        var source = task.Direction == TransferDirection.Upload ? task.LocalPath : $"s3://{task.Bucket}/{task.ObjectKey}";
+        var target = task.Direction == TransferDirection.Upload ? $"s3://{task.Bucket}/{task.ObjectKey}" : task.LocalPath;
+        var name = task.Direction == TransferDirection.Upload ? Path.GetFileName(task.LocalPath) : Path.GetFileName(task.ObjectKey);
+        var percentage = total <= 0 ? 0 : Math.Clamp(transferred * 100d / total, 0, 100);
+        var remaining = speed > 0 && total > transferred ? TimeSpan.FromSeconds((total - transferred) / speed).ToString(@"hh\:mm\:ss") : "—";
+        var item = new ListViewItem(name) { Tag = task };
+        item.SubItems.Add(task.Direction == TransferDirection.Upload ? "上传" : "下载");
+        item.SubItems.Add(source); item.SubItems.Add(target); item.SubItems.Add(FormatBytes(total));
+        item.SubItems.Add($"{percentage:N1}%"); item.SubItems.Add(speed > 0 ? $"{FormatBytes((long)speed)}/s" : "—");
+        item.SubItems.Add(remaining); item.SubItems.Add(StateText(task.State)); item.SubItems.Add(task.Failure?.SafeMessage ?? string.Empty);
+        return item;
+    }
+
+    private TransferTaskRecord? SelectedTask()
+    {
+        var list = _tabs.SelectedTab?.Controls.OfType<ListView>().FirstOrDefault();
+        return list?.SelectedItems.Count == 1 ? list.SelectedItems[0].Tag as TransferTaskRecord : null;
+    }
+
+    private async Task ExecuteActionAsync(Func<Task> action)
+    {
+        try { await action(); }
+        catch (Exception exception) { MessageBox.Show(this, exception.Message, "传输队列操作失败", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+    }
+
+    private double CurrentSpeed(TransferDirection direction) => _queue.Snapshot.Tasks
+        .Where(task => task.Direction == direction && task.State == TransferTaskState.Running)
+        .Sum(task => _progress.TryGetValue(task.Id, out var sample) ? sample.BytesPerSecond : 0);
+
+    private void InvokeOnUi(Action action)
+    {
+        if (IsDisposed || Disposing) return;
+        if (InvokeRequired) { if (IsHandleCreated) BeginInvoke(action); return; }
+        action();
+    }
+
+    private static string StateText(TransferTaskState state) => state switch
+    {
+        TransferTaskState.Queued => "排队中", TransferTaskState.Running => "进行中", TransferTaskState.Paused => "已暂停",
+        TransferTaskState.RetryPending => "等待重试", TransferTaskState.Interrupted => "已中断，可继续", TransferTaskState.Completed => "已完成",
+        TransferTaskState.Failed => "失败", TransferTaskState.Cancelled => "已取消", TransferTaskState.CleanupPending => "等待清理", _ => state.ToString()
+    };
+
+    private static string FormatBytes(long value)
+    {
+        string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        var size = Math.Max(0, (double)value); var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1) { size /= 1024; unit++; }
+        return $"{size:N1} {units[unit]}";
     }
 }

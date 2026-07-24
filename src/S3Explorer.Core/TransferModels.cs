@@ -200,7 +200,7 @@ public static class TransferTaskStateMachine
             [TransferTaskState.Queued] = [TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
             [TransferTaskState.Running] = [TransferTaskState.Paused, TransferTaskState.Completed, TransferTaskState.Failed, TransferTaskState.Cancelled, TransferTaskState.Interrupted, TransferTaskState.CleanupPending],
             [TransferTaskState.Paused] = [TransferTaskState.Queued, TransferTaskState.Cancelled],
-            [TransferTaskState.RetryPending] = [TransferTaskState.Queued, TransferTaskState.Running, TransferTaskState.Cancelled],
+            [TransferTaskState.RetryPending] = [TransferTaskState.Queued, TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
             [TransferTaskState.Interrupted] = [TransferTaskState.Queued, TransferTaskState.Paused, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.Failed] = [TransferTaskState.RetryPending, TransferTaskState.Queued, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.CleanupPending] = [TransferTaskState.Queued, TransferTaskState.Failed, TransferTaskState.Cancelled],

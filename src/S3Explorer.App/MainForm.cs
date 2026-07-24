@@ -50,7 +50,8 @@ internal sealed class MainForm : Form
     };
     private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
     private readonly ContextMenuStrip _accountMenu = new();
-    private readonly TransferQueueControl _transfers = new();
+    private readonly PersistentTransferQueue _transferQueue;
+    private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new();
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
     private readonly ToolStripStatusLabel _pathStatus = new("s3://");
@@ -81,12 +82,19 @@ internal sealed class MainForm : Form
     private bool _closing;
     private bool _suppressTreeSelection;
 
-    public MainForm(IProfileStore profileStore, IS3StorageService storage, AppSettingsStore settingsStore, SimpleFileLogger logger)
+    public MainForm(
+        IProfileStore profileStore,
+        IS3StorageService storage,
+        AppSettingsStore settingsStore,
+        SimpleFileLogger logger,
+        PersistentTransferQueue transferQueue)
     {
         _profileStore = profileStore;
         _storage = storage;
         _settingsStore = settingsStore;
         _logger = logger;
+        _transferQueue = transferQueue;
+        _transfers = new TransferQueueControl(transferQueue);
 
         Text = WindowTitle();
         Icon = UiIcons.CreateApplicationIcon();
@@ -418,10 +426,14 @@ internal sealed class MainForm : Form
             _uploadSpeed.Text = $"↑ {FileSizeFormatter.Format((long)_transfers.UploadBytesPerSecond)}/s";
             _downloadSpeed.Text = $"↓ {FileSizeFormatter.Format((long)_transfers.DownloadBytesPerSecond)}/s";
         };
-        _transfers.TransferCompleted += async (_, _) =>
+        _transfers.TransferCompleted += async (_, args) =>
         {
-            if (!_closing && _currentProfile is not null && _currentBucket is not null)
+            if (!_closing &&
+                _currentProfile?.Id == args.Task.ProfileId &&
+                string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal))
+            {
                 await RefreshAsync();
+            }
         };
 
         KeyDown += async (_, args) =>
@@ -439,6 +451,8 @@ internal sealed class MainForm : Form
         ApplySettings();
         _profiles = await _profileStore.LoadAsync();
         PopulateProfiles();
+        await _transfers.InitializeAsync();
+        await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         _speedTimer.Start();
         UpdateCommandStates();
     }
@@ -460,7 +474,6 @@ internal sealed class MainForm : Form
             _sortAscending = _settings.SortAscending;
         }
         SetTransferVisibility(_settings.ShowTransfers);
-        _transfers.SetConcurrency(_settings.ConcurrentTransfers);
     }
 
     private void PopulateProfiles()
@@ -964,42 +977,35 @@ internal sealed class MainForm : Form
             await UploadPathsAsync([dialog.SelectedPath]);
     }
 
-    private Task UploadPathsAsync(IEnumerable<string> paths)
+    private async Task UploadPathsAsync(IEnumerable<string> paths)
     {
-        if (!EnsureLocation()) return Task.CompletedTask;
+        if (!EnsureLocation()) return;
         foreach (var path in paths)
         {
             if (File.Exists(path))
-                EnqueueUpload(path, _currentPrefix + Path.GetFileName(path));
+            {
+                await EnqueueUploadAsync(path, _currentPrefix + Path.GetFileName(path));
+            }
             else if (Directory.Exists(path))
             {
                 var rootName = new DirectoryInfo(path).Name;
                 foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
                 {
                     var relative = Path.GetRelativePath(path, file).Replace('\\', '/');
-                    EnqueueUpload(file, S3Path.Combine(_currentPrefix, $"{rootName}/{relative}"));
+                    await EnqueueUploadAsync(file, S3Path.Combine(_currentPrefix, $"{rootName}/{relative}"));
                 }
             }
         }
         SetTransferVisibility(true);
-        return Task.CompletedTask;
     }
 
-    private void EnqueueUpload(string localPath, string key)
+    private async Task EnqueueUploadAsync(string localPath, string key)
     {
         var file = new FileInfo(localPath);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
-        var storageClass = profile.DefaultStorageClass;
-        _transfers.Enqueue(new TransferItem
-        {
-            Name = file.Name,
-            Direction = "上传",
-            Source = localPath,
-            Target = $"s3://{profile.Name}/{bucket}/{key}",
-            Size = file.Length,
-            Operation = (cancellation, progress) => _storage.UploadFileAsync(profile, bucket, key, localPath, storageClass, progress, cancellation)
-        });
+        await _transfers.EnqueueUploadAsync(
+            profile, bucket, key, localPath, file.Length, profile.DefaultStorageClass);
         _logger.Info($"Upload queued profile={profile.Name} bucket={bucket} key={key} bytes={file.Length}");
     }
 
@@ -1019,7 +1025,7 @@ internal sealed class MainForm : Form
                 OverwritePrompt = _settings.ConfirmOverwrite
             };
             if (save.ShowDialog(this) != DialogResult.OK) return;
-            EnqueueDownload(selected[0], save.FileName);
+            await EnqueueDownloadAsync(selected[0], save.FileName);
             SetTransferVisibility(true);
             return;
         }
@@ -1070,24 +1076,16 @@ internal sealed class MainForm : Form
         }
 
         foreach (var download in downloads)
-            EnqueueDownload(download.Entry, download.LocalPath);
+            await EnqueueDownloadAsync(download.Entry, download.LocalPath);
         SetTransferVisibility(true);
     }
 
-    private void EnqueueDownload(S3ObjectEntry entry, string localPath)
+    private async Task EnqueueDownloadAsync(S3ObjectEntry entry, string localPath)
     {
         localPath = LocalObjectPath.ToExtendedLengthPath(localPath);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
-        _transfers.Enqueue(new TransferItem
-        {
-            Name = entry.Name,
-            Direction = "下载",
-            Source = $"s3://{profile.Name}/{bucket}/{entry.Key}",
-            Target = localPath,
-            Size = entry.Size,
-            Operation = (cancellation, progress) => _storage.DownloadFileAsync(profile, bucket, entry.Key, localPath, progress, cancellation)
-        });
+        await _transfers.EnqueueDownloadAsync(profile, bucket, entry.Key, localPath, entry.Size);
         _logger.Info($"Download queued profile={profile.Name} bucket={bucket} key={entry.Key} bytes={entry.Size}");
     }
 
@@ -1303,7 +1301,7 @@ internal sealed class MainForm : Form
         using var dialog = new SettingsDialog(_settings);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _settings = dialog.Settings;
-        _transfers.SetConcurrency(_settings.ConcurrentTransfers);
+        await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         await SaveSettingsAsync();
         if (_currentProfile is not null && _currentBucket is not null)
             await LoadObjectsPageAsync(true);
@@ -1507,21 +1505,55 @@ internal sealed class MainForm : Form
     private async void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
         if (_closing) return;
+        e.Cancel = true;
+
+        var closeAction = TransferCloseAction.Pause;
         if (_transfers.ActiveCount > 0)
         {
-            var answer = MessageBox.Show(this,
-                $"仍有 {_transfers.ActiveCount} 个传输任务正在运行。\n\n选择“是”将取消任务并退出；选择“否”返回程序。",
-                "传输任务仍在运行", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (answer != DialogResult.Yes)
-            {
-                e.Cancel = true;
+            using var dialog = new TransferCloseDialog(_transfers.ActiveCount);
+            dialog.ShowDialog(this);
+            closeAction = dialog.SelectedAction;
+            if (closeAction == TransferCloseAction.Return)
                 return;
-            }
         }
-        _closing = true;
-        CancelNavigation();
-        _speedTimer.Stop();
-        await SaveSettingsAsync();
+
+        try
+        {
+            CancelNavigation();
+            _speedTimer.Stop();
+            _requestStatus.Text = closeAction switch
+            {
+                TransferCloseAction.Wait => "等待传输完成...",
+                TransferCloseAction.Cancel => "正在取消传输...",
+                _ => "正在暂停传输..."
+            };
+
+            switch (closeAction)
+            {
+                case TransferCloseAction.Wait:
+                    await _transfers.WaitForIdleAsync();
+                    break;
+                case TransferCloseAction.Cancel:
+                    await _transfers.CancelAllAsync();
+                    await _transfers.WaitForIdleAsync();
+                    break;
+                case TransferCloseAction.Pause:
+                    await _transfers.PauseAllAsync();
+                    await _transfers.WaitForIdleAsync();
+                    break;
+            }
+
+            await SaveSettingsAsync();
+            await _transferQueue.DisposeAsync();
+            _closing = true;
+            BeginInvoke(Close);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to close transfer queue safely", exception);
+            _speedTimer.Start();
+            ErrorDialog.ShowException(this, "无法安全退出", "保存传输队列", exception);
+        }
     }
 
     private async Task SaveSettingsAsync()
