@@ -29,6 +29,7 @@ $publishSource = Get-Content -LiteralPath $publishScript -Raw
 Assert-True -Condition ($publishSource -cnotmatch '\$OutputRoot\b') -Message "Publish.ps1 must not accept or use a movable OutputRoot."
 Assert-True -Condition ($publishSource -match 'Join-Path \$repositoryRoot "artifacts"') -Message "Publish.ps1 must anchor output to the repository artifacts directory."
 Assert-True -Condition ($publishSource -match 'Start-Process -FilePath "explorer.exe"') -Message "Publish.ps1 must open the actual output directory after success."
+Assert-True -Condition ($publishSource -match 'Remove-Item -LiteralPath \$outputRoot -Recurse -Force') -Message "Publish.ps1 must rebuild the release directory from a clean state."
 
 foreach ($batchName in @("build.bat", "publish.bat")) {
     $batchSource = Get-Content -LiteralPath (Join-Path $repositoryRoot $batchName) -Raw
@@ -38,10 +39,16 @@ foreach ($batchName in @("build.bat", "publish.bat")) {
 }
 
 if (-not $SkipPackageBuild) {
+    New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
+    $staleArtifact = Join-Path $releaseRoot "stale-artifact.txt"
+    Set-Content -LiteralPath $staleArtifact -Value "must be removed" -Encoding utf8
+
     & $publishScript -SkipValidation -NoOpen
     if (-not $?) {
         throw "Publish.ps1 failed."
     }
+
+    Assert-True -Condition (-not (Test-Path -LiteralPath $staleArtifact)) -Message "Publish.ps1 left a stale file in artifacts\release."
 }
 
 $expectedPaths = @(
@@ -54,6 +61,25 @@ $expectedPaths = @(
 
 foreach ($relativePath in $expectedPaths) {
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $releaseRoot $relativePath)) -Message "Missing release artifact: $relativePath"
+}
+
+if (-not $SkipPackageBuild) {
+    $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)
+    $expectedNames = @($expectedPaths | Sort-Object)
+    Assert-True -Condition (($actualNames -join '|') -ceq ($expectedNames -join '|')) -Message "artifacts\release contains stale or unexpected top-level entries."
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    foreach ($zipName in @("S3Explorer-win-x64.zip", "S3Explorer-win-x64-self-contained.zip")) {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $releaseRoot $zipName))
+        try {
+            $entryNames = @($archive.Entries | Select-Object -ExpandProperty FullName)
+            Assert-True -Condition ($entryNames -contains "S3Explorer.exe") -Message "$zipName does not contain S3Explorer.exe."
+            Assert-True -Condition ($entryNames -contains "S3Explorer.dll") -Message "$zipName does not contain S3Explorer.dll."
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
 }
 
 $metrics = Get-Content -LiteralPath (Join-Path $releaseRoot "release-metrics.json") -Raw | ConvertFrom-Json

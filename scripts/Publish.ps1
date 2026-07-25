@@ -159,6 +159,10 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw ".NET SDK was not found on PATH. Install the .NET 10 SDK first."
 }
 
+if (Test-Path -LiteralPath $outputRoot) {
+    Remove-Item -LiteralPath $outputRoot -Recurse -Force
+}
+
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 
 if (-not $SkipValidation) {
