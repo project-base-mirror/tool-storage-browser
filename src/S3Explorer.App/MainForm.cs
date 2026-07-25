@@ -6,6 +6,10 @@ namespace S3Explorer.App;
 
 internal sealed record BucketNodeTag(ConnectionProfile Profile, string Bucket);
 internal sealed record LoadMoreTag;
+internal sealed record ObjectClipboardEntry(string Key, string Name, bool IsDirectory, long Size);
+internal sealed record ObjectClipboardPayload(
+    Guid ProfileId, string ProfileName, string SourceBucket,
+    IReadOnlyList<ObjectClipboardEntry> Entries, bool Move);
 
 internal sealed class MainForm : Form
 {
@@ -50,6 +54,7 @@ internal sealed class MainForm : Form
     };
     private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
     private readonly ContextMenuStrip _accountMenu = new();
+    private readonly ContextMenuStrip _objectMenu = new();
     private readonly PersistentTransferQueue _transferQueue;
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly TransferQueueControl _transfers;
@@ -82,6 +87,7 @@ internal sealed class MainForm : Form
     private long _navigationRevision;
     private bool _closing;
     private bool _suppressTreeSelection;
+    private ObjectClipboardPayload? _objectClipboard;
 
     public MainForm(
         IProfileStore profileStore,
@@ -111,6 +117,7 @@ internal sealed class MainForm : Form
         BuildAddressBar();
         BuildBody();
         BuildAccountContextMenu();
+        BuildObjectContextMenu();
         BuildStatus();
         WireEvents();
 
@@ -141,6 +148,10 @@ internal sealed class MainForm : Form
 
         var edit = new ToolStripMenuItem("编辑(&E)");
         edit.DropDownItems.Add(new ToolStripMenuItem("全选", null, (_, _) => SelectAllObjects(), Keys.Control | Keys.A));
+        edit.DropDownItems.Add(Command("clipboard-copy", "复制", (_, _) => CopySelectionToObjectClipboard(false), Keys.Control | Keys.C));
+        edit.DropDownItems.Add(Command("clipboard-cut", "剪切", (_, _) => CopySelectionToObjectClipboard(true), Keys.Control | Keys.X));
+        edit.DropDownItems.Add(Command("clipboard-paste", "粘贴", async (_, _) => await PasteObjectClipboardAsync(), Keys.Control | Keys.V));
+        edit.DropDownItems.Add(new ToolStripSeparator());
         edit.DropDownItems.Add(Command("copy-path", "复制对象路径", (_, _) => CopySelectedPaths()));
         edit.DropDownItems.Add(Command("copy-url", "复制对象 URL", (_, _) => CopySelectedUrls()));
         edit.DropDownItems.Add(Command("copy-key", "复制对象 Key", (_, _) => CopySelectedKeys()));
@@ -186,8 +197,8 @@ internal sealed class MainForm : Form
         objects.DropDownItems.Add(Command("download", "下载...", async (_, _) => await DownloadSelectedAsync(), Keys.Control | Keys.D));
         objects.DropDownItems.Add(Command("create-folder", "新建文件夹...", async (_, _) => await CreateFolderAsync()));
         objects.DropDownItems.Add(new ToolStripSeparator());
-        objects.DropDownItems.Add(Command("copy-object", "复制...", async (_, _) => await CopyOrMoveSelectedAsync(false)));
-        objects.DropDownItems.Add(Command("move-object", "移动...", async (_, _) => await CopyOrMoveSelectedAsync(true)));
+        objects.DropDownItems.Add(Command("copy-object", "复制到...", async (_, _) => await CopyOrMoveSelectedAsync(false), Keys.Control | Keys.Shift | Keys.C));
+        objects.DropDownItems.Add(Command("move-object", "移动到...", async (_, _) => await CopyOrMoveSelectedAsync(true), Keys.Control | Keys.Shift | Keys.X));
         objects.DropDownItems.Add(Command("rename-object", "重命名...", async (_, _) => await RenameSelectedAsync()));
         objects.DropDownItems.Add(Command("delete-object-menu", "删除", async (_, _) => await DeleteSelectedAsync()));
         objects.DropDownItems.Add(Command("properties-menu", "属性...", async (_, _) => await ShowPropertiesAsync()));
@@ -319,6 +330,29 @@ internal sealed class MainForm : Form
         };
     }
 
+    private void BuildObjectContextMenu()
+    {
+        _objectMenu.Items.Add("复制", UiIcons.Create(UiIconKind.Copy, 16), (_, _) => CopySelectionToObjectClipboard(false));
+        _objectMenu.Items.Add("剪切", UiIcons.Create(UiIconKind.Move, 16), (_, _) => CopySelectionToObjectClipboard(true));
+        _objectMenu.Items.Add("粘贴", UiIcons.Create(UiIconKind.Copy, 16), async (_, _) => await PasteObjectClipboardAsync());
+        _objectMenu.Items.Add(new ToolStripSeparator());
+        _objectMenu.Items.Add("复制到...", UiIcons.Create(UiIconKind.Copy, 16), async (_, _) => await CopyOrMoveSelectedAsync(false));
+        _objectMenu.Items.Add("移动到...", UiIcons.Create(UiIconKind.Move, 16), async (_, _) => await CopyOrMoveSelectedAsync(true));
+        _objectMenu.Items.Add("重命名...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await RenameSelectedAsync());
+        _objectMenu.Items.Add("删除", UiIcons.Create(UiIconKind.Delete, 16), async (_, _) => await DeleteSelectedAsync());
+        _objectMenu.Items.Add(new ToolStripSeparator());
+        _objectMenu.Items.Add("属性...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowPropertiesAsync());
+        _objectMenu.Opening += (_, _) =>
+        {
+            var any = SelectedEntries().Count > 0;
+            _objectMenu.Items[0].Enabled = any;
+            _objectMenu.Items[1].Enabled = any;
+            _objectMenu.Items[2].Enabled = _objectClipboard is not null && EnsureClipboardProfile(false);
+            _objectMenu.Items[4].Enabled = any;
+            _objectMenu.Items[5].Enabled = any;
+        };
+    }
+
     private void BuildStatus()
     {
         _status.Items.AddRange([
@@ -367,6 +401,17 @@ internal sealed class MainForm : Form
                 await NavigateAsync(bucket.Profile, bucket.Bucket, string.Empty, true);
         };
 
+        _objects.MouseDown += (_, args) =>
+        {
+            if (args.Button != MouseButtons.Right) return;
+            var hit = _objects.HitTest(args.Location).Item;
+            if (hit is not null && !hit.Selected)
+            {
+                _objects.SelectedItems.Cast<ListViewItem>().ToList().ForEach(item => item.Selected = false);
+                hit.Selected = true;
+            }
+            _objectMenu.Show(_objects, args.Location);
+        };
         _objects.ItemActivate += async (_, _) =>
         {
             if (_objects.SelectedItems.Count == 0) return;
@@ -403,7 +448,12 @@ internal sealed class MainForm : Form
         };
         _objects.KeyDown += async (_, args) =>
         {
-            if (args.KeyCode == Keys.Delete) { args.Handled = true; await DeleteSelectedAsync(); }
+            if (args.Control && args.Shift && args.KeyCode == Keys.C) { args.Handled = true; await CopyOrMoveSelectedAsync(false); }
+            else if (args.Control && args.Shift && args.KeyCode == Keys.X) { args.Handled = true; await CopyOrMoveSelectedAsync(true); }
+            else if (args.Control && args.KeyCode == Keys.C) { args.Handled = true; CopySelectionToObjectClipboard(false); }
+            else if (args.Control && args.KeyCode == Keys.X) { args.Handled = true; CopySelectionToObjectClipboard(true); }
+            else if (args.Control && args.KeyCode == Keys.V) { args.Handled = true; await PasteObjectClipboardAsync(); }
+            else if (args.KeyCode == Keys.Delete) { args.Handled = true; await DeleteSelectedAsync(); }
             else if (args.KeyCode == Keys.F2) { args.Handled = true; await RenameSelectedAsync(); }
             else if (args.KeyCode == Keys.Enter && args.Alt) { args.Handled = true; await ShowPropertiesAsync(); }
         };
@@ -433,7 +483,8 @@ internal sealed class MainForm : Form
         {
             if (!_closing &&
                 _currentProfile?.Id == args.Task.ProfileId &&
-                string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal))
+                (string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal) ||
+                 string.Equals(_currentBucket, args.Task.DestinationBucket, StringComparison.Ordinal)))
             {
                 await RefreshAsync();
             }
@@ -1238,41 +1289,170 @@ internal sealed class MainForm : Form
         finally { SetIdle(); }
     }
 
+    private void CopySelectionToObjectClipboard(bool move)
+    {
+        if (!EnsureLocation()) return;
+        var selected = SelectedEntries();
+        if (selected.Count == 0) return;
+        _objectClipboard = new ObjectClipboardPayload(
+            _currentProfile!.Id, _currentProfile.Name, _currentBucket!,
+            selected.Select(entry => new ObjectClipboardEntry(
+                entry.Key, entry.Name, entry.IsDirectory, entry.Size)).ToArray(), move);
+        _requestStatus.Text = $"已{(move ? "剪切" : "复制")} {selected.Count:N0} 个对象";
+        UpdateCommandStates();
+    }
+
+    private async Task PasteObjectClipboardAsync()
+    {
+        if (!EnsureLocation() || _objectClipboard is null || !EnsureClipboardProfile()) return;
+        await QueueObjectTransferAsync(
+            _objectClipboard, _currentBucket!, _currentPrefix, ObjectConflictPolicy.Ask);
+    }
+
     private async Task CopyOrMoveSelectedAsync(bool move)
     {
         if (!EnsureLocation()) return;
         var selected = SelectedEntries();
-        if (selected.Count != 1 || selected[0].IsDirectory)
+        if (selected.Count == 0) return;
+        var payload = new ObjectClipboardPayload(
+            _currentProfile!.Id, _currentProfile.Name, _currentBucket!,
+            selected.Select(entry => new ObjectClipboardEntry(
+                entry.Key, entry.Name, entry.IsDirectory, entry.Size)).ToArray(), move);
+        using var dialog = new ObjectTransferDialog(
+            move, _currentBucket!, _currentPrefix, selected.Count);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Options is null) return;
+        await QueueObjectTransferAsync(
+            payload, dialog.Options.DestinationBucket,
+            dialog.Options.DestinationPrefix, dialog.Options.ConflictPolicy);
+    }
+
+    private async Task QueueObjectTransferAsync(
+        ObjectClipboardPayload payload,
+        string destinationBucket,
+        string destinationPrefix,
+        ObjectConflictPolicy conflictPolicy)
+    {
+        if (_currentProfile is null || payload.ProfileId != _currentProfile.Id)
         {
-            MessageBox.Show(this, "当前版本的复制/移动一次支持一个文件对象；目录递归复制将在后续版本提供。", move ? "移动" : "复制");
+            MessageBox.Show(this, "对象剪贴板属于另一个连接。请在源连接中重新复制或剪切。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        var source = selected[0];
-        var target = PromptDialog.Show(this, move ? "移动对象" : "复制对象",
-            "目标（格式：bucket/key）：", $"{_currentBucket}/{source.Key}");
-        if (string.IsNullOrWhiteSpace(target)) return;
-        var slash = target.IndexOf('/');
-        if (slash <= 0 || slash == target.Length - 1)
-        {
-            MessageBox.Show(this, "目标必须使用 bucket/key 格式。", move ? "移动" : "复制", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        var targetBucket = target[..slash];
-        var targetKey = target[(slash + 1)..];
+
+        var direction = payload.Move ? TransferDirection.Move : TransferDirection.Copy;
+        var batch = await _transfers.CreateBatchAsync(
+            _currentProfile, payload.SourceBucket,
+            $"{(payload.Move ? "移动" : "复制")} {payload.Entries.Count:N0} 项",
+            $"s3://{payload.SourceBucket}", direction);
+        var chunk = new List<ObjectTransferBatchItem>(256);
+        var skipped = 0;
+        var cancelled = false;
         try
         {
-            SetBusy(move ? "正在移动对象..." : "正在复制对象...");
-            if (move)
-                await _storage.MoveObjectAsync(_currentProfile!, _currentBucket!, source.Key, targetBucket, targetKey, CancellationToken.None);
-            else
-                await _storage.CopyObjectAsync(_currentProfile!, _currentBucket!, source.Key, targetBucket, targetKey, CancellationToken.None);
-            await RefreshAsync();
+            foreach (var entry in payload.Entries)
+            {
+                var topName = entry.Name.Trim('/');
+                if (entry.IsDirectory)
+                {
+                    var destinationRoot = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName) + "/";
+                    ObjectTransferPlanner.ValidateDestination(
+                        payload.SourceBucket, entry.Key, true, destinationBucket, destinationRoot);
+                    await foreach (var child in EnumerateAllObjectsAsync(entry.Key))
+                    {
+                        if (child.IsDirectory) continue;
+                        var relative = ObjectTransferPlanner.GetRelativePath(entry.Key, child.Key);
+                        var target = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName, relative);
+                        var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
+                        if (resolved is null) { skipped++; continue; }
+                        chunk.Add(new ObjectTransferBatchItem(
+                            child.Key, destinationBucket, resolved, $"{topName}/{relative}", child.Size, conflictPolicy));
+                        if (chunk.Count >= 256)
+                        {
+                            await _transfers.AddObjectTransferBatchItemsAsync(batch, chunk);
+                            chunk.Clear();
+                        }
+                    }
+                }
+                else
+                {
+                    var target = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName);
+                    ObjectTransferPlanner.ValidateDestination(
+                        payload.SourceBucket, entry.Key, false, destinationBucket, target);
+                    var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
+                    if (resolved is null) { skipped++; continue; }
+                    chunk.Add(new ObjectTransferBatchItem(
+                        entry.Key, destinationBucket, resolved, topName, entry.Size, conflictPolicy));
+                }
+
+                if (chunk.Count >= 256)
+                {
+                    await _transfers.AddObjectTransferBatchItemsAsync(batch, chunk);
+                    chunk.Clear();
+                }
+            }
+            if (chunk.Count > 0)
+                await _transfers.AddObjectTransferBatchItemsAsync(batch, chunk);
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true;
+            await _transferQueue.CancelBatchAsync(batch.Id);
         }
         catch (Exception exception)
         {
-            ErrorDialog.ShowException(this, move ? "移动失败" : "复制失败", move ? "Copy + Delete" : "CopyObject", exception, CurrentLocationText());
+            skipped++;
+            _logger.Error($"Object transfer discovery failed batch={batch.Id}", exception);
+            ErrorDialog.ShowException(this, "无法建立对象传输批次", payload.Move ? "移动对象" : "复制对象", exception, CurrentLocationText());
         }
-        finally { SetIdle(); }
+        finally
+        {
+            if (!cancelled)
+                await _transfers.CompleteBatchDiscoveryAsync(batch.Id, skipped);
+        }
+
+        if (cancelled) return;
+        if (payload.Move && ReferenceEquals(payload, _objectClipboard))
+            _objectClipboard = null;
+        SetTransferVisibility(true);
+        _requestStatus.Text = $"已建立{(payload.Move ? "移动" : "复制")}批次，跳过 {skipped:N0} 项";
+        UpdateCommandStates();
+    }
+
+    private async Task<string?> ResolveObjectConflictAsync(
+        string bucket, string key, ObjectConflictPolicy policy)
+    {
+        if (policy == ObjectConflictPolicy.Overwrite) return key;
+        if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, key, CancellationToken.None))
+            return key;
+        if (policy == ObjectConflictPolicy.Skip) return null;
+        if (policy == ObjectConflictPolicy.Ask)
+        {
+            var answer = MessageBox.Show(this,
+                $"目标对象已存在：\n\ns3://{bucket}/{key}\n\n是：覆盖　否：跳过　取消：停止整个批次",
+                "对象冲突", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+            return answer switch
+            {
+                DialogResult.Yes => key,
+                DialogResult.No => null,
+                _ => throw new OperationCanceledException()
+            };
+        }
+        for (var sequence = 2; sequence <= 10_000; sequence++)
+        {
+            var candidate = ObjectTransferPlanner.GetAutoRenameCandidate(key, sequence);
+            if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, candidate, CancellationToken.None))
+                return candidate;
+        }
+        throw new InvalidOperationException("无法为目标对象生成不冲突的名称。");
+    }
+
+    private bool EnsureClipboardProfile(bool showMessage = true)
+    {
+        var valid = _objectClipboard is not null &&
+            _currentProfile?.Id == _objectClipboard.ProfileId &&
+            _currentBucket is not null;
+        if (!valid && showMessage)
+            MessageBox.Show(this, "对象剪贴板为空，或属于另一个连接。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return valid;
     }
 
     private async Task RenameSelectedAsync()
@@ -1518,7 +1698,7 @@ internal sealed class MainForm : Form
     private void ShowShortcuts()
     {
         MessageBox.Show(this,
-            "F5  刷新\nAlt+Left / Alt+Right  返回 / 前进\nAlt+Up  上一级\nCtrl+L  地址栏\nCtrl+F  搜索\nCtrl+U  上传文件\nCtrl+Shift+U  上传文件夹\nCtrl+D  下载\nF2  重命名\nDelete  删除\nAlt+Enter  属性\nCtrl+A  全选\nEscape  清除选择",
+            "F5  刷新\nAlt+Left / Alt+Right  返回 / 前进\nAlt+Up  上一级\nCtrl+L  地址栏\nCtrl+F  搜索\nCtrl+U  上传文件\nCtrl+Shift+U  上传文件夹\nCtrl+D  下载\nCtrl+C / Ctrl+X / Ctrl+V  复制 / 剪切 / 粘贴\nCtrl+Shift+C / Ctrl+Shift+X  复制到 / 移动到\nF2  重命名\nDelete  删除\nAlt+Enter  属性\nCtrl+A  全选\nEscape  清除选择",
             "快捷键", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -1664,10 +1844,13 @@ internal sealed class MainForm : Form
         SetEnabled("delete-object", any);
         SetEnabled("delete-object-menu", any);
         SetEnabled("delete-toolbar", any);
-        SetEnabled("copy-object", oneFile);
-        SetEnabled("copy-toolbar", oneFile);
-        SetEnabled("move-object", oneFile);
-        SetEnabled("move-toolbar", oneFile);
+        SetEnabled("clipboard-copy", any);
+        SetEnabled("clipboard-cut", any);
+        SetEnabled("clipboard-paste", inBucket && EnsureClipboardProfile(false));
+        SetEnabled("copy-object", any);
+        SetEnabled("copy-toolbar", any);
+        SetEnabled("move-object", any);
+        SetEnabled("move-toolbar", any);
         SetEnabled("rename", oneFile);
         SetEnabled("rename-object", oneFile);
         SetEnabled("properties", oneFile);

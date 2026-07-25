@@ -14,21 +14,43 @@ internal sealed class S3TransferTaskExecutor(
         var transfer = runtime.CreateContext(context);
         using var sleepLease = WindowsSleepInhibitor.Acquire();
 
-        if (task.Direction == TransferDirection.Upload)
+        switch (task.Direction)
         {
-            if (!File.Exists(task.LocalPath))
-                throw new FileNotFoundException("上传源文件不存在。", task.LocalPath);
-            await storage.UploadFileAsync(
-                profile, task.Bucket, task.ObjectKey, task.LocalPath, task.StorageClass, transfer, cancellationToken)
-                .ConfigureAwait(false);
-            return;
-        }
+            case TransferDirection.Upload:
+                if (!File.Exists(task.LocalPath))
+                    throw new FileNotFoundException("上传源文件不存在。", task.LocalPath);
+                await storage.UploadFileAsync(
+                    profile, task.Bucket, task.ObjectKey, task.LocalPath, task.StorageClass, transfer, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
 
-        var directory = Path.GetDirectoryName(task.LocalPath);
-        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        await storage.DownloadFileAsync(
-            profile, task.Bucket, task.ObjectKey, task.LocalPath, transfer, cancellationToken)
-            .ConfigureAwait(false);
+            case TransferDirection.Download:
+                var directory = Path.GetDirectoryName(task.LocalPath);
+                if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                await storage.DownloadFileAsync(
+                    profile, task.Bucket, task.ObjectKey, task.LocalPath, transfer, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+
+            case TransferDirection.Copy:
+                await storage.CopyObjectAsync(
+                    profile, task.Bucket, task.ObjectKey,
+                    task.DestinationBucket, task.DestinationObjectKey, cancellationToken)
+                    .ConfigureAwait(false);
+                context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
+                return;
+
+            case TransferDirection.Move:
+                await storage.MoveObjectAsync(
+                    profile, task.Bucket, task.ObjectKey,
+                    task.DestinationBucket, task.DestinationObjectKey, cancellationToken)
+                    .ConfigureAwait(false);
+                context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
+                return;
+
+            default:
+                throw new InvalidOperationException($"不支持的传输方向：{task.Direction}");
+        }
     }
 
     public async Task AbortMultipartAsync(

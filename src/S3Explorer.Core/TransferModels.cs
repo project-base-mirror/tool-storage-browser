@@ -3,14 +3,17 @@ namespace S3Explorer.Core;
 public enum TransferDirection
 {
     Upload,
-    Download
+    Download,
+    Copy,
+    Move
 }
 
 public enum TransferTaskKind
 {
     File,
     FolderBatchItem,
-    MultipartCopy
+    MultipartCopy,
+    ObjectTransfer
 }
 
 public enum TransferTaskState
@@ -139,6 +142,9 @@ public sealed record TransferTaskRecord
     public TransferTaskState State { get; init; } = TransferTaskState.Queued;
     public string Bucket { get; init; } = string.Empty;
     public string ObjectKey { get; init; } = string.Empty;
+    public string DestinationBucket { get; init; } = string.Empty;
+    public string DestinationObjectKey { get; init; } = string.Empty;
+    public ObjectConflictPolicy ConflictPolicy { get; init; } = ObjectConflictPolicy.Overwrite;
     public string LocalPath { get; init; } = string.Empty;
     public string RelativePath { get; init; } = string.Empty;
     public string StorageClass { get; init; } = "STANDARD";
@@ -166,7 +172,20 @@ public sealed record TransferTaskRecord
         if (string.IsNullOrWhiteSpace(ProfileName)) throw new ArgumentException("连接名称不能为空。", nameof(ProfileName));
         if (string.IsNullOrWhiteSpace(Bucket)) throw new ArgumentException("Bucket 不能为空。", nameof(Bucket));
         if (string.IsNullOrWhiteSpace(ObjectKey)) throw new ArgumentException("对象 Key 不能为空。", nameof(ObjectKey));
-        if (string.IsNullOrWhiteSpace(LocalPath)) throw new ArgumentException("本地路径不能为空。", nameof(LocalPath));
+        if (Direction is TransferDirection.Upload or TransferDirection.Download)
+        {
+            if (string.IsNullOrWhiteSpace(LocalPath))
+                throw new ArgumentException("上传或下载任务的本地路径不能为空。", nameof(LocalPath));
+        }
+        else if (Direction is TransferDirection.Copy or TransferDirection.Move)
+        {
+            if (string.IsNullOrWhiteSpace(DestinationBucket))
+                throw new ArgumentException("目标 Bucket 不能为空。", nameof(DestinationBucket));
+            if (string.IsNullOrWhiteSpace(DestinationObjectKey))
+                throw new ArgumentException("目标对象 Key 不能为空。", nameof(DestinationObjectKey));
+            ObjectTransferPlanner.ValidateDestination(
+                Bucket, ObjectKey, isDirectory: false, DestinationBucket, DestinationObjectKey);
+        }
         if (TotalBytes < 0 || TransferredBytes < 0 || TransferredBytes > TotalBytes)
             throw new ArgumentOutOfRangeException(nameof(TransferredBytes));
         if (AttemptCount < 0 || MaxAttempts < 1 || AttemptCount > MaxAttempts)
@@ -229,8 +248,8 @@ public sealed record TransferStoreSnapshot
         {
             if (!batchIds.Contains(task.BatchId!.Value))
                 throw new InvalidOperationException($"任务引用了不存在的批次：{task.BatchId}");
-            if (task.Kind != TransferTaskKind.FolderBatchItem)
-                throw new InvalidOperationException("批次子任务必须标记为 FolderBatchItem。");
+            if (task.Kind is not (TransferTaskKind.FolderBatchItem or TransferTaskKind.ObjectTransfer))
+                throw new InvalidOperationException("批次子任务必须标记为 FolderBatchItem 或 ObjectTransfer。");
         }
 
         var taskIds = Tasks.Select(task => task.Id).ToHashSet();

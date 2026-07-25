@@ -16,6 +16,14 @@ internal sealed record DownloadBatchItem(
     string RelativePath,
     long Size);
 
+internal sealed record ObjectTransferBatchItem(
+    string SourceKey,
+    string DestinationBucket,
+    string DestinationKey,
+    string RelativePath,
+    long Size,
+    ObjectConflictPolicy ConflictPolicy);
+
 internal sealed class TransferCompletedEventArgs(TransferTaskRecord task) : EventArgs
 {
     public TransferTaskRecord Task { get; } = task;
@@ -183,6 +191,33 @@ internal sealed class TransferQueueControl : UserControl
             Bucket = batch.Bucket,
             ObjectKey = item.ObjectKey,
             LocalPath = LocalObjectPath.ToExtendedLengthPath(item.LocalPath),
+            RelativePath = item.RelativePath,
+            TotalBytes = Math.Max(0, item.Size),
+            MaxAttempts = _maxAttempts,
+            RetryBaseDelaySeconds = _retryBaseDelaySeconds
+        }).ToArray();
+        return _queue.AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
+    }
+
+    public Task AddObjectTransferBatchItemsAsync(
+        TransferBatchRecord batch,
+        IReadOnlyCollection<ObjectTransferBatchItem> items,
+        CancellationToken cancellationToken = default)
+    {
+        if (batch.Direction is not (TransferDirection.Copy or TransferDirection.Move))
+            throw new InvalidOperationException("对象传输批次方向必须是复制或移动。");
+        var tasks = items.Select(item => new TransferTaskRecord
+        {
+            BatchId = batch.Id,
+            ProfileId = batch.ProfileId,
+            ProfileName = batch.ProfileName,
+            Direction = batch.Direction,
+            Kind = TransferTaskKind.ObjectTransfer,
+            Bucket = batch.Bucket,
+            ObjectKey = item.SourceKey,
+            DestinationBucket = item.DestinationBucket,
+            DestinationObjectKey = item.DestinationKey,
+            ConflictPolicy = item.ConflictPolicy,
             RelativePath = item.RelativePath,
             TotalBytes = Math.Max(0, item.Size),
             MaxAttempts = _maxAttempts,
@@ -409,7 +444,7 @@ internal sealed class TransferQueueControl : UserControl
 
         var row = _batchRows[args.ItemIndex];
         var item = new ListViewItem(row.Name);
-        item.SubItems.Add(row.Direction == TransferDirection.Upload ? "上传" : "下载");
+        item.SubItems.Add(DirectionText(row.Direction));
         item.SubItems.Add(BatchStateText(row.State));
         item.SubItems.Add(row.TotalFiles.ToString("N0"));
         item.SubItems.Add(row.CompletedFiles.ToString("N0"));
@@ -457,15 +492,22 @@ internal sealed class TransferQueueControl : UserControl
         var speed = task.State == TransferTaskState.Running
             ? sample?.BytesPerSecond ?? 0
             : 0;
-        var source = task.Direction == TransferDirection.Upload
-            ? task.LocalPath
-            : $"s3://{task.Bucket}/{task.ObjectKey}";
-        var target = task.Direction == TransferDirection.Upload
-            ? $"s3://{task.Bucket}/{task.ObjectKey}"
-            : task.LocalPath;
+        var source = task.Direction switch
+        {
+            TransferDirection.Upload => task.LocalPath,
+            _ => $"s3://{task.Bucket}/{task.ObjectKey}"
+        };
+        var target = task.Direction switch
+        {
+            TransferDirection.Upload => $"s3://{task.Bucket}/{task.ObjectKey}",
+            TransferDirection.Download => task.LocalPath,
+            TransferDirection.Copy or TransferDirection.Move =>
+                $"s3://{task.DestinationBucket}/{task.DestinationObjectKey}",
+            _ => string.Empty
+        };
         var name = task.Direction == TransferDirection.Upload
             ? Path.GetFileName(task.LocalPath)
-            : Path.GetFileName(task.ObjectKey);
+            : Path.GetFileName(task.ObjectKey.TrimEnd('/'));
         var percentage = total <= 0
             ? 0
             : Math.Clamp(transferred * 100d / total, 0, 100);
@@ -473,7 +515,7 @@ internal sealed class TransferQueueControl : UserControl
             ? TimeSpan.FromSeconds((total - transferred) / speed).ToString(@"hh\:mm\:ss")
             : "—";
         var item = new ListViewItem(name) { Tag = task };
-        item.SubItems.Add(task.Direction == TransferDirection.Upload ? "上传" : "下载");
+        item.SubItems.Add(DirectionText(task.Direction));
         item.SubItems.Add(source);
         item.SubItems.Add(target);
         item.SubItems.Add(FormatBytes(total));
@@ -567,6 +609,15 @@ internal sealed class TransferQueueControl : UserControl
         TransferBatchState.CompletedWithFailures => "完成但有失败",
         TransferBatchState.Cancelled => "已取消",
         _ => state.ToString()
+    };
+
+    private static string DirectionText(TransferDirection direction) => direction switch
+    {
+        TransferDirection.Upload => "上传",
+        TransferDirection.Download => "下载",
+        TransferDirection.Copy => "复制",
+        TransferDirection.Move => "移动",
+        _ => direction.ToString()
     };
 
     private static string StateText(TransferTaskState state) => state switch

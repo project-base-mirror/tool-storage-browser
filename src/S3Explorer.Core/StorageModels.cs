@@ -70,6 +70,7 @@ public interface IS3StorageService
     Task<MultipartCleanupResult> CleanupMultipartUploadsAsync(ConnectionProfile profile, IReadOnlyCollection<IncompleteMultipartUpload> uploads, CancellationToken cancellationToken);
     Task CreateFolderAsync(ConnectionProfile profile, string bucket, string folderKey, CancellationToken cancellationToken);
     Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken);
+    Task<bool> ObjectExistsAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);

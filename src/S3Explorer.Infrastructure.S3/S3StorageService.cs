@@ -563,6 +563,24 @@ public sealed class S3StorageService : IS3StorageService
         }
     }
 
+    public async Task<bool> ObjectExistsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.GetObjectMetadataAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (AmazonS3Exception exception) when (IsObjectNotFound(exception))
+        {
+            return false;
+        }
+    }
+
     public async Task<ObjectProperties> GetObjectPropertiesAsync(
         ConnectionProfile profile,
         string bucket,
@@ -819,6 +837,11 @@ public sealed class S3StorageService : IS3StorageService
         {
         }
     }
+
+    private static bool IsObjectNotFound(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(exception.ErrorCode, "NotFound", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsNoSuchUpload(AmazonS3Exception exception) =>
         exception.StatusCode == HttpStatusCode.NotFound ||
