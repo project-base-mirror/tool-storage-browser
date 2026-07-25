@@ -138,6 +138,314 @@ public sealed class S3StorageService : IS3StorageService
         await client.DeleteBucketAsync(bucket, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<BucketPropertiesSnapshot> GetBucketPropertiesAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        var policy = capabilities.Policy.Supported
+            ? await GetBucketPolicyAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            : null;
+        var acl = capabilities.Acl.Supported
+            ? await GetBucketAclAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            : new BucketAclSnapshot("未查询", BucketAclMode.Private, []);
+        var publicAccessBlock = capabilities.PublicAccessBlock.Supported
+            ? await GetBucketPublicAccessBlockAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            : null;
+        var objectOwnership = capabilities.ObjectOwnership.Supported
+            ? await GetBucketObjectOwnershipAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            : null;
+        var versioning = "未查询";
+        if (capabilities.Versioning.Supported)
+        {
+            try
+            {
+                using var client = _factory.Create(profile);
+                var response = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest
+                {
+                    BucketName = bucket
+                }, cancellationToken).ConfigureAwait(false);
+                versioning = response.VersioningConfig?.Status?.Value ?? "未启用";
+            }
+            catch (AmazonS3Exception exception) when (IsUnsupportedBucketFeature(exception))
+            {
+                versioning = "服务端不支持";
+            }
+        }
+        return new BucketPropertiesSnapshot(
+            bucket, profile.Endpoint, profile.ServiceType, profile.EffectiveSignatureRegion,
+            versioning, capabilities.Encryption.Supported ? "服务端配置" : capabilities.Encryption.Reason,
+            policy is not null, acl, publicAccessBlock, objectOwnership, capabilities);
+    }
+
+    public async Task<string?> GetBucketPolicyAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetBucketPolicyAsync(new GetBucketPolicyRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(response.Policy)
+                ? null
+                : BucketPolicyDocument.ValidateAndNormalize(response.Policy);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingBucketPolicy(exception))
+        {
+            return null;
+        }
+    }
+
+    public async Task PutBucketPolicyAsync(
+        ConnectionProfile profile, string bucket, string policyJson, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        var normalized = BucketPolicyDocument.ValidateAndNormalize(policyJson);
+        using var client = _factory.Create(profile);
+        await client.PutBucketPolicyAsync(new PutBucketPolicyRequest
+        {
+            BucketName = bucket,
+            Policy = normalized
+        }, cancellationToken).ConfigureAwait(false);
+        var readBack = await client.GetBucketPolicyAsync(new GetBucketPolicyRequest
+        {
+            BucketName = bucket
+        }, cancellationToken).ConfigureAwait(false);
+        if (!BucketPolicyDocument.AreSemanticallyEquivalent(readBack.Policy, normalized))
+            throw new InvalidOperationException("Bucket Policy 保存后回读内容不一致。");
+    }
+
+    public async Task DeleteBucketPolicyAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.DeleteBucketPolicyAsync(new DeleteBucketPolicyRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingBucketPolicy(exception))
+        {
+        }
+    }
+
+    public async Task<BucketAclSnapshot> GetBucketAclAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
+        using var client = _factory.Create(profile);
+        var response = await client.GetACLAsync(new GetACLRequest
+        {
+            BucketName = bucket
+        }, cancellationToken).ConfigureAwait(false);
+        var grants = response.AccessControlList.Grants
+            .Select(grant => new BucketAclGrant(
+                grant.Grantee?.DisplayName ?? grant.Grantee?.URI ?? grant.Grantee?.EmailAddress ?? "未知主体",
+                grant.Permission?.Value ?? "未知权限"))
+            .ToArray();
+        var publicRead = grants.Any(grant =>
+            grant.Permission.Contains("READ", StringComparison.OrdinalIgnoreCase) &&
+            grant.Grantee.Contains("AllUsers", StringComparison.OrdinalIgnoreCase));
+        var owner = response.AccessControlList.Owner?.DisplayName ??
+            response.AccessControlList.Owner?.Id ?? "未知";
+        return new BucketAclSnapshot(
+            owner, publicRead ? BucketAclMode.PublicRead : BucketAclMode.Private, grants);
+    }
+
+    public async Task PutBucketAclAsync(
+        ConnectionProfile profile, string bucket, BucketAclMode mode, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
+        using var client = _factory.Create(profile);
+        await client.PutACLAsync(new PutACLRequest
+        {
+            BucketName = bucket,
+            CannedACL = mode == BucketAclMode.PublicRead
+                ? S3CannedACL.PublicRead
+                : S3CannedACL.Private
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BucketPublicAccessBlockSnapshot?> GetBucketPublicAccessBlockAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(
+            BucketCapabilityMatrix.For(profile.ServiceType).PublicAccessBlock,
+            "Public Access Block");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetPublicAccessBlockAsync(new GetPublicAccessBlockRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+            var value = response.PublicAccessBlockConfiguration;
+            return value is null
+                ? null
+                : new BucketPublicAccessBlockSnapshot(
+                    value.BlockPublicAcls, value.IgnorePublicAcls,
+                    value.BlockPublicPolicy, value.RestrictPublicBuckets);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingPublicAccessBlock(exception))
+        {
+            return null;
+        }
+    }
+
+    public async Task PutBucketPublicAccessBlockAsync(
+        ConnectionProfile profile, string bucket,
+        BucketPublicAccessBlockSnapshot configuration, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(
+            BucketCapabilityMatrix.For(profile.ServiceType).PublicAccessBlock,
+            "Public Access Block");
+        using var client = _factory.Create(profile);
+        await client.PutPublicAccessBlockAsync(new PutPublicAccessBlockRequest
+        {
+            BucketName = bucket,
+            PublicAccessBlockConfiguration = new PublicAccessBlockConfiguration
+            {
+                BlockPublicAcls = configuration.BlockPublicAcls,
+                IgnorePublicAcls = configuration.IgnorePublicAcls,
+                BlockPublicPolicy = configuration.BlockPublicPolicy,
+                RestrictPublicBuckets = configuration.RestrictPublicBuckets
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BucketObjectOwnershipMode?> GetBucketObjectOwnershipAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(
+            BucketCapabilityMatrix.For(profile.ServiceType).ObjectOwnership,
+            "Object Ownership");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetBucketOwnershipControlsAsync(
+                new GetBucketOwnershipControlsRequest { BucketName = bucket },
+                cancellationToken).ConfigureAwait(false);
+            var value = response.OwnershipControls?.Rules?.FirstOrDefault()?.ObjectOwnership?.Value;
+            return value switch
+            {
+                "BucketOwnerEnforced" => BucketObjectOwnershipMode.BucketOwnerEnforced,
+                "BucketOwnerPreferred" => BucketObjectOwnershipMode.BucketOwnerPreferred,
+                "ObjectWriter" => BucketObjectOwnershipMode.ObjectWriter,
+                _ => null
+            };
+        }
+        catch (AmazonS3Exception exception) when (IsMissingOwnershipControls(exception))
+        {
+            return null;
+        }
+    }
+
+    public async Task PutBucketObjectOwnershipAsync(
+        ConnectionProfile profile, string bucket,
+        BucketObjectOwnershipMode mode, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(
+            BucketCapabilityMatrix.For(profile.ServiceType).ObjectOwnership,
+            "Object Ownership");
+        using var client = _factory.Create(profile);
+        await client.PutBucketOwnershipControlsAsync(new PutBucketOwnershipControlsRequest
+        {
+            BucketName = bucket,
+            OwnershipControls = new OwnershipControls
+            {
+                Rules =
+                [
+                    new OwnershipControlsRule
+                    {
+                        ObjectOwnership = mode switch
+                        {
+                            BucketObjectOwnershipMode.BucketOwnerEnforced => ObjectOwnership.BucketOwnerEnforced,
+                            BucketObjectOwnershipMode.BucketOwnerPreferred => ObjectOwnership.BucketOwnerPreferred,
+                            BucketObjectOwnershipMode.ObjectWriter => ObjectOwnership.ObjectWriter,
+                            _ => throw new ArgumentOutOfRangeException(nameof(mode))
+                        }
+                    }
+                ]
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BucketEmptySummary> ScanBucketAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        long objectCount = 0;
+        long totalBytes = 0;
+        string? continuationToken = null;
+        do
+        {
+            var page = await client.ListObjectsV2Async(new ListObjectsV2Request
+            {
+                BucketName = bucket,
+                ContinuationToken = continuationToken,
+                MaxKeys = 1000
+            }, cancellationToken).ConfigureAwait(false);
+            objectCount += page.S3Objects.Count;
+            totalBytes += page.S3Objects.Sum(item => item.Size);
+            continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+        } while (continuationToken is not null);
+
+        var versionScan = await ScanVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
+        var uploads = await ListIncompleteMultipartUploadsAsync(
+            profile, bucket, null, null, cancellationToken).ConfigureAwait(false);
+        return new BucketEmptySummary(
+            objectCount, versionScan.Versions, versionScan.DeleteMarkers,
+            uploads.Count, totalBytes, versionScan.Supported);
+    }
+
+    public async Task<BucketEmptyResult> EmptyBucketAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        long deletedVersions = 0;
+        long deletedMarkers = 0;
+        var versionScan = await CollectVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
+        foreach (var batch in versionScan.Items.Chunk(1000))
+        {
+            var request = new DeleteObjectsRequest { BucketName = bucket };
+            request.Objects.AddRange(batch);
+            await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        deletedVersions = versionScan.VersionCount;
+        deletedMarkers = versionScan.DeleteMarkerCount;
+
+        long deletedObjects = 0;
+        while (true)
+        {
+            var page = await client.ListObjectsV2Async(new ListObjectsV2Request
+            {
+                BucketName = bucket,
+                MaxKeys = 1000
+            }, cancellationToken).ConfigureAwait(false);
+            if (page.S3Objects.Count == 0)
+                break;
+
+            var request = new DeleteObjectsRequest { BucketName = bucket };
+            request.Objects.AddRange(page.S3Objects.Select(item => new KeyVersion { Key = item.Key }));
+            await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            deletedObjects += page.S3Objects.Count;
+        }
+
+        var uploads = await ListIncompleteMultipartUploadsAsync(
+            profile, bucket, null, null, cancellationToken).ConfigureAwait(false);
+        foreach (var upload in uploads)
+            await AbortMultipartUploadAsync(
+                profile, upload.Bucket, upload.ObjectKey, upload.UploadId, cancellationToken)
+                .ConfigureAwait(false);
+        return new BucketEmptyResult(
+            deletedObjects, deletedVersions, deletedMarkers, uploads.Count);
+    }
+
     public async Task<PagedObjectResult> ListObjectsAsync(
         ConnectionProfile profile,
         string bucket,
@@ -836,6 +1144,97 @@ public sealed class S3StorageService : IS3StorageService
         catch (AmazonS3Exception exception) when (IsNoSuchUpload(exception))
         {
         }
+    }
+
+    private static void EnsureBucketFeature(BucketFeatureSupport support, string feature)
+    {
+        if (!support.Supported)
+            throw new NotSupportedException($"{feature} 不可用：{support.Reason}");
+    }
+
+    private static bool IsMissingBucketPolicy(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchBucketPolicy", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(exception.ErrorCode, "NoSuchPolicy", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingPublicAccessBlock(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchPublicAccessBlockConfiguration", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingOwnershipControls(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "OwnershipControlsNotFoundError", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(exception.ErrorCode, "NoSuchOwnershipControls", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnsupportedBucketFeature(AmazonS3Exception exception) =>
+        exception.StatusCode is HttpStatusCode.NotImplemented or HttpStatusCode.MethodNotAllowed ||
+        string.Equals(exception.ErrorCode, "NotImplemented", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(exception.ErrorCode, "InvalidRequest", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<(bool Supported, long Versions, long DeleteMarkers)> ScanVersionsAsync(
+        IAmazonS3 client, string bucket, CancellationToken cancellationToken)
+    {
+        try
+        {
+            long versions = 0;
+            long markers = 0;
+            string? keyMarker = null;
+            string? versionMarker = null;
+            bool more;
+            do
+            {
+                var response = await client.ListVersionsAsync(new ListVersionsRequest
+                {
+                    BucketName = bucket,
+                    KeyMarker = keyMarker,
+                    VersionIdMarker = versionMarker,
+                    MaxKeys = 1000
+                }, cancellationToken).ConfigureAwait(false);
+                versions += response.Versions.LongCount(item => !item.IsDeleteMarker);
+                markers += response.Versions.LongCount(item => item.IsDeleteMarker);
+                more = response.IsTruncated;
+                keyMarker = more ? response.NextKeyMarker : null;
+                versionMarker = more ? response.NextVersionIdMarker : null;
+            } while (more);
+            return (true, versions, markers);
+        }
+        catch (AmazonS3Exception exception) when (IsUnsupportedBucketFeature(exception))
+        {
+            return (false, 0, 0);
+        }
+    }
+
+    private static async Task<(List<KeyVersion> Items, long VersionCount, long DeleteMarkerCount)> CollectVersionsAsync(
+        IAmazonS3 client, string bucket, CancellationToken cancellationToken)
+    {
+        var items = new List<KeyVersion>();
+        long versions = 0;
+        long markers = 0;
+        string? keyMarker = null;
+        string? versionMarker = null;
+        try
+        {
+            bool more;
+            do
+            {
+                var response = await client.ListVersionsAsync(new ListVersionsRequest
+                {
+                    BucketName = bucket, KeyMarker = keyMarker,
+                    VersionIdMarker = versionMarker, MaxKeys = 1000
+                }, cancellationToken).ConfigureAwait(false);
+                items.AddRange(response.Versions.Select(item =>
+                    new KeyVersion { Key = item.Key, VersionId = item.VersionId }));
+                versions += response.Versions.LongCount(item => !item.IsDeleteMarker);
+                markers += response.Versions.LongCount(item => item.IsDeleteMarker);
+                more = response.IsTruncated;
+                keyMarker = more ? response.NextKeyMarker : null;
+                versionMarker = more ? response.NextVersionIdMarker : null;
+            } while (more);
+        }
+        catch (AmazonS3Exception exception) when (IsUnsupportedBucketFeature(exception))
+        {
+        }
+        return (items, versions, markers);
     }
 
     private static bool IsObjectNotFound(AmazonS3Exception exception) =>

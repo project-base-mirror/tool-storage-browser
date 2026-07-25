@@ -181,13 +181,15 @@ internal sealed class MainForm : Form
         var bucket = new ToolStripMenuItem("Bucket(&B)");
         bucket.DropDownItems.Add(Command("create-bucket", "新建 Bucket...", async (_, _) => await CreateBucketAsync()));
         bucket.DropDownItems.Add(Command("delete-bucket", "删除 Bucket...", async (_, _) => await DeleteBucketAsync()));
-        bucket.DropDownItems.Add(Unsupported("Bucket 属性..."));
-        foreach (var text in new[]
-                 {
-                     "Bucket 权限...", "Bucket Policy...", "CORS 配置...", "版本控制...", "生命周期规则...",
-                     "Public Access Block...", "Object Ownership...", "Object Lock...", "清空 Bucket..."
-                 })
-            bucket.DropDownItems.Add(Unsupported(text));
+        bucket.DropDownItems.Add(Command("bucket-properties", "Bucket 属性...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Overview)));
+        bucket.DropDownItems.Add(Command("bucket-acl", "Bucket 权限...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Acl)));
+        bucket.DropDownItems.Add(Command("bucket-policy", "Bucket Policy...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Policy)));
+        bucket.DropDownItems.Add(Unsupported("CORS 配置..."));
+        bucket.DropDownItems.Add(Unsupported("版本控制..."));
+        bucket.DropDownItems.Add(Unsupported("生命周期规则..."));
+        bucket.DropDownItems.Add(Command("bucket-access-controls", "Public Access Block / Object Ownership...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.AccessControls)));
+        bucket.DropDownItems.Add(Unsupported("Object Lock..."));
+        bucket.DropDownItems.Add(Command("empty-bucket", "清空 Bucket...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.EmptyBucket)));
         bucket.DropDownItems.Add(new ToolStripSeparator());
         bucket.DropDownItems.Add(Command("refresh-buckets", "刷新 Bucket 列表", async (_, _) => await ReloadBucketsAsync()));
 
@@ -1017,6 +1019,36 @@ internal sealed class MainForm : Form
         finally { SetIdle(); }
     }
 
+    private async Task ShowBucketManagementAsync(BucketManagementPage page)
+    {
+        if (!TryGetBucketContext(out var profile, out var bucket)) return;
+        using var dialog = new BucketManagementDialog(_storage, profile, bucket, page);
+        dialog.ShowDialog(this);
+        if (dialog.BucketEmptied && _currentProfile?.Id == profile.Id &&
+            string.Equals(_currentBucket, bucket, StringComparison.Ordinal))
+            await RefreshAsync();
+    }
+
+    private bool TryGetBucketContext(out ConnectionProfile profile, out string bucket)
+    {
+        if (_tree.SelectedNode?.Tag is BucketNodeTag tag)
+        {
+            profile = tag.Profile;
+            bucket = tag.Bucket;
+            return true;
+        }
+        if (_currentProfile is not null && _currentBucket is not null)
+        {
+            profile = _currentProfile;
+            bucket = _currentBucket;
+            return true;
+        }
+        profile = null!;
+        bucket = string.Empty;
+        MessageBox.Show(this, "请先连接账户并选择 Bucket。", "Bucket 管理", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return false;
+    }
+
     private async Task UploadFilesAsync()
     {
         if (!EnsureLocation()) return;
@@ -1833,6 +1865,12 @@ internal sealed class MainForm : Form
         SetEnabled("create-bucket", connected);
         SetEnabled("create-bucket-toolbar", connected);
         SetEnabled("delete-bucket", bucketSelected);
+        var bucketContext = bucketSelected || inBucket;
+        SetEnabled("bucket-properties", bucketContext);
+        SetEnabled("bucket-acl", bucketContext);
+        SetEnabled("bucket-policy", bucketContext);
+        SetEnabled("bucket-access-controls", bucketContext);
+        SetEnabled("empty-bucket", bucketContext);
         SetEnabled("refresh-buckets", connected);
         SetEnabled("upload-file", inBucket);
         SetEnabled("upload-folder", inBucket);

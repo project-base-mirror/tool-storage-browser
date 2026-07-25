@@ -62,6 +62,18 @@ public interface IS3StorageService
     Task<IReadOnlyList<BucketInfo>> ListBucketsAsync(ConnectionProfile profile, CancellationToken cancellationToken);
     Task CreateBucketAsync(ConnectionProfile profile, string bucket, string region, CancellationToken cancellationToken);
     Task DeleteEmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketPropertiesSnapshot> GetBucketPropertiesAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<string?> GetBucketPolicyAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketPolicyAsync(ConnectionProfile profile, string bucket, string policyJson, CancellationToken cancellationToken);
+    Task DeleteBucketPolicyAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketAclSnapshot> GetBucketAclAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketAclAsync(ConnectionProfile profile, string bucket, BucketAclMode mode, CancellationToken cancellationToken);
+    Task<BucketPublicAccessBlockSnapshot?> GetBucketPublicAccessBlockAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketPublicAccessBlockAsync(ConnectionProfile profile, string bucket, BucketPublicAccessBlockSnapshot configuration, CancellationToken cancellationToken);
+    Task<BucketObjectOwnershipMode?> GetBucketObjectOwnershipAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketObjectOwnershipAsync(ConnectionProfile profile, string bucket, BucketObjectOwnershipMode mode, CancellationToken cancellationToken);
+    Task<BucketEmptySummary> ScanBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketEmptyResult> EmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);

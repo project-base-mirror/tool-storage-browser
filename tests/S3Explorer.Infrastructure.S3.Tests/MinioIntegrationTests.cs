@@ -1,3 +1,4 @@
+using Amazon.S3.Model;
 using S3Explorer.Core;
 using Xunit;
 using Xunit.Abstractions;
@@ -147,6 +148,103 @@ public sealed class MinioIntegrationTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", previous);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Bucket_management_policy_acl_scan_and_safe_empty_runs_against_minio()
+    {
+        var previous = Environment.GetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER");
+        Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", "minio");
+        var bucket = $"s3explorer-v041-{Guid.NewGuid():N}";
+        var localFile = Path.GetTempFileName();
+        var bucketCreated = false;
+        S3StorageService? service = null;
+        ConnectionProfile? profile = null;
+
+        try
+        {
+            var configuration = ProviderMatrixCase.Selected().Resolve();
+            if (!configuration.IsConfigured)
+            {
+                _output.WriteLine("MinIO bucket-management integration test is not configured.");
+                return;
+            }
+
+            service = new S3StorageService(new S3ClientFactory());
+            profile = configuration.CreateProfile();
+            await service.CreateBucketAsync(profile, bucket, profile.Region, CancellationToken.None);
+            bucketCreated = true;
+
+            Assert.Null(await service.GetBucketPolicyAsync(profile, bucket, CancellationToken.None));
+            var policy = $$"""
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ListBucket",
+                  "Effect": "Allow",
+                  "Principal": "*",
+                  "Action": ["s3:ListBucket"],
+                  "Resource": ["arn:aws:s3:::{{bucket}}"]
+                }
+              ]
+            }
+            """;
+            await service.PutBucketPolicyAsync(profile, bucket, policy, CancellationToken.None);
+            var savedPolicy = await service.GetBucketPolicyAsync(profile, bucket, CancellationToken.None);
+            Assert.NotNull(savedPolicy);
+            Assert.Contains(bucket, savedPolicy, StringComparison.Ordinal);
+
+            var properties = await service.GetBucketPropertiesAsync(profile, bucket, CancellationToken.None);
+            Assert.True(properties.HasPolicy);
+            Assert.Equal(S3ServiceType.MinIO, properties.ServiceType);
+            Assert.False(properties.Capabilities.PublicAccessBlock.Supported);
+            Assert.False(properties.Capabilities.ObjectOwnership.Supported);
+
+            await service.PutBucketAclAsync(profile, bucket, BucketAclMode.Private, CancellationToken.None);
+            var acl = await service.GetBucketAclAsync(profile, bucket, CancellationToken.None);
+            Assert.Equal(BucketAclMode.Private, acl.Mode);
+
+            await File.WriteAllTextAsync(localFile, "S3 Explorer 0.4.1 bucket management");
+            await service.UploadFileAsync(
+                profile, bucket, "objects/中文 + 100%.txt", localFile, "STANDARD",
+                CreateTransferContext(), CancellationToken.None);
+
+            using (var client = new S3ClientFactory().Create(profile))
+            {
+                await client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+                {
+                    BucketName = bucket,
+                    Key = "unfinished/中文 + 100%.bin"
+                }, CancellationToken.None);
+            }
+
+            var summary = await service.ScanBucketAsync(profile, bucket, CancellationToken.None);
+            Assert.True(summary.ObjectCount >= 1);
+            Assert.True(summary.MultipartUploadCount >= 1);
+
+            var emptied = await service.EmptyBucketAsync(profile, bucket, CancellationToken.None);
+            Assert.True(emptied.DeletedObjects + emptied.DeletedVersions >= 1);
+            Assert.True(emptied.AbortedMultipartUploads >= 1);
+            Assert.True((await service.ScanBucketAsync(profile, bucket, CancellationToken.None)).IsEmpty);
+
+            await service.DeleteBucketPolicyAsync(profile, bucket, CancellationToken.None);
+            Assert.Null(await service.GetBucketPolicyAsync(profile, bucket, CancellationToken.None));
+            await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None);
+            bucketCreated = false;
+        }
+        finally
+        {
+            if (service is not null && profile is not null && bucketCreated)
+            {
+                try { await service.DeleteBucketPolicyAsync(profile, bucket, CancellationToken.None); } catch { }
+                try { await service.EmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
+                try { await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
+            }
+            File.Delete(localFile);
             Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", previous);
         }
     }
