@@ -140,6 +140,22 @@ public static class EndpointCompatibility
         return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
     }
 
+    public static string NormalizeServiceUrl(S3ServiceType serviceType, string endpoint)
+    {
+        var uri = NormalizeEndpoint(endpoint);
+        if (serviceType == S3ServiceType.MinIO && uri.AbsolutePath != "/")
+        {
+            uri = new UriBuilder(uri)
+            {
+                Path = "/",
+                Query = string.Empty,
+                Fragment = string.Empty
+            }.Uri;
+        }
+
+        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+    }
+
     public static void ValidateForService(S3ServiceType serviceType, Uri endpoint)
     {
         if (serviceType != S3ServiceType.MinIO)

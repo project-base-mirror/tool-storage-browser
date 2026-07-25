@@ -70,6 +70,22 @@ public sealed class S3CompatibilityPolicyTests
     }
 
     [Fact]
+    public void MinioNotFoundWithoutRequestIdIsClassifiedAsEndpointRoutingError()
+    {
+        var profile = new ConnectionProfile { ServiceType = S3ServiceType.MinIO };
+        var exception = new AmazonS3Exception("not found")
+        {
+            StatusCode = HttpStatusCode.NotFound,
+            ErrorCode = "NotFound"
+        };
+
+        Assert.True(S3CompatibilityPolicy.IsMinioEndpointRoutingError(profile, exception));
+        Assert.False(S3CompatibilityPolicy.IsMinioEndpointRoutingError(
+            profile with { ServiceType = S3ServiceType.Custom },
+            exception));
+    }
+
+    [Fact]
     public void MultipartCopyPartSizeStaysWithinS3Limits()
     {
         var sixTibibytes = 6L * 1024 * 1024 * 1024 * 1024;

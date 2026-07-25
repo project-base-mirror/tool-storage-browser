@@ -39,6 +39,13 @@ public static class S3CompatibilityPolicy
             "S3 API Requests must be made to API port",
             StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsMinioEndpointRoutingError(ConnectionProfile profile, AmazonS3Exception exception) =>
+        IsMinioApiPortError(profile, exception) ||
+        (profile.ServiceType == S3ServiceType.MinIO &&
+         exception.StatusCode == HttpStatusCode.NotFound &&
+         (string.IsNullOrWhiteSpace(exception.ErrorCode) || IsCode(exception, "NotFound")) &&
+         string.IsNullOrWhiteSpace(exception.RequestId));
+
     public static PutBucketRequest CreateBucketRequest(
         ConnectionProfile profile,
         string bucket,

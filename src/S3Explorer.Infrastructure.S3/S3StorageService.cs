@@ -107,10 +107,10 @@ public sealed class S3StorageService : IS3StorageService
         {
             await client.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (AmazonS3Exception exception) when (S3CompatibilityPolicy.IsMinioApiPortError(profile, exception))
+        catch (AmazonS3Exception exception) when (S3CompatibilityPolicy.IsMinioEndpointRoutingError(profile, exception))
         {
             throw new InvalidOperationException(
-                "MinIO Endpoint 指向了 Console，而不是 S3 API。请使用 S3 API 地址（默认端口 9000；Console 默认端口 9001）。",
+                "MinIO Endpoint 未正确路由到 S3 API。请使用 API 根地址（默认端口 9000），不要填写 Console 端口、/browser、/login 或其他路径前缀。",
                 exception);
         }
     }

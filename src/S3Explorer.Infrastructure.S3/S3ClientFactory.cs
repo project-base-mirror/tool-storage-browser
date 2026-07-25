@@ -49,7 +49,7 @@ public sealed class S3ClientFactory
         var forcePathStyle = S3CompatibilityPolicy.ShouldForcePathStyle(profile);
         var config = new AmazonS3Config
         {
-            ServiceURL = EndpointCompatibility.NormalizeServiceUrl(profile.Endpoint),
+            ServiceURL = EndpointCompatibility.NormalizeServiceUrl(profile.ServiceType, profile.Endpoint),
             AuthenticationRegion = profile.EffectiveSignatureRegion,
             ForcePathStyle = forcePathStyle,
             DisableHostPrefixInjection = forcePathStyle,

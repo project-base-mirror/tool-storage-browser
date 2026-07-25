@@ -71,6 +71,26 @@ public sealed class S3ClientFactoryTests
     }
 
     [Fact]
+    public void MinioEndpointBasePathIsNormalizedToApiRoot()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
+        {
+            Name = "MinIO proxy path",
+            Endpoint = "https://storage.example.test:9443/minio/",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var snapshot = new S3ClientFactory().Describe(profile);
+
+        var serviceUri = new Uri(snapshot.ServiceUrl);
+        Assert.Equal("storage.example.test", serviceUri.Host);
+        Assert.Equal(9443, serviceUri.Port);
+        Assert.Equal("/", serviceUri.AbsolutePath);
+        Assert.True(snapshot.ForcePathStyle);
+    }
+
+    [Fact]
     public void SessionTokenSelectsSessionCredentials()
     {
         var profile = new ConnectionProfile
