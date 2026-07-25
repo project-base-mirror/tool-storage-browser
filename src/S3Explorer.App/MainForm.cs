@@ -6,6 +6,7 @@ namespace S3Explorer.App;
 
 internal sealed record BucketNodeTag(ConnectionProfile Profile, string Bucket);
 internal sealed record LoadMoreTag;
+internal sealed record ParentDirectoryTag;
 internal sealed record ObjectClipboardEntry(string Key, string Name, bool IsDirectory, long Size);
 internal sealed record ObjectClipboardPayload(
     Guid ProfileId, string ProfileName, string SourceBucket,
@@ -417,7 +418,9 @@ internal sealed class MainForm : Form
         _objects.ItemActivate += async (_, _) =>
         {
             if (_objects.SelectedItems.Count == 0) return;
-            if (_objects.SelectedItems[0].Tag is LoadMoreTag)
+            if (_objects.SelectedItems[0].Tag is ParentDirectoryTag)
+                await NavigateUpAsync();
+            else if (_objects.SelectedItems[0].Tag is LoadMoreTag)
                 await LoadObjectsPageAsync(false);
             else if (_objects.SelectedItems[0].Tag is S3ObjectEntry entry)
             {
@@ -847,6 +850,18 @@ internal sealed class MainForm : Form
         try
         {
             _objects.Items.Clear();
+            if (!string.IsNullOrEmpty(_currentPrefix))
+            {
+                var parent = new ListViewItem("..")
+                {
+                    Tag = new ParentDirectoryTag(),
+                    ImageKey = UiIcons.ObjectImageKey("..", true),
+                    Font = new Font(_objects.Font, FontStyle.Bold)
+                };
+                parent.SubItems.AddRange(["", "上级目录", "", ""]);
+                _objects.Items.Add(parent);
+            }
+
             foreach (var entry in ordered)
                 _objects.Items.Add(CreateObjectItem(entry));
             if (_hasMore)
