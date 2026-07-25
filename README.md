@@ -65,6 +65,21 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 `0.2.1` 至 `0.3.4` 的版本边界、需求拆分、验收标准和实时完成情况见 [`docs/Release-Plan-v0.2-v0.3.md`](docs/Release-Plan-v0.2-v0.3.md)。
 
+## 命令行与 UI 自动化
+
+仓库提供固定命令集合，不接受任意可执行文件或脚本参数：
+
+    pwsh .\scripts\AppAutomation.ps1 Help
+    pwsh .\scripts\AppAutomation.ps1 Version
+    pwsh .\scripts\AppAutomation.ps1 Start
+    pwsh .\scripts\AppAutomation.ps1 Status
+    pwsh .\scripts\AppAutomation.ps1 Stop
+    pwsh .\scripts\AppAutomation.ps1 Smoke
+
+也可以使用 `scripts\app-automation.cmd`。`Start` 会在需要时构建 Release 版本，启动应用并等待窗口及核心控件就绪；`Status` 会校验 PID、进程路径和启动时间，避免误认同 PID 的其他进程；`Stop` 只发送正常窗口关闭请求，不强制终止进程。
+
+`Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。
+
 ## 发布
 
 仓库根目录提供可直接双击的发布入口：
@@ -127,6 +142,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
     tests/
       S3Explorer.Core.Tests
       S3Explorer.Infrastructure.S3.Tests
+      S3Explorer.App.Tests
     docs/
       MinIO-Testing.md
       Release-Plan-v0.2-v0.3.md
@@ -134,6 +150,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       Build.ps1
       Publish.ps1
       Test-Publish.ps1
+      AppAutomation.ps1
+      app-automation.cmd
     build.bat
     publish.bat
 

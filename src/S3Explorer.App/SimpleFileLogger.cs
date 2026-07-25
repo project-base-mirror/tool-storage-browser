@@ -5,10 +5,15 @@ namespace S3Explorer.App;
 internal sealed class SimpleFileLogger
 {
     private readonly object _sync = new();
-    private readonly string _directory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "S3Explorer",
-        "logs");
+    private readonly string _directory;
+
+    public SimpleFileLogger(string? directory = null)
+    {
+        _directory = directory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "S3Explorer",
+            "logs");
+    }
 
     public string CurrentLogPath => Path.Combine(_directory, $"s3explorer-{DateTime.Now:yyyy-MM-dd}.log");
 

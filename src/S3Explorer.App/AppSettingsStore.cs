@@ -43,10 +43,15 @@ internal sealed class AppSettingsStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private readonly string _path = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "S3Explorer",
-        "settings.json");
+    private readonly string _path;
+
+    public AppSettingsStore(string? path = null)
+    {
+        _path = path ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "S3Explorer",
+            "settings.json");
+    }
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)
     {

@@ -6,32 +6,64 @@ namespace S3Explorer.App;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
-        ApplicationConfiguration.Initialize();
-
-        var protector = new DpapiCredentialProtector();
-        var profileStore = new JsonProfileStore(protector);
-        var storageService = new S3StorageService(new S3ClientFactory());
-        var settingsStore = new AppSettingsStore();
-        var logger = new SimpleFileLogger();
-        var transferStore = new JsonTransferTaskStore();
-        var transferRuntime = new TransferRuntimeConfiguration();
-        var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
-        var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
-
-        Application.ThreadException += (_, args) =>
+        AutomationSession? automation = null;
+        MainForm? form = null;
+        try
         {
-            logger.Error("UI thread exception", args.Exception);
-            ErrorDialog.ShowException(null, "应用程序错误", "UI 线程", args.Exception);
-        };
-        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
-        {
-            if (args.ExceptionObject is Exception exception)
-                logger.Error("Unhandled exception", exception);
-        };
+            var options = AutomationOptions.Parse(args);
+            ApplicationConfiguration.Initialize();
+            automation = options.Enabled ? new AutomationSession(options) : null;
 
-        logger.Info($"S3 Explorer started. Version={Application.ProductVersion}");
-        Application.Run(new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime));
+            var dataRoot = options.Enabled
+                ? options.DataDirectory.Length > 0
+                    ? options.DataDirectory
+                    : Path.Combine(Path.GetDirectoryName(options.StatePath)!, "data")
+                : string.Empty;
+            var protector = new DpapiCredentialProtector();
+            var profileStore = new JsonProfileStore(
+                protector,
+                options.Enabled ? Path.Combine(dataRoot, "profiles.json") : null);
+            var storageService = new S3StorageService(new S3ClientFactory());
+            var settingsStore = new AppSettingsStore(
+                options.Enabled ? Path.Combine(dataRoot, "settings.json") : null);
+            var logger = new SimpleFileLogger(
+                options.Enabled ? Path.Combine(dataRoot, "logs") : null);
+            var transferStore = new JsonTransferTaskStore(
+                options.Enabled ? Path.Combine(dataRoot, "transfers.json") : null);
+            var transferRuntime = new TransferRuntimeConfiguration();
+            var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
+            var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
+
+            Application.ThreadException += (_, eventArgs) =>
+            {
+                logger.Error("UI thread exception", eventArgs.Exception);
+                if (automation is not null)
+                    automation.Fail(form, eventArgs.Exception);
+                else
+                    ErrorDialog.ShowException(null, "应用程序错误", "UI 线程", eventArgs.Exception);
+            };
+            AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+            {
+                if (eventArgs.ExceptionObject is Exception exception)
+                {
+                    logger.Error("Unhandled exception", exception);
+                    automation?.Fail(form, exception);
+                }
+            };
+
+            logger.Info($"S3 Explorer started. Version={Application.ProductVersion}");
+            form = new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime, automation);
+            Application.Run(form);
+            return Environment.ExitCode;
+        }
+        catch (Exception exception)
+        {
+            automation?.Fail(form, exception);
+            if (automation is null)
+                MessageBox.Show(exception.Message, "S3 Explorer 启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
     }
 }

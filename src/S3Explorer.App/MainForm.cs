@@ -34,17 +34,19 @@ internal sealed class MainForm : Form
     private readonly IS3StorageService _storage;
     private readonly AppSettingsStore _settingsStore;
     private readonly SimpleFileLogger _logger;
+    private readonly AutomationSession? _automation;
 
-    private readonly MenuStrip _menu = new();
-    private readonly ToolStrip _toolbar = new() { GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(20, 20) };
-    private readonly ToolStrip _addressStrip = new() { GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(18, 18) };
-    private readonly ToolStripTextBox _address = new() { AutoSize = false, Width = 620 };
-    private readonly ToolStripTextBox _search = new() { AutoSize = false, Width = 220, ToolTipText = "过滤当前已加载列表（Ctrl+F）" };
-    private readonly SplitContainer _outerSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, FixedPanel = FixedPanel.Panel2 };
-    private readonly SplitContainer _mainSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, FixedPanel = FixedPanel.Panel1 };
-    private readonly TreeView _tree = new() { Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true };
+    private readonly MenuStrip _menu = new() { Name = "MainMenu" };
+    private readonly ToolStrip _toolbar = new() { Name = "MainToolbar", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(20, 20) };
+    private readonly ToolStrip _addressStrip = new() { Name = "AddressStrip", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(18, 18) };
+    private readonly ToolStripTextBox _address = new() { Name = "AddressBox", AutoSize = false, Width = 620 };
+    private readonly ToolStripTextBox _search = new() { Name = "SearchBox", AutoSize = false, Width = 220, ToolTipText = "过滤当前已加载列表（Ctrl+F）" };
+    private readonly SplitContainer _outerSplit = new() { Name = "MainLayout", Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, FixedPanel = FixedPanel.Panel2 };
+    private readonly SplitContainer _mainSplit = new() { Name = "NavigationLayout", Dock = DockStyle.Fill, Orientation = Orientation.Vertical, FixedPanel = FixedPanel.Panel1 };
+    private readonly TreeView _tree = new() { Name = "AccountTree", Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true };
     private readonly ListView _objects = new()
     {
+        Name = "ObjectList",
         Dock = DockStyle.Fill,
         View = View.Details,
         FullRowSelect = true,
@@ -59,7 +61,7 @@ internal sealed class MainForm : Form
     private readonly PersistentTransferQueue _transferQueue;
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly TransferQueueControl _transfers;
-    private readonly StatusStrip _status = new();
+    private readonly StatusStrip _status = new() { Name = "StatusBar" };
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
     private readonly ToolStripStatusLabel _pathStatus = new("s3://");
     private readonly ToolStripStatusLabel _objectStatus = new("0 个对象");
@@ -96,7 +98,8 @@ internal sealed class MainForm : Form
         AppSettingsStore settingsStore,
         SimpleFileLogger logger,
         PersistentTransferQueue transferQueue,
-        TransferRuntimeConfiguration transferRuntime)
+        TransferRuntimeConfiguration transferRuntime,
+        AutomationSession? automation = null)
     {
         _profileStore = profileStore;
         _storage = storage;
@@ -104,8 +107,10 @@ internal sealed class MainForm : Form
         _logger = logger;
         _transferQueue = transferQueue;
         _transferRuntime = transferRuntime;
-        _transfers = new TransferQueueControl(transferQueue);
+        _automation = automation;
+        _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
+        Name = "MainWindow";
         Text = WindowTitle();
         Icon = UiIcons.CreateApplicationIcon();
         StartPosition = FormStartPosition.CenterScreen;
@@ -128,8 +133,20 @@ internal sealed class MainForm : Form
         Controls.Add(_menu);
         MainMenuStrip = _menu;
 
-        Shown += async (_, _) => await InitializeAsync();
+        Shown += async (_, _) =>
+        {
+            try
+            {
+                await InitializeAsync();
+                _automation?.Ready(this);
+            }
+            catch (Exception exception) when (_automation is not null)
+            {
+                _automation.Fail(this, exception);
+            }
+        };
         FormClosing += MainForm_FormClosing;
+        FormClosed += (_, _) => _automation?.MarkStopped(this);
     }
 
     private void BuildMenu()
@@ -518,6 +535,59 @@ internal sealed class MainForm : Form
         UpdateCommandStates();
     }
 
+    internal AutomationReport BuildAutomationReport()
+    {
+        var checks = new List<AutomationCheck>
+        {
+            new("window-handle", IsHandleCreated && Handle != IntPtr.Zero, $"Handle={Handle}"),
+            new("window-size", ClientSize.Width >= 960 && ClientSize.Height >= 600, $"ClientSize={ClientSize.Width}x{ClientSize.Height}"),
+            new("main-menu", _menu.Name == "MainMenu" && _menu.Items.Count > 0, $"Items={_menu.Items.Count}"),
+            new("main-toolbar", _toolbar.Name == "MainToolbar" && _toolbar.Items.Count > 0, $"Items={_toolbar.Items.Count}"),
+            new("address-strip", _addressStrip.Name == "AddressStrip" && _addressStrip.Items.Count > 0, $"Items={_addressStrip.Items.Count}"),
+            new("address-box", _address.Name == "AddressBox" && _address.Width > 0, $"Width={_address.Width}"),
+            new("search-box", _search.Name == "SearchBox" && _search.Width > 0, $"Width={_search.Width}"),
+            new("account-tree", _tree.Name == "AccountTree" && _tree.Parent is not null, $"Nodes={_tree.Nodes.Count}"),
+            new("object-list", _objects.Name == "ObjectList" && _objects.Parent is not null && _objects.Columns.Count == 5, $"Columns={_objects.Columns.Count}"),
+            new("transfer-queue", _transfers.Name == "TransferQueue" && _transfers.Parent is not null, $"Visible={_transfers.Visible}"),
+            new("status-bar", _status.Name == "StatusBar" && _status.Items.Count > 0, $"Items={_status.Items.Count}")
+        };
+
+        var parent = CreateParentDirectoryItem(_objects.Font);
+        try
+        {
+            checks.Add(new AutomationCheck(
+                "parent-directory-row",
+                parent.Text == ".." &&
+                parent.Tag is ParentDirectoryTag &&
+                parent.SubItems.Count == 5 &&
+                parent.SubItems[2].Text == "上级目录" &&
+                parent.Font.Bold,
+                $"Text={parent.Text}; Type={parent.SubItems[2].Text}; Bold={parent.Font.Bold}"));
+        }
+        finally
+        {
+            parent.Font.Dispose();
+        }
+
+        return new AutomationReport(
+            checks.All(check => check.Passed),
+            DisplayVersion,
+            Text,
+            ClientSize.Width,
+            ClientSize.Height,
+            checks);
+    }
+
+    internal void CaptureAutomationScreenshot(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        Refresh();
+        Update();
+        using var bitmap = new Bitmap(Math.Max(1, Width), Math.Max(1, Height));
+        DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+
     private void ApplySettings()
     {
         if (_settings.RememberLayout)
@@ -821,6 +891,18 @@ internal sealed class MainForm : Form
         }
     }
 
+    internal static ListViewItem CreateParentDirectoryItem(Font baseFont)
+    {
+        var parent = new ListViewItem("..")
+        {
+            Tag = new ParentDirectoryTag(),
+            ImageKey = UiIcons.ObjectImageKey("..", true),
+            Font = new Font(baseFont, FontStyle.Bold)
+        };
+        parent.SubItems.AddRange(["", "上级目录", "", ""]);
+        return parent;
+    }
+
     private void ApplyFilterAndSort()
     {
         var query = _search.Text.Trim();
@@ -851,16 +933,7 @@ internal sealed class MainForm : Form
         {
             _objects.Items.Clear();
             if (!string.IsNullOrEmpty(_currentPrefix))
-            {
-                var parent = new ListViewItem("..")
-                {
-                    Tag = new ParentDirectoryTag(),
-                    ImageKey = UiIcons.ObjectImageKey("..", true),
-                    Font = new Font(_objects.Font, FontStyle.Bold)
-                };
-                parent.SubItems.AddRange(["", "上级目录", "", ""]);
-                _objects.Items.Add(parent);
-            }
+                _objects.Items.Add(CreateParentDirectoryItem(_objects.Font));
 
             foreach (var entry in ordered)
                 _objects.Items.Add(CreateObjectItem(entry));
