@@ -30,6 +30,7 @@ Assert-True -Condition ($publishSource -cnotmatch '\$OutputRoot\b') -Message "Pu
 Assert-True -Condition ($publishSource -match 'Join-Path \$repositoryRoot "artifacts"') -Message "Publish.ps1 must anchor output to the repository artifacts directory."
 Assert-True -Condition ($publishSource -match 'Start-Process -FilePath "explorer.exe"') -Message "Publish.ps1 must open the actual output directory after success."
 Assert-True -Condition ($publishSource -match 'Remove-Item -LiteralPath \$outputRoot -Recurse -Force') -Message "Publish.ps1 must rebuild the release directory from a clean state."
+Assert-True -Condition ($publishSource -match 'Add-Type -AssemblyName System.IO.Compression.FileSystem') -Message "Publish.ps1 must load ZipFile support in Windows PowerShell."
 
 foreach ($batchName in @("build.bat", "publish.bat")) {
     $batchSource = Get-Content -LiteralPath (Join-Path $repositoryRoot $batchName) -Raw
