@@ -5,7 +5,9 @@ public enum TransferDirection
     Upload,
     Download,
     Copy,
-    Move
+    Move,
+    DeleteRemote,
+    DeleteLocal
 }
 
 public enum TransferTaskKind
@@ -172,10 +174,10 @@ public sealed record TransferTaskRecord
         if (string.IsNullOrWhiteSpace(ProfileName)) throw new ArgumentException("连接名称不能为空。", nameof(ProfileName));
         if (string.IsNullOrWhiteSpace(Bucket)) throw new ArgumentException("Bucket 不能为空。", nameof(Bucket));
         if (string.IsNullOrWhiteSpace(ObjectKey)) throw new ArgumentException("对象 Key 不能为空。", nameof(ObjectKey));
-        if (Direction is TransferDirection.Upload or TransferDirection.Download)
+        if (Direction is TransferDirection.Upload or TransferDirection.Download or TransferDirection.DeleteLocal)
         {
             if (string.IsNullOrWhiteSpace(LocalPath))
-                throw new ArgumentException("上传或下载任务的本地路径不能为空。", nameof(LocalPath));
+                throw new ArgumentException("上传、下载或本地删除任务的本地路径不能为空。", nameof(LocalPath));
         }
         else if (Direction is TransferDirection.Copy or TransferDirection.Move)
         {
