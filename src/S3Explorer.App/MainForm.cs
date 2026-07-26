@@ -62,6 +62,7 @@ internal sealed class MainForm : Form
     private readonly PersistentTransferQueue _transferQueue;
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly IFolderSyncJobStore _syncJobStore;
+    private readonly GitHubUpdateChecker _updateChecker;
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new() { Name = "StatusBar" };
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
@@ -93,6 +94,7 @@ internal sealed class MainForm : Form
     private bool _closing;
     private bool _suppressTreeSelection;
     private ObjectClipboardPayload? _objectClipboard;
+    private bool _updateCheckInProgress;
 
     public MainForm(
         IProfileStore profileStore,
@@ -102,6 +104,7 @@ internal sealed class MainForm : Form
         PersistentTransferQueue transferQueue,
         TransferRuntimeConfiguration transferRuntime,
         IFolderSyncJobStore syncJobStore,
+        GitHubUpdateChecker updateChecker,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -111,6 +114,7 @@ internal sealed class MainForm : Form
         _transferQueue = transferQueue;
         _transferRuntime = transferRuntime;
         _syncJobStore = syncJobStore;
+        _updateChecker = updateChecker;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -144,6 +148,8 @@ internal sealed class MainForm : Form
             {
                 await InitializeAsync();
                 _automation?.Ready(this);
+                if (_automation is null && _settings.CheckForUpdatesOnStartup)
+                    _ = CheckForUpdatesAsync(automatic: true);
             }
             catch (Exception exception) when (_automation is not null)
             {
@@ -242,13 +248,13 @@ internal sealed class MainForm : Form
         tools.DropDownItems.Add(Command("logs", "查看日志", (_, _) => OpenLog()));
         tools.DropDownItems.Add(Command("clear-cache", "清理缓存", (_, _) => MessageBox.Show(this, "当前版本没有持久对象缓存。", "清理缓存")));
         tools.DropDownItems.Add(Command("diagnostics", "网络诊断", async (_, _) => await TestCurrentConnectionAsync()));
-        tools.DropDownItems.Add(Unsupported("检查更新"));
+        tools.DropDownItems.Add(Command("check-updates", "检查更新...", async (_, _) => await CheckForUpdatesAsync(automatic: false)));
 
         var help = new ToolStripMenuItem("帮助(&H)");
         help.DropDownItems.Add(Command("help", "使用说明", (_, _) => OpenProjectFile("README.md")));
         help.DropDownItems.Add(new ToolStripMenuItem("快捷键", null, (_, _) => ShowShortcuts()));
-        help.DropDownItems.Add(Unsupported("打开项目主页"));
-        help.DropDownItems.Add(Unsupported("报告问题"));
+        help.DropDownItems.Add(Command("project-home", "打开项目主页", (_, _) => OpenExternalUrl(ProjectLinks.Homepage)));
+        help.DropDownItems.Add(Command("report-issue", "报告问题", (_, _) => OpenExternalUrl(ProjectLinks.Issues)));
         help.DropDownItems.Add(new ToolStripMenuItem("关于", null, (_, _) =>
             MessageBox.Show(this, $"S3 Explorer v{Application.ProductVersion}\n\n原生 Windows S3 / S3-compatible 对象存储管理工具。\n.NET 10 · WinForms · AWS SDK for .NET", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information)));
 
@@ -618,6 +624,9 @@ internal sealed class MainForm : Form
 
     internal AutomationReport BuildAutomationReport()
     {
+        var hasUpdateCommand = _commands.TryGetValue("check-updates", out var updateCommand) && updateCommand.Enabled;
+        var hasProjectHome = _commands.TryGetValue("project-home", out var projectHome) && projectHome.Enabled;
+        var hasIssueLink = _commands.TryGetValue("report-issue", out var issueLink) && issueLink.Enabled;
         var checks = new List<AutomationCheck>
         {
             new("window-handle", IsHandleCreated && Handle != IntPtr.Zero, $"Handle={Handle}"),
@@ -630,7 +639,10 @@ internal sealed class MainForm : Form
             new("account-tree", _tree.Name == "AccountTree" && _tree.Parent is not null, $"Nodes={_tree.Nodes.Count}"),
             new("object-list", _objects.Name == "ObjectList" && _objects.Parent is not null && _objects.Columns.Count == 5, $"Columns={_objects.Columns.Count}"),
             new("transfer-queue", _transfers.Name == "TransferQueue" && _transfers.Parent is not null, $"Visible={_transfers.Visible}"),
-            new("status-bar", _status.Name == "StatusBar" && _status.Items.Count > 0, $"Items={_status.Items.Count}")
+            new("status-bar", _status.Name == "StatusBar" && _status.Items.Count > 0, $"Items={_status.Items.Count}"),
+            new("update-command", hasUpdateCommand, $"Present={updateCommand is not null}"),
+            new("project-links", hasProjectHome && hasIssueLink,
+                $"Home={projectHome is not null}; Issue={issueLink is not null}")
         };
 
         var parent = CreateParentDirectoryItem(_objects.Font);
@@ -1929,6 +1941,83 @@ internal sealed class MainForm : Form
         catch (Exception exception)
         {
             ErrorDialog.ShowException(this, "无法打开日志", "查看日志", exception, _logger.CurrentLogPath);
+        }
+    }
+
+    private async Task CheckForUpdatesAsync(bool automatic)
+    {
+        if (_updateCheckInProgress)
+        {
+            if (!automatic)
+                MessageBox.Show(this, "更新检查正在进行，请稍候。", "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _updateCheckInProgress = true;
+        var previousStatus = _requestStatus.Text;
+        _requestStatus.Text = "正在检查更新...";
+        try
+        {
+            var currentVersion = typeof(MainForm).Assembly.GetName().Version ?? new Version(0, 0, 0, 0);
+            var release = await _updateChecker.GetLatestAsync();
+            if (!release.IsNewerThan(currentVersion))
+            {
+                if (!automatic && !IsDisposed)
+                    MessageBox.Show(this,
+                        $"当前版本 {DisplayVersion} 已是最新稳定版本。",
+                        "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (IsDisposed || Disposing) return;
+            using var dialog = new UpdateDialog(currentVersion, release);
+            if (dialog.ShowDialog(this) == DialogResult.OK && dialog.SelectedUri is not null)
+                OpenExternalUrl(dialog.SelectedUri.AbsoluteUri);
+        }
+        catch (HttpRequestException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.Warning("GitHub update check found no published release.");
+            if (!automatic && !IsDisposed)
+                MessageBox.Show(this,
+                    "GitHub 上还没有已发布的稳定 Release，暂时无法比较版本。",
+                    "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (OperationCanceledException exception)
+        {
+            _logger.Warning($"Update check timed out: {exception.Message}");
+            if (!automatic && !IsDisposed)
+                MessageBox.Show(this,
+                    "检查更新超时，请确认网络连接后重试。",
+                    "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Update check failed: {exception.GetType().Name}: {exception.Message}");
+            if (!automatic && !IsDisposed)
+                MessageBox.Show(this,
+                    $"无法检查更新：{exception.Message}",
+                    "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _updateCheckInProgress = false;
+            if (!IsDisposed && !Disposing)
+                _requestStatus.Text = previousStatus;
+        }
+    }
+
+    private void OpenExternalUrl(string value)
+    {
+        try
+        {
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+                throw new InvalidOperationException("只允许打开可信的 HTTPS 项目链接。");
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Failed to open project URL: {exception.GetType().Name}: {exception.Message}");
+            ErrorDialog.ShowException(this, "无法打开链接", "项目链接", exception, value);
         }
     }
 

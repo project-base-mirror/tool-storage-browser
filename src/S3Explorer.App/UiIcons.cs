@@ -73,7 +73,7 @@ internal static class UiIcons
             "edit-connection" or "properties" or "properties-menu" or "bucket-properties" => UiIconKind.Properties,
             "delete-connection" or "delete-object" or "delete-object-menu" or "delete-bucket" or "empty-bucket" => UiIconKind.Delete,
             "connect" or "disconnect" => UiIconKind.Connect,
-            "refresh" or "refresh-buckets" => UiIconKind.Refresh,
+            "refresh" or "refresh-buckets" or "check-updates" => UiIconKind.Refresh,
             "back" => UiIconKind.Back,
             "forward" => UiIconKind.Forward,
             "up" => UiIconKind.Up,
@@ -88,8 +88,8 @@ internal static class UiIcons
             "folder-sync" => UiIconKind.Sync,
             "settings" => UiIconKind.Settings,
             "logs" => UiIconKind.Log,
-            "diagnostics" => UiIconKind.Diagnostics,
-            "help" => UiIconKind.Help,
+            "diagnostics" or "report-issue" => UiIconKind.Diagnostics,
+            "help" or "project-home" => UiIconKind.Help,
             "bucket-acl" or "bucket-policy" or "bucket-access-controls" or "metadata" or "presign" => UiIconKind.Info,
             _ => (UiIconKind?)null
         };

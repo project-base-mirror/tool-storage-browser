@@ -17,6 +17,7 @@ internal sealed record AppSettings
     public bool ConfirmDelete { get; init; } = true;
     public bool ConfirmOverwrite { get; init; } = true;
     public bool AutoConnectLastProfile { get; init; }
+    public bool CheckForUpdatesOnStartup { get; init; } = true;
     public string DefaultDownloadDirectory { get; init; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     public int ObjectPageSize { get; init; } = ObjectListingLimits.DefaultPageSize;
