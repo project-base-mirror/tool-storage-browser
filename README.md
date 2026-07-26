@@ -14,6 +14,9 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 对象属性、Metadata、预签名下载 URL。
 - WinForms 主窗口、连接管理、设置、日志和错误详情。
 - 当前列表过滤、导航历史、布局与列设置持久化。
+- 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
+- 独立 `s3explorer-cli`：连接、Bucket、对象和同步任务 API，支持 JSON 输出与自动化隔离数据目录。
+- 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
 
 ## 运行要求
 
@@ -65,7 +68,31 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 `0.2.1` 至 `0.3.4` 的版本边界、需求拆分、验收标准和实时完成情况见 [`docs/Release-Plan-v0.2-v0.3.md`](docs/Release-Plan-v0.2-v0.3.md)。
 
-## 命令行与 UI 自动化
+`0.5` 至 `0.7` 的代码审查结论、当前交付范围和后续路线见 [`docs/Roadmap-v0.5-v0.7.md`](docs/Roadmap-v0.5-v0.7.md)。
+
+## 对象存储命令行 API
+
+发布包同时包含 `S3Explorer.exe` 和 `s3explorer-cli.exe`。CLI 与桌面端共享 DPAPI 加密的连接配置和同步任务：
+
+    s3explorer-cli profile list --json
+    s3explorer-cli connection test "my-account" --json
+    s3explorer-cli bucket list "my-account" --json
+    s3explorer-cli object list "s3://my-account/my-bucket/path/" --recursive --json
+    s3explorer-cli object upload "D:\data\report.zip" "s3://my-account/my-bucket/backups/"
+    s3explorer-cli object download "s3://my-account/my-bucket/backups/report.zip" "D:\restore\report.zip"
+
+同步任务可以由桌面端“工具 → 文件夹同步”创建，也可以完全通过命令行管理：
+
+    s3explorer-cli sync list --json
+    s3explorer-cli sync add --name "site-backup" --local "D:\site" --remote "s3://my-account/backups/site/" --direction upload --exclude "bin/**" --exclude "*.tmp"
+    s3explorer-cli sync analyze "site-backup" --json
+    s3explorer-cli sync run "site-backup" --json
+
+如果同步任务启用了删除传播，`sync run` 还必须明确提供 `--yes`。创建连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。源码树中可用 `cli.bat help` 查看完整命令。
+
+所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。
+
+## UI 自动化
 
 仓库提供固定命令集合，不接受任意可执行文件或脚本参数：
 
@@ -127,6 +154,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 ## 数据位置与安全
 
 - 连接配置：`%APPDATA%\S3Explorer\profiles.json`
+- 文件夹同步任务：`%APPDATA%\S3Explorer\sync-jobs.json`
 - 日志目录：`%LOCALAPPDATA%\S3Explorer\logs`
 - SecretKey 和 SessionToken 使用 DPAPI CurrentUser 加密后保存。
 - 导出配置默认不包含凭据。
@@ -137,6 +165,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
     src/
       S3Explorer.App                 WinForms 桌面应用
+      S3Explorer.Cli                 命令行对象存储 API
       S3Explorer.Core                核心模型、路径和接口
       S3Explorer.Infrastructure.S3   AWS SDK、凭据与配置实现
     tests/
@@ -146,6 +175,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
     docs/
       MinIO-Testing.md
       Release-Plan-v0.2-v0.3.md
+      Roadmap-v0.5-v0.7.md
     scripts/
       Build.ps1
       Publish.ps1
@@ -154,10 +184,13 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       app-automation.cmd
     build.bat
     publish.bat
+    cli.bat
 
 ## 当前限制
 
-第一阶段不承诺完整实现 Bucket Policy、CORS、生命周期、版本历史、Object Lock、ACL/Public Access Block 编辑、自动更新和托盘驻留。未支持的入口应保持禁用或明确提示当前版本不支持。
+当前仍未实现 CORS、生命周期、版本历史、Object Lock、自动更新和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
+
+文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 
 对象“目录”由 `Delimiter = "/"`、`CommonPrefixes` 和以 `/` 结尾的零字节对象模拟；S3 本身没有本地文件系统意义上的真实目录。
 

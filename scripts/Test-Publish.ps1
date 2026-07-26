@@ -21,7 +21,7 @@ function Assert-True {
     }
 }
 
-foreach ($relativePath in @("build.bat", "publish.bat", "scripts\Build.ps1", "scripts\Publish.ps1")) {
+foreach ($relativePath in @("build.bat", "publish.bat", "cli.bat", "scripts\Build.ps1", "scripts\Publish.ps1")) {
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repositoryRoot $relativePath)) -Message "Missing required script: $relativePath"
 }
 
@@ -75,6 +75,8 @@ if (-not $SkipPackageBuild) {
             $entryNames = @($archive.Entries | Select-Object -ExpandProperty FullName)
             Assert-True -Condition ($entryNames -contains "S3Explorer.exe") -Message "$zipName does not contain S3Explorer.exe."
             Assert-True -Condition ($entryNames -contains "S3Explorer.dll") -Message "$zipName does not contain S3Explorer.dll."
+            Assert-True -Condition ($entryNames -contains "s3explorer-cli.exe") -Message "$zipName does not contain s3explorer-cli.exe."
+            Assert-True -Condition ($entryNames -contains "s3explorer-cli.dll") -Message "$zipName does not contain s3explorer-cli.dll."
         }
         finally {
             $archive.Dispose()

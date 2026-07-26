@@ -13,6 +13,7 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
+$cliProject = Join-Path $repositoryRoot "src\S3Explorer.Cli\S3Explorer.Cli.csproj"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $outputRoot = Join-Path $artifactsRoot "release"
 $frameworkName = "S3Explorer-$Runtime"
@@ -79,6 +80,19 @@ function Publish-Package {
     Invoke-DotNet -Arguments @(
         "publish",
         $appProject,
+        "-c", $Configuration,
+        "-r", $Runtime,
+        "--self-contained", $selfContainedValue,
+        "-o", $Destination,
+        "-p:PublishTrimmed=false",
+        "-p:PublishSingleFile=false",
+        "-p:PublishReadyToRun=false",
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false"
+    )
+    Invoke-DotNet -Arguments @(
+        "publish",
+        $cliProject,
         "-c", $Configuration,
         "-r", $Runtime,
         "--self-contained", $selfContainedValue,
