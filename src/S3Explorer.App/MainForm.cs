@@ -57,6 +57,7 @@ internal sealed class MainForm : Form
     };
     private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
     private readonly ContextMenuStrip _accountMenu = new();
+    private readonly ContextMenuStrip _bucketMenu = new();
     private readonly ContextMenuStrip _objectMenu = new();
     private readonly PersistentTransferQueue _transferQueue;
     private readonly TransferRuntimeConfiguration _transferRuntime;
@@ -126,6 +127,7 @@ internal sealed class MainForm : Form
         BuildAddressBar();
         BuildBody();
         BuildAccountContextMenu();
+        BuildBucketContextMenu();
         BuildObjectContextMenu();
         BuildStatus();
         WireEvents();
@@ -378,6 +380,68 @@ internal sealed class MainForm : Form
         };
     }
 
+    private void BuildBucketContextMenu()
+    {
+        var open = ContextCommand("open-bucket", "打开 Bucket", UiIconKind.Bucket, async (_, _) => await OpenSelectedBucketAsync());
+        var refresh = ContextCommand("refresh", "刷新对象", UiIconKind.Refresh, async (_, _) =>
+            await InSelectedBucketAsync(RefreshAsync));
+        var create = ContextCommand("create-bucket", "新建 Bucket...", UiIconKind.Bucket, async (_, _) =>
+            await InSelectedBucketAsync(CreateBucketAsync));
+        var uploadFile = ContextCommand("upload-file", "上传文件...", UiIconKind.Upload, async (_, _) =>
+            await InSelectedBucketAsync(UploadFilesAsync));
+        var uploadFolder = ContextCommand("upload-folder", "上传文件夹...", UiIconKind.Folder, async (_, _) =>
+            await InSelectedBucketAsync(UploadFolderAsync));
+        var downloadAll = ContextCommand("download", "下载整个 Bucket...", UiIconKind.Download, async (_, _) =>
+            await DownloadSelectedBucketAsync());
+        var sync = ContextCommand("folder-sync", "文件夹同步...", UiIconKind.Sync, async (_, _) =>
+            await InSelectedBucketAsync(() =>
+            {
+                ShowFolderSync();
+                return Task.CompletedTask;
+            }));
+        var acl = ContextCommand("bucket-acl", "Bucket 权限 (ACL)...", UiIconKind.Info, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Acl));
+        var policy = ContextCommand("bucket-policy", "Bucket Policy...", UiIconKind.Info, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Policy));
+        var accessControls = ContextCommand("bucket-access-controls", "Public Access Block / Object Ownership...", UiIconKind.Info, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.AccessControls));
+        var empty = ContextCommand("empty-bucket", "清空 Bucket...", UiIconKind.Delete, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.EmptyBucket));
+        var delete = ContextCommand("delete-bucket", "删除 Bucket...", UiIconKind.Delete, async (_, _) => await DeleteBucketAsync());
+        var properties = ContextCommand("bucket-properties", "属性...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Overview));
+
+        _bucketMenu.Items.AddRange([
+            open,
+            refresh,
+            create,
+            new ToolStripSeparator(),
+            uploadFile,
+            uploadFolder,
+            downloadAll,
+            sync,
+            new ToolStripSeparator(),
+            acl,
+            policy,
+            accessControls,
+            new ToolStripSeparator(),
+            Unsupported("版本控制..."),
+            Unsupported("默认加密..."),
+            Unsupported("生命周期配置..."),
+            Unsupported("CORS 配置..."),
+            Unsupported("Object Lock..."),
+            Unsupported("标签..."),
+            Unsupported("日志设置..."),
+            Unsupported("跨区域复制..."),
+            new ToolStripSeparator(),
+            empty,
+            delete,
+            properties
+        ]);
+        open.Font = new Font(open.Font, FontStyle.Bold);
+        _bucketMenu.Opening += (_, args) => args.Cancel = _tree.SelectedNode?.Tag is not BucketNodeTag;
+    }
+
     private void BuildStatus()
     {
         _status.Items.AddRange([
@@ -398,12 +462,18 @@ internal sealed class MainForm : Form
 
     private void WireEvents()
     {
-        _tree.NodeMouseClick += (_, args) =>
+        _tree.MouseDown += (_, args) =>
         {
-            var node = args.Node;
-            if (args.Button != MouseButtons.Right || node?.Tag is not ConnectionProfile) return;
+            if (args.Button != MouseButtons.Right) return;
+            var node = _tree.GetNodeAt(args.Location);
+            if (node is null) return;
             _tree.SelectedNode = node;
-            _accountMenu.Show(_tree, args.Location);
+            _tree.ContextMenuStrip = node.Tag switch
+            {
+                ConnectionProfile => _accountMenu,
+                BucketNodeTag => _bucketMenu,
+                _ => null
+            };
         };
         _tree.NodeMouseDoubleClick += async (_, args) =>
         {
@@ -416,6 +486,12 @@ internal sealed class MainForm : Form
         };
         _tree.AfterSelect += async (_, args) =>
         {
+            _tree.ContextMenuStrip = args.Node?.Tag switch
+            {
+                ConnectionProfile => _accountMenu,
+                BucketNodeTag => _bucketMenu,
+                _ => null
+            };
             UpdateCommandStates();
             if (_suppressTreeSelection) return;
             var node = args.Node;
@@ -1148,6 +1224,31 @@ internal sealed class MainForm : Form
         return false;
     }
 
+    private async Task<bool> OpenSelectedBucketAsync()
+    {
+        if (_tree.SelectedNode?.Tag is not BucketNodeTag selected)
+        {
+            MessageBox.Show(this, "请先选择 Bucket。", "Bucket", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        var alreadyAtRoot = _currentProfile?.Id == selected.Profile.Id &&
+            string.Equals(_currentBucket, selected.Bucket, StringComparison.Ordinal) &&
+            _currentPrefix.Length == 0;
+        if (!alreadyAtRoot)
+            await NavigateAsync(selected.Profile, selected.Bucket, string.Empty, true);
+
+        return _currentProfile?.Id == selected.Profile.Id &&
+            string.Equals(_currentBucket, selected.Bucket, StringComparison.Ordinal) &&
+            _currentPrefix.Length == 0;
+    }
+
+    private async Task InSelectedBucketAsync(Func<Task> action)
+    {
+        if (await OpenSelectedBucketAsync())
+            await action();
+    }
+
     private async Task UploadFilesAsync()
     {
         if (!EnsureLocation()) return;
@@ -1354,6 +1455,65 @@ internal sealed class MainForm : Form
         }
 
         _logger.Info($"Download batch queued profile={profile.Name} bucket={bucket} batch={batch.Id} target={targetRoot} skipped={skipped}");
+        SetTransferVisibility(true);
+    }
+
+    private async Task DownloadSelectedBucketAsync()
+    {
+        if (!await OpenSelectedBucketAsync()) return;
+        using var folder = new FolderBrowserDialog
+        {
+            InitialDirectory = _settings.DefaultDownloadDirectory,
+            Description = $"选择 Bucket “{_currentBucket}” 的下载目标文件夹"
+        };
+        if (folder.ShowDialog(this) != DialogResult.OK) return;
+
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
+        var targetRoot = folder.SelectedPath;
+        var batch = await _transfers.CreateBatchAsync(
+            profile,
+            bucket,
+            $"下载整个 Bucket {bucket}",
+            targetRoot,
+            TransferDirection.Download);
+        var chunk = new List<DownloadBatchItem>(256);
+        var skipped = 0;
+
+        try
+        {
+            await foreach (var entry in EnumerateAllObjectsAsync(string.Empty))
+            {
+                if (entry.IsDirectory) continue;
+                chunk.Add(new DownloadBatchItem(
+                    entry.Key,
+                    LocalObjectPath.MapRelativeKey(targetRoot, entry.Key),
+                    entry.Key,
+                    entry.Size));
+                if (chunk.Count < 256) continue;
+                await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
+                chunk.Clear();
+            }
+            if (chunk.Count > 0)
+                await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
+        }
+        catch (Exception exception)
+        {
+            skipped++;
+            _logger.Error($"Bucket download discovery failed bucket={bucket} target={targetRoot}", exception);
+            MessageBox.Show(
+                this,
+                $"Bucket 递归发现提前停止：{exception.Message}\n\n已发现的对象仍会继续下载。",
+                "下载整个 Bucket",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            await _transfers.CompleteBatchDiscoveryAsync(batch.Id, skipped);
+        }
+
+        _logger.Info($"Bucket download queued profile={profile.Name} bucket={bucket} batch={batch.Id} target={targetRoot} skipped={skipped}");
         SetTransferVisibility(true);
     }
 
@@ -1908,6 +2068,13 @@ internal sealed class MainForm : Form
         _commands[id] = item;
         return item;
     }
+
+    private static ToolStripMenuItem ContextCommand(
+        string id,
+        string text,
+        UiIconKind fallbackIcon,
+        EventHandler handler) =>
+        new(text, UiIcons.ForCommand(id) ?? UiIcons.Create(fallbackIcon, 16), handler);
 
     private static ToolStripMenuItem Unsupported(string text) =>
         new(text) { Enabled = false, ToolTipText = "当前版本尚未支持" };
