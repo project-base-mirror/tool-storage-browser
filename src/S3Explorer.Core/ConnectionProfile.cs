@@ -102,18 +102,19 @@ public sealed record ConnectionProfile
             throw new ArgumentException($"Bucket 名称无效：{bucket}", nameof(ExternalBuckets));
     }
 
-    public static ConnectionProfile CreatePreset(S3ServiceType type) => type switch
+    public static ConnectionProfile CreatePreset(S3ServiceType type)
     {
-        S3ServiceType.AmazonS3 => new() { ServiceType = type, Endpoint = "https://s3.amazonaws.com", Region = "us-east-1" },
-        S3ServiceType.MinIO => new() { ServiceType = type, Endpoint = "http://127.0.0.1:9000", Region = "us-east-1", AddressingStyle = AddressingStyle.PathStyle, UseHttps = false },
-        S3ServiceType.CloudflareR2 => new() { ServiceType = type, Endpoint = "https://<account-id>.r2.cloudflarestorage.com", Region = "auto", SignatureRegion = "auto", AddressingStyle = AddressingStyle.PathStyle },
-        S3ServiceType.BackblazeB2 => new() { ServiceType = type, Endpoint = "https://s3.us-west-004.backblazeb2.com", Region = "us-west-004" },
-        S3ServiceType.AliyunOss => new() { ServiceType = type, Endpoint = "https://oss-cn-hangzhou.aliyuncs.com", Region = "oss-cn-hangzhou" },
-        S3ServiceType.TencentCos => new() { ServiceType = type, Endpoint = "https://cos.ap-guangzhou.myqcloud.com", Region = "ap-guangzhou" },
-        S3ServiceType.GoogleCloudStorage => new() { ServiceType = type, Endpoint = "https://storage.googleapis.com", Region = "auto", SignatureRegion = "auto", AddressingStyle = AddressingStyle.PathStyle },
-        S3ServiceType.SupabaseStorage => new() { ServiceType = type, Endpoint = "https://<project-ref>.supabase.co/storage/v1/s3", Region = "us-east-1", AddressingStyle = AddressingStyle.PathStyle },
-        _ => new() { ServiceType = type, Endpoint = "https://s3.example.com", Region = "us-east-1" }
-    };
+        var definition = S3ProviderCatalog.Get(type);
+        return new ConnectionProfile
+        {
+            ServiceType = type,
+            Endpoint = definition.DefaultEndpoint,
+            Region = definition.DefaultRegion,
+            SignatureRegion = definition.RegionInput == RegionInputMode.Hidden ? definition.DefaultRegion : string.Empty,
+            AddressingStyle = definition.DefaultAddressingStyle,
+            UseHttps = definition.DefaultUseHttps
+        };
+    }
 }
 
 public static class EndpointCompatibility
