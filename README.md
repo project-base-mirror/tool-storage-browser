@@ -147,6 +147,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 `release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、ZIP SHA-256、SDK 版本，以及可选的启动时间和内存数据。
 
+推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；Pages 与 Release 的首次启用、版本门禁和资产名称约定见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
+
 发布脚本回归检查：
 
     pwsh .\scripts\Test-Publish.ps1
@@ -178,6 +180,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       S3Explorer.App.Tests
     docs/
       MinIO-Testing.md
+      GitHub-Delivery.md
       Release-Plan-v0.2-v0.3.md
       Roadmap-v0.5-v0.8.md
       versions/

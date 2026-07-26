@@ -1,0 +1,105 @@
+name: Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate tag, project version, and release notes
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use vX.Y.Z: $env:RELEASE_TAG"
+          }
+
+          [xml]$props = Get-Content -Raw ./Directory.Build.props
+          $version = [string]$props.Project.PropertyGroup.Version
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match project version $version."
+          }
+
+          $notes = "docs/versions/$env:RELEASE_TAG.md"
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+            throw "Missing version record: $notes"
+          }
+          "RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Test and build release packages
+        shell: pwsh
+        run: ./scripts/Publish.ps1 -NoOpen
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem -LiteralPath ./artifacts/release -Filter '*.zip' |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash *$($_.Name)"
+            }
+          $lines | Set-Content -LiteralPath ./artifacts/release/SHA256SUMS.txt -Encoding ascii
+
+      - name: Preserve workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: S3Explorer-${{ env.RELEASE_TAG }}
+          if-no-files-found: error
+          path: |
+            artifacts/release/S3Explorer-win-x64.zip
+            artifacts/release/S3Explorer-win-x64-self-contained.zip
+            artifacts/release/release-metrics.json
+            artifacts/release/SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            './artifacts/release/S3Explorer-win-x64.zip',
+            './artifacts/release/S3Explorer-win-x64-self-contained.zip',
+            './artifacts/release/release-metrics.json',
+            './artifacts/release/SHA256SUMS.txt'
+          )
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @assets --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to replace release assets.' }
+            gh release edit $env:RELEASE_TAG --title "S3 Explorer $env:RELEASE_TAG" --notes-file $env:RELEASE_NOTES
+          }
+          else {
+            gh release create $env:RELEASE_TAG @assets --verify-tag --title "S3 Explorer $env:RELEASE_TAG" --notes-file $env:RELEASE_NOTES
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish GitHub Release.' }
