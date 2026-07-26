@@ -1697,38 +1697,19 @@ internal sealed class MainForm : Form
             _settings.ObjectCacheLimit,
             ObjectListingLimits.MinimumCacheLimit,
             ObjectListingLimits.MaximumCacheLimit);
-        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
-        string? token = null;
-
-        while (true)
+        var pageSize = Math.Clamp(
+            _settings.ObjectPageSize,
+            ObjectListingLimits.MinimumPageSize,
+            ObjectListingLimits.MaximumPageSize);
+        await foreach (var item in RecursiveObjectListing.EnumerateFilesAsync(
+                           prefix,
+                           pageSize,
+                           limit,
+                           (currentPrefix, token, cancellationToken) => _storage.ListObjectsAsync(
+                               profile, bucket, currentPrefix, token, pageSize, cancellationToken),
+                           CancellationToken.None))
         {
-            var page = await _storage.ListObjectsAsync(
-                profile,
-                bucket,
-                prefix,
-                token,
-                Math.Clamp(
-                    _settings.ObjectPageSize,
-                    ObjectListingLimits.MinimumPageSize,
-                    ObjectListingLimits.MaximumPageSize),
-                CancellationToken.None);
-            foreach (var item in page.Items)
-            {
-                if (!seenKeys.Add(item.Key))
-                    continue;
-                if (seenKeys.Count > limit)
-                    throw new InvalidOperationException(
-                        $"文件夹对象数量达到内存保护上限 {limit:N0}，已停止递归下载。");
-                yield return item;
-            }
-
-            if (!page.HasMore)
-                yield break;
-            var nextToken = page.ContinuationToken;
-            if (string.IsNullOrEmpty(nextToken) || !seenTokens.Add(nextToken))
-                throw new InvalidOperationException("对象列表分页令牌无效或重复，已停止递归下载。");
-            token = nextToken;
+            yield return item;
         }
     }
 
@@ -1736,40 +1717,21 @@ internal sealed class MainForm : Form
     {
         var profile = _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
         var bucket = _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
-        var cache = new BoundedObjectCache(Math.Clamp(
+        var limit = Math.Clamp(
             _settings.ObjectCacheLimit,
             ObjectListingLimits.MinimumCacheLimit,
-            ObjectListingLimits.MaximumCacheLimit));
-        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
-        string? token = null;
-
-        while (true)
-        {
-            var page = await _storage.ListObjectsAsync(
-                profile,
-                bucket,
-                prefix,
-                token,
-                Math.Clamp(
-                    _settings.ObjectPageSize,
-                    ObjectListingLimits.MinimumPageSize,
-                    ObjectListingLimits.MaximumPageSize),
-                CancellationToken.None);
-            var addResult = cache.AddRange(page.Items);
-            if (addResult.Truncated || (cache.LimitReached && page.HasMore))
-            {
-                throw new InvalidOperationException(
-                    $"文件夹对象数量达到内存保护上限 {cache.Limit:N0}，已停止递归下载。");
-            }
-
-            if (!page.HasMore)
-                return cache.Items.ToArray();
-
-            var nextToken = page.ContinuationToken;
-            if (string.IsNullOrEmpty(nextToken) || !seenTokens.Add(nextToken))
-                throw new InvalidOperationException("对象列表分页令牌无效或重复，已停止递归下载。");
-            token = nextToken;
-        }
+            ObjectListingLimits.MaximumCacheLimit);
+        var pageSize = Math.Clamp(
+            _settings.ObjectPageSize,
+            ObjectListingLimits.MinimumPageSize,
+            ObjectListingLimits.MaximumPageSize);
+        return await RecursiveObjectListing.ListFilesAsync(
+            prefix,
+            pageSize,
+            limit,
+            (currentPrefix, token, cancellationToken) => _storage.ListObjectsAsync(
+                profile, bucket, currentPrefix, token, pageSize, cancellationToken),
+            CancellationToken.None);
     }
 
     private async Task ShowSettingsAsync()
