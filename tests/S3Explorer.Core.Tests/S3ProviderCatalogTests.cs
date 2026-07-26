@@ -40,6 +40,17 @@ public sealed class S3ProviderCatalogTests
             Assert.Equal(definition.DefaultRegion, preset.Region);
             Assert.Equal(definition.DefaultAddressingStyle, preset.AddressingStyle);
             Assert.Equal(definition.DefaultUseHttps, preset.UseHttps);
+            Assert.Equal(definition.EffectiveDefaultSigningRegion, preset.EffectiveSignatureRegion);
         }
+    }
+
+    [Fact]
+    public void Amazon_preset_displays_auto_but_signs_with_safe_default()
+    {
+        var preset = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3);
+
+        Assert.Equal("auto", preset.Region);
+        Assert.Equal("us-east-1", preset.EffectiveSignatureRegion);
+        Assert.Equal("us-east-1", S3ProviderCatalog.ResolveSigningRegion(S3ServiceType.AmazonS3, "auto"));
     }
 }

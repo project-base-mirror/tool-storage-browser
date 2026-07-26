@@ -49,13 +49,15 @@ public sealed record ConnectionProfile
     {
         get
         {
-            if (!string.IsNullOrWhiteSpace(SignatureRegion))
-                return SignatureRegion.Trim();
-            if (!string.IsNullOrWhiteSpace(Region))
-                return Region.Trim();
-            return ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.GoogleCloudStorage
-                ? "auto"
-                : "us-east-1";
+            var signatureRegion = SignatureRegion?.Trim() ?? string.Empty;
+            if (signatureRegion.Length > 0 && !string.Equals(signatureRegion, "auto", StringComparison.OrdinalIgnoreCase))
+                return signatureRegion;
+
+            var region = Region?.Trim() ?? string.Empty;
+            if (region.Length > 0 && !string.Equals(region, "auto", StringComparison.OrdinalIgnoreCase))
+                return region;
+
+            return S3ProviderCatalog.Get(ServiceType).EffectiveDefaultSigningRegion;
         }
     }
 
@@ -110,7 +112,7 @@ public sealed record ConnectionProfile
             ServiceType = type,
             Endpoint = definition.DefaultEndpoint,
             Region = definition.DefaultRegion,
-            SignatureRegion = definition.RegionInput == RegionInputMode.Hidden ? definition.DefaultRegion : string.Empty,
+            SignatureRegion = definition.EffectiveDefaultSigningRegion,
             AddressingStyle = definition.DefaultAddressingStyle,
             UseHttps = definition.DefaultUseHttps
         };

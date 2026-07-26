@@ -72,7 +72,7 @@ public sealed class S3StorageService : IS3StorageService
             var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
             return response.Buckets
                 .Select(bucket => new CoreBucketInfo(bucket.BucketName, bucket.CreationDate))
-                .Concat(profile.KnownBuckets.Select(bucket => new CoreBucketInfo(bucket, null)))
+                .Concat(profile.KnownBuckets.Select(bucket => new CoreBucketInfo(bucket, null, IsConfigured: true)))
                 .GroupBy(bucket => bucket.Name, StringComparer.Ordinal)
                 .Select(group => group.First())
                 .OrderBy(bucket => bucket.Name, StringComparer.OrdinalIgnoreCase)
@@ -81,7 +81,7 @@ public sealed class S3StorageService : IS3StorageService
         catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex) && profile.KnownBuckets.Count > 0)
         {
             return profile.KnownBuckets
-                .Select(bucket => new CoreBucketInfo(bucket, null))
+                .Select(bucket => new CoreBucketInfo(bucket, null, IsConfigured: true))
                 .OrderBy(bucket => bucket.Name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }

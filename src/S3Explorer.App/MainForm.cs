@@ -708,12 +708,18 @@ internal sealed class MainForm : Form
             profileNode.Nodes.Clear();
             foreach (var bucket in buckets)
             {
+                var imageKey = bucket.IsConfigured ? "bucket-configured" : "bucket";
+                var tooltip = bucket.IsConfigured
+                    ? $"{bucket.Name}\n来自账户配置（默认/外部 Bucket）；服务未返回 ListBuckets 结果。"
+                    : bucket.Name;
+                if (!string.IsNullOrWhiteSpace(bucket.Region))
+                    tooltip += $"\nRegion: {bucket.Region}";
                 profileNode.Nodes.Add(new TreeNode(bucket.Name)
                 {
                     Tag = new BucketNodeTag(profile, bucket.Name),
-                    ImageKey = "bucket",
-                    SelectedImageKey = "bucket",
-                    ToolTipText = bucket.Region is null ? bucket.Name : $"{bucket.Name}\nRegion: {bucket.Region}"
+                    ImageKey = imageKey,
+                    SelectedImageKey = imageKey,
+                    ToolTipText = tooltip
                 });
             }
             if (buckets.Count == 0)

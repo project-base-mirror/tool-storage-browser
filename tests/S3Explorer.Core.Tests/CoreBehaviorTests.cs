@@ -109,7 +109,7 @@ public sealed class CoreBehaviorTests
     {
         var profile = new ConnectionProfile { Region = "ap-guangzhou" };
         Assert.Equal("ap-guangzhou", profile.EffectiveSignatureRegion);
-        Assert.Equal("auto", (profile with { SignatureRegion = " auto " }).EffectiveSignatureRegion);
+        Assert.Equal("us-east-1", (profile with { SignatureRegion = " auto ", Region = "auto" }).EffectiveSignatureRegion);
         Assert.Equal("us-east-1", (profile with { Region = string.Empty }).EffectiveSignatureRegion);
         Assert.Equal("auto", (profile with { ServiceType = S3ServiceType.CloudflareR2, Region = string.Empty }).EffectiveSignatureRegion);
     }

@@ -13,6 +13,7 @@ internal enum UiIconKind
     Up,
     Refresh,
     Bucket,
+    ConfiguredBucket,
     Folder,
     Upload,
     Download,
@@ -41,6 +42,7 @@ internal static class UiIcons
     private static readonly Color Positive = Color.FromArgb(22, 163, 74);
     private static readonly Color Danger = Color.FromArgb(220, 38, 38);
     private static readonly Color Storage = Color.FromArgb(14, 116, 144);
+    private static readonly Color ConfiguredStorage = Color.FromArgb(217, 119, 6);
 
     private const uint ShgfiIcon = 0x00000100;
     private const uint ShgfiSmallIcon = 0x00000001;
@@ -129,6 +131,7 @@ internal static class UiIcons
         Add(images, "account", UiIconKind.Account);
         Add(images, "connect", UiIconKind.Connect);
         Add(images, "bucket", UiIconKind.Bucket);
+        Add(images, "bucket-configured", UiIconKind.ConfiguredBucket);
         Add(images, "folder", UiIconKind.Folder);
         Add(images, "file", UiIconKind.File);
         AddShell(images, "file-text", "file.txt");
@@ -170,6 +173,7 @@ internal static class UiIcons
         using var positive = RoundedPen(Positive, stroke);
         using var danger = RoundedPen(Danger, stroke);
         using var storage = RoundedPen(Storage, stroke);
+        using var configuredStorage = RoundedPen(ConfiguredStorage, stroke);
 
         var left = size * .18f;
         var right = size * .82f;
@@ -218,6 +222,9 @@ internal static class UiIcons
                 break;
             case UiIconKind.Bucket:
                 DrawStorage(graphics, storage, new RectangleF(left, top, right - left, bottom - top));
+                break;
+            case UiIconKind.ConfiguredBucket:
+                DrawStorage(graphics, configuredStorage, new RectangleF(left, top, right - left, bottom - top));
                 break;
             case UiIconKind.Folder:
                 using (var folder = FolderPath(size))

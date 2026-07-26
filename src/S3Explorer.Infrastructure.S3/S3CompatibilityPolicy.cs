@@ -65,6 +65,7 @@ public static class S3CompatibilityPolicy
 
         var normalized = requestedRegion?.Trim();
         return string.IsNullOrWhiteSpace(normalized) ||
+               string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(normalized, "us-east-1", StringComparison.OrdinalIgnoreCase)
             ? null
             : normalized;

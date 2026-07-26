@@ -1,6 +1,10 @@
 namespace S3Explorer.Core;
 
-public sealed record BucketInfo(string Name, DateTimeOffset? CreatedAt, string? Region = null);
+public sealed record BucketInfo(
+    string Name,
+    DateTimeOffset? CreatedAt,
+    string? Region = null,
+    bool IsConfigured = false);
 
 public sealed record S3ObjectEntry(
     string Key,

@@ -22,7 +22,11 @@ public sealed record S3ProviderDefinition(
     string DefaultRegion,
     string DefaultEndpoint,
     AddressingStyle DefaultAddressingStyle,
-    bool DefaultUseHttps = true);
+    bool DefaultUseHttps = true,
+    string? DefaultSigningRegion = null)
+{
+    public string EffectiveDefaultSigningRegion => DefaultSigningRegion ?? DefaultRegion;
+}
 
 public static class S3ProviderCatalog
 {
@@ -31,7 +35,8 @@ public static class S3ProviderCatalog
         {
             new S3ProviderDefinition(
                 S3ServiceType.AmazonS3, S3AccountCategory.AmazonS3, "Amazon S3",
-                RegionInputMode.Required, "us-east-1", "https://s3.amazonaws.com", AddressingStyle.Auto),
+                RegionInputMode.Required, "auto", "https://s3.amazonaws.com", AddressingStyle.Auto,
+                DefaultSigningRegion: "us-east-1"),
             new S3ProviderDefinition(
                 S3ServiceType.MinIO, S3AccountCategory.S3Compatible, "MinIO",
                 RegionInputMode.Hidden, "us-east-1", "http://127.0.0.1:9000", AddressingStyle.PathStyle, false),
@@ -92,11 +97,11 @@ public static class S3ProviderCatalog
     {
         var definition = Get(serviceType);
         if (definition.RegionInput == RegionInputMode.Hidden)
-            return definition.DefaultRegion;
+            return definition.EffectiveDefaultSigningRegion;
 
         var value = userInput?.Trim() ?? string.Empty;
-        if (value.Length == 0 && definition.RegionInput == RegionInputMode.Required)
-            return definition.DefaultRegion;
-        return value.Length == 0 ? definition.DefaultRegion : value;
+        if (value.Length == 0 || string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase))
+            return definition.EffectiveDefaultSigningRegion;
+        return value;
     }
 }

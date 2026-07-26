@@ -64,6 +64,7 @@ public sealed class S3ClientFactory
 
         if (profile.ServiceType == S3ServiceType.AmazonS3 &&
             !string.IsNullOrWhiteSpace(profile.Region) &&
+            !string.Equals(profile.Region.Trim(), "auto", StringComparison.OrdinalIgnoreCase) &&
             endpoint.Host.EndsWith("amazonaws.com", StringComparison.OrdinalIgnoreCase) &&
             endpoint.AbsolutePath == "/")
         {

@@ -55,6 +55,7 @@ public sealed class S3CompatibilityPolicyTests
         Assert.Equal("eu-west-1",
             S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", " eu-west-1 " ).BucketRegionName);
         Assert.Null(S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", "us-east-1").BucketRegionName);
+        Assert.Null(S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", "auto").BucketRegionName);
     }
 
     [Fact]

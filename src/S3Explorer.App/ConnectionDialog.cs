@@ -39,8 +39,7 @@ internal sealed class ConnectionDialog : Form
     };
     private readonly NumericUpDown _connectionTimeout = new() { Minimum = 1, Maximum = 120, Value = 10 };
     private readonly NumericUpDown _timeout = new() { Minimum = 5, Maximum = 3600, Value = 100 };
-    private readonly LinkLabel _advancedToggle = new() { Text = "显示高级设置", AutoSize = true };
-    private readonly GroupBox _advancedGroup = new() { Text = "高级设置", Dock = DockStyle.Top, AutoSize = true, Visible = false };
+    private readonly GroupBox _advancedGroup = new() { Text = "高级设置", Dock = DockStyle.Top, AutoSize = true };
     private readonly Button _test = new() { Text = "测试连接", Size = new Size(104, 32) };
     private readonly Label _result = new() { AutoSize = true, MaximumSize = new Size(510, 0), Margin = new Padding(10, 8, 3, 3) };
     private readonly Button _save = new() { Text = "保存", DialogResult = DialogResult.OK, Size = new Size(96, 32) };
@@ -75,7 +74,7 @@ internal sealed class ConnectionDialog : Form
             .Select(definition => (object)new Choice<S3ServiceType>(definition.ServiceType, definition.DisplayName))
             .ToArray());
         _storageClass.Items.AddRange(["STANDARD", "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE"]);
-        _region.Items.AddRange(["us-east-1", "us-west-1", "us-west-2", "us-west-004", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1", "ap-guangzhou", "oss-cn-hangzhou"]);
+        _region.Items.AddRange(["auto", "us-east-1", "us-west-1", "us-west-2", "us-west-004", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1", "ap-guangzhou", "oss-cn-hangzhou"]);
 
         BuildLayout();
         LoadProfile(Profile);
@@ -83,7 +82,6 @@ internal sealed class ConnectionDialog : Form
         _accountType.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _provider.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _useSessionToken.CheckedChanged += (_, _) => UpdateSessionTokenVisibility();
-        _advancedToggle.LinkClicked += (_, _) => ToggleAdvancedSettings();
         _https.CheckedChanged += (_, _) => ApplyHttpsToEndpoint();
         _test.Click += async (_, _) => await TestConnectionAsync();
         _save.Click += (_, _) => SaveProfile();
@@ -132,12 +130,11 @@ internal sealed class ConnectionDialog : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 2,
             Padding = new Padding(0),
             Margin = new Padding(0)
         };
         stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
@@ -193,10 +190,8 @@ internal sealed class ConnectionDialog : Form
         AddField(advanced, ref advancedRow, FieldLabel("请求超时（秒）："), _timeout);
         _advancedGroup.Controls.Add(advanced);
 
-        _advancedToggle.Margin = new Padding(4, 2, 0, 8);
         stack.Controls.Add(basic, 0, 0);
-        stack.Controls.Add(_advancedToggle, 0, 1);
-        stack.Controls.Add(_advancedGroup, 0, 2);
+        stack.Controls.Add(_advancedGroup, 0, 1);
         content.Controls.Add(stack);
 
         var footer = new TableLayoutPanel
@@ -290,7 +285,7 @@ internal sealed class ConnectionDialog : Form
             SelectChoice(_provider, profile.ServiceType);
             _name.Text = profile.Name;
             _endpoint.Text = profile.Endpoint;
-            _region.Text = string.IsNullOrWhiteSpace(profile.SignatureRegion) ? profile.Region : profile.SignatureRegion;
+            _region.Text = string.IsNullOrWhiteSpace(profile.Region) ? definition.DefaultRegion : profile.Region;
             _accessKey.Text = profile.AccessKey;
             _secretKey.Text = profile.SecretKey;
             _sessionToken.Text = profile.SessionToken;
@@ -347,15 +342,16 @@ internal sealed class ConnectionDialog : Form
             : "Region：";
         _regionHint.Text = definition.RegionInput switch
         {
-            RegionInputMode.Hidden => $"{definition.DisplayName} 不需要手动设置 Region；程序会自动使用签名值 {definition.DefaultRegion}。",
+            RegionInputMode.Hidden => $"{definition.DisplayName} 不需要手动设置 Region；程序会自动使用签名值 {definition.EffectiveDefaultSigningRegion}。",
             RegionInputMode.Optional => "仅在服务商明确要求自定义 SigV4 Region 时填写；留空会使用模板默认值。",
+            _ when serviceType == S3ServiceType.AmazonS3 => "默认 auto；连接使用全局 Endpoint，并以 us-east-1 签名。需要固定区域时再选择具体 Region。",
             _ => "Region 同时用于服务区域与 SigV4 签名。"
         };
 
         if (!applyPreset) return;
         var preset = ConnectionProfile.CreatePreset(serviceType);
         _endpoint.Text = preset.Endpoint;
-        _region.Text = preset.EffectiveSignatureRegion;
+        _region.Text = preset.Region;
         _https.Checked = preset.UseHttps;
         _path.Checked = preset.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = preset.AddressingStyle == AddressingStyle.VirtualHosted;
@@ -368,12 +364,6 @@ internal sealed class ConnectionDialog : Form
         var visible = _useSessionToken.Checked;
         _sessionTokenLabel.Visible = _sessionToken.Visible = visible;
         if (!visible) _sessionToken.Text = string.Empty;
-    }
-
-    private void ToggleAdvancedSettings()
-    {
-        _advancedGroup.Visible = !_advancedGroup.Visible;
-        _advancedToggle.Text = _advancedGroup.Visible ? "隐藏高级设置" : "显示高级设置";
     }
 
     private void ApplyHttpsToEndpoint()
@@ -392,7 +382,12 @@ internal sealed class ConnectionDialog : Form
             ? SelectedValue(_provider, S3ServiceType.Custom)
             : S3ProviderCatalog.DefaultServiceType(category);
         var definition = S3ProviderCatalog.Get(serviceType);
-        var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, _region.Text);
+        var region = definition.RegionInput == RegionInputMode.Hidden
+            ? definition.DefaultRegion
+            : _region.Text.Trim();
+        if (region.Length == 0)
+            region = definition.DefaultRegion;
+        var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, region);
         var endpoint = category == S3AccountCategory.S3Compatible
             ? _endpoint.Text.Trim()
             : definition.DefaultEndpoint;
@@ -408,7 +403,7 @@ internal sealed class ConnectionDialog : Form
             Name = _name.Text.Trim(),
             ServiceType = serviceType,
             Endpoint = endpoint,
-            Region = signingRegion,
+            Region = region,
             SignatureRegion = signingRegion,
             AccessKey = _accessKey.Text.Trim(),
             SecretKey = _secretKey.Text,

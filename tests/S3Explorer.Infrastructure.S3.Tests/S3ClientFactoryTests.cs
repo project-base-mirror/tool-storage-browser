@@ -54,6 +54,23 @@ public sealed class S3ClientFactoryTests
     }
 
     [Fact]
+    public void AmazonAutoRegionUsesGlobalEndpointAndSafeSigningRegion()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Amazon auto",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var config = new S3ClientFactory().CreateConfig(profile);
+
+        Assert.Equal("https://s3.amazonaws.com/", config.ServiceURL);
+        Assert.Equal("us-east-1", config.AuthenticationRegion);
+        Assert.Null(config.RegionEndpoint);
+    }
+
+    [Fact]
     public void MinioAutoAddressingForcesPathStyleForBucketOperations()
     {
         var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with

@@ -131,13 +131,16 @@ internal static class Program
                 var accessKey = args.Optional("access-key") ?? Environment.GetEnvironmentVariable("S3EXPLORER_ACCESS_KEY") ?? string.Empty;
                 var secretKey = ResolveSecret(args, "secret-key", "S3EXPLORER_SECRET_KEY");
                 var sessionToken = ResolveSecret(args, "session-token", "S3EXPLORER_SESSION_TOKEN", required: false);
-                var region = S3ProviderCatalog.ResolveSigningRegion(serviceType, args.Optional("region"));
+                var region = args.Optional("region")?.Trim();
+                if (string.IsNullOrWhiteSpace(region))
+                    region = definition.DefaultRegion;
+                var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, region);
                 var profile = preset with
                 {
                     Name = name.Trim(),
                     Endpoint = args.Optional("endpoint") ?? definition.DefaultEndpoint,
                     Region = region,
-                    SignatureRegion = region,
+                    SignatureRegion = signingRegion,
                     AccessKey = accessKey,
                     SecretKey = secretKey,
                     SessionToken = sessionToken,
