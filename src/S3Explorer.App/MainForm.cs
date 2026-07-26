@@ -60,6 +60,7 @@ internal sealed class MainForm : Form
     private readonly ContextMenuStrip _objectMenu = new();
     private readonly PersistentTransferQueue _transferQueue;
     private readonly TransferRuntimeConfiguration _transferRuntime;
+    private readonly IFolderSyncJobStore _syncJobStore;
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new() { Name = "StatusBar" };
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
@@ -99,6 +100,7 @@ internal sealed class MainForm : Form
         SimpleFileLogger logger,
         PersistentTransferQueue transferQueue,
         TransferRuntimeConfiguration transferRuntime,
+        IFolderSyncJobStore syncJobStore,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -107,6 +109,7 @@ internal sealed class MainForm : Form
         _logger = logger;
         _transferQueue = transferQueue;
         _transferRuntime = transferRuntime;
+        _syncJobStore = syncJobStore;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -231,6 +234,7 @@ internal sealed class MainForm : Form
         tools.DropDownItems.Add(Command("transfer-queue", "传输队列", (_, _) => SetTransferVisibility(true)));
         tools.DropDownItems.Add(Command("failed-transfers", "失败任务", (_, _) => SetTransferVisibility(true)));
         tools.DropDownItems.Add(Command("multipart-uploads", "未完成的分片上传...", (_, _) => ShowIncompleteMultipartUploads()));
+        tools.DropDownItems.Add(Command("folder-sync", "文件夹同步...", (_, _) => ShowFolderSync()));
         tools.DropDownItems.Add(new ToolStripSeparator());
         tools.DropDownItems.Add(Command("settings", "选项...", async (_, _) => await ShowSettingsAsync()));
         tools.DropDownItems.Add(Command("logs", "查看日志", (_, _) => OpenLog()));
@@ -283,6 +287,7 @@ internal sealed class MainForm : Form
         AddToolbarButton("properties-toolbar", "属性", UiIconKind.Properties, async (_, _) => await ShowPropertiesAsync());
         _toolbar.Items.Add(new ToolStripSeparator());
         AddToolbarButton("transfers-toolbar", "传输队列", UiIconKind.Transfers, (_, _) => SetTransferVisibility(!_outerSplit.Panel2Collapsed));
+        AddToolbarButton("folder-sync-toolbar", "文件夹同步", UiIconKind.Sync, (_, _) => ShowFolderSync());
         AddToolbarButton("settings-toolbar", "设置", UiIconKind.Settings, async (_, _) => await ShowSettingsAsync());
         _toolbar.Dock = DockStyle.Top;
     }
@@ -1818,6 +1823,21 @@ internal sealed class MainForm : Form
         using var dialog = new MultipartUploadManagerDialog(
             _currentProfile!, _currentBucket!, _storage, _transferQueue, _logger);
         dialog.ShowDialog(this);
+    }
+
+    private void ShowFolderSync()
+    {
+        using var dialog = new FolderSyncDialog(
+            _syncJobStore,
+            _profileStore,
+            _storage,
+            _transferQueue,
+            _settings,
+            _currentProfile,
+            _currentBucket,
+            _currentPrefix);
+        dialog.ShowDialog(this);
+        if (dialog.QueuedTransfers) SetTransferVisibility(true);
     }
 
     private void SetTransferVisibility(bool visible)

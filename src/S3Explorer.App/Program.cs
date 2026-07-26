@@ -32,6 +32,8 @@ internal static class Program
                 options.Enabled ? Path.Combine(dataRoot, "logs") : null);
             var transferStore = new JsonTransferTaskStore(
                 options.Enabled ? Path.Combine(dataRoot, "transfers.json") : null);
+            var syncJobStore = new JsonFolderSyncJobStore(
+                options.Enabled ? Path.Combine(dataRoot, "sync-jobs.json") : null);
             var transferRuntime = new TransferRuntimeConfiguration();
             var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
             var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
@@ -54,7 +56,7 @@ internal static class Program
             };
 
             logger.Info($"S3 Explorer started. Version={Application.ProductVersion}");
-            form = new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime, automation);
+            form = new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime, syncJobStore, automation);
             Application.Run(form);
             return Environment.ExitCode;
         }

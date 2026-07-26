@@ -48,6 +48,18 @@ internal sealed class S3TransferTaskExecutor(
                 context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
                 return;
 
+            case TransferDirection.DeleteRemote:
+                await storage.DeleteObjectsAsync(profile, task.Bucket, [task.ObjectKey], cancellationToken)
+                    .ConfigureAwait(false);
+                context.ReportProgress(new TransferProgress(0, 0));
+                return;
+
+            case TransferDirection.DeleteLocal:
+                if (File.Exists(task.LocalPath))
+                    File.Delete(task.LocalPath);
+                context.ReportProgress(new TransferProgress(0, 0));
+                return;
+
             default:
                 throw new InvalidOperationException($"不支持的传输方向：{task.Direction}");
         }

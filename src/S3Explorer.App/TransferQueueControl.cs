@@ -495,6 +495,7 @@ internal sealed class TransferQueueControl : UserControl
         var source = task.Direction switch
         {
             TransferDirection.Upload => task.LocalPath,
+            TransferDirection.DeleteLocal => task.LocalPath,
             _ => $"s3://{task.Bucket}/{task.ObjectKey}"
         };
         var target = task.Direction switch
@@ -503,9 +504,11 @@ internal sealed class TransferQueueControl : UserControl
             TransferDirection.Download => task.LocalPath,
             TransferDirection.Copy or TransferDirection.Move =>
                 $"s3://{task.DestinationBucket}/{task.DestinationObjectKey}",
+            TransferDirection.DeleteRemote => "删除远端对象",
+            TransferDirection.DeleteLocal => "删除本地文件",
             _ => string.Empty
         };
-        var name = task.Direction == TransferDirection.Upload
+        var name = task.Direction is TransferDirection.Upload or TransferDirection.DeleteLocal
             ? Path.GetFileName(task.LocalPath)
             : Path.GetFileName(task.ObjectKey.TrimEnd('/'));
         var percentage = total <= 0
@@ -617,6 +620,8 @@ internal sealed class TransferQueueControl : UserControl
         TransferDirection.Download => "下载",
         TransferDirection.Copy => "复制",
         TransferDirection.Move => "移动",
+        TransferDirection.DeleteRemote => "删除远端",
+        TransferDirection.DeleteLocal => "删除本地",
         _ => direction.ToString()
     };
 
