@@ -2,6 +2,8 @@
 
 S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工具。它使用 C#、.NET 10、WinForms 和 AWS SDK for .NET 构建，不依赖浏览器、Electron、Node.js、WebView 或数据库。
 
+[项目主页](https://project-base-mirror.github.io/tool-storage-browser/) · [下载最新版本](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) · [功能路线图](docs/Roadmap-v0.5-v0.8.md) · [逐版本记录](docs/versions/README.md)
+
 当前阶段聚焦 Amazon S3 与 S3-compatible object storage，不集成 rclone、WebDAV、FTP 或 SFTP。
 
 ## 已实现范围
