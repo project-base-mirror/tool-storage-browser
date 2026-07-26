@@ -37,7 +37,7 @@ internal sealed class MainForm : Form
     private readonly AutomationSession? _automation;
 
     private readonly MenuStrip _menu = new() { Name = "MainMenu" };
-    private readonly ToolStrip _toolbar = new() { Name = "MainToolbar", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(20, 20) };
+    private readonly ToolStrip _toolbar = new() { Name = "MainToolbar", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(22, 22), Padding = new Padding(3, 2, 3, 2) };
     private readonly ToolStrip _addressStrip = new() { Name = "AddressStrip", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(18, 18) };
     private readonly ToolStripTextBox _address = new() { Name = "AddressBox", AutoSize = false, Width = 620 };
     private readonly ToolStripTextBox _search = new() { Name = "SearchBox", AutoSize = false, Width = 220, ToolTipText = "过滤当前已加载列表（Ctrl+F）" };
@@ -1916,7 +1916,7 @@ internal sealed class MainForm : Form
 
     private ToolStripMenuItem Command(string id, string text, EventHandler handler, Keys shortcut = Keys.None)
     {
-        var item = new ToolStripMenuItem(text, null, handler) { ShortcutKeys = shortcut };
+        var item = new ToolStripMenuItem(text, UiIcons.ForCommand(id), handler) { ShortcutKeys = shortcut };
         _commands[id] = item;
         return item;
     }
