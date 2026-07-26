@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>s3explorer-cli</AssemblyName>
+    <RootNamespace>S3Explorer.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
+    <ProjectReference Include="..\S3Explorer.Infrastructure.S3\S3Explorer.Infrastructure.S3.csproj" />
+  </ItemGroup>
+</Project>
