@@ -68,7 +68,9 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 `0.2.1` 至 `0.3.4` 的版本边界、需求拆分、验收标准和实时完成情况见 [`docs/Release-Plan-v0.2-v0.3.md`](docs/Release-Plan-v0.2-v0.3.md)。
 
-`0.5` 至 `0.7` 的代码审查结论、当前交付范围和后续路线见 [`docs/Roadmap-v0.5-v0.7.md`](docs/Roadmap-v0.5-v0.7.md)。
+逐小版本的交付内容、兼容性、验证和已知限制见 [`docs/versions/`](docs/versions/README.md)。
+
+基于 S3 Browser 功能对标的 `0.5` 至 `0.8` 详细路线见 [`docs/Roadmap-v0.5-v0.8.md`](docs/Roadmap-v0.5-v0.8.md)。
 
 ## 对象存储命令行 API
 
@@ -175,7 +177,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
     docs/
       MinIO-Testing.md
       Release-Plan-v0.2-v0.3.md
-      Roadmap-v0.5-v0.7.md
+      Roadmap-v0.5-v0.8.md
+      versions/
     scripts/
       Build.ps1
       Publish.ps1
