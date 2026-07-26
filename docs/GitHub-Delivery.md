@@ -13,6 +13,7 @@
 4. 部署完成后访问 <https://project-base-mirror.github.io/tool-storage-browser/>。
 
 工作流只发布 `docs/site/`，不会把测试数据、源码或本地 `artifacts/` 目录放入站点。
+首次启用必须由有管理权限的用户完成；工作流默认的 `GITHUB_TOKEN` 不能替代这一步。若首次运行提示 `Get Pages site failed: Not Found`，启用后重新运行即可。
 
 ## 创建 GitHub Release
 
