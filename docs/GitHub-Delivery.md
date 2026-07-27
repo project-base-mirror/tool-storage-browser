@@ -15,6 +15,21 @@
 工作流只发布 `docs/site/`，不会把测试数据、源码或本地 `artifacts/` 目录放入站点。
 首次启用必须由有管理权限的用户完成；工作流默认的 `GITHUB_TOKEN` 不能替代这一步。若首次运行提示 `Get Pages site failed: Not Found`，启用后重新运行即可。
 
+## 搜索引擎收录
+
+站点通过以下公开文件与页面元数据提供稳定的抓取和展示信号：
+
+- `robots.txt` 允许抓取并声明 `sitemap.xml`；404 页面使用 `noindex`。
+- 首页使用唯一的 HTTPS canonical URL，站点地图也只声明同一个规范 URL。
+- 标题、摘要、Open Graph、Twitter Card 与 `SoftwareApplication` JSON-LD 描述产品、系统要求、下载地址和当前稳定版本。
+- `assets/social-card.png` 是固定 1200×630 的搜索/社交分享预览图。
+
+部署后应确认 `/robots.txt`、`/sitemap.xml` 和 `/assets/social-card.png` 均返回 HTTP 200。自然抓取不保证收录时间；如需主动查看覆盖率，可分别在 Google Search Console 与 Bing Webmaster Tools 验证站点并提交以下地址：
+
+```text
+https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
+```
+
 ## 创建 GitHub Release
 
 发布前必须同时满足：
