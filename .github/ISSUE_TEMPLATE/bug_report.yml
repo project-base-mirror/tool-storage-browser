@@ -34,7 +34,7 @@ body:
     attributes:
       label: S3 Explorer 版本
       description: 可从“帮助 → 关于”或 `s3explorer-cli version` 查看。
-      placeholder: "例如：0.5.1"
+      placeholder: "例如：0.5.2"
     validations:
       required: true
 
@@ -139,4 +139,3 @@ body:
           required: true
         - label: 我确认内容中不包含 Access Key、Secret Key、Token、签名 URL 或其他敏感信息。
           required: true
-

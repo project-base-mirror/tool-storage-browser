@@ -19,6 +19,8 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象和同步任务 API，支持 JSON 输出与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
+- 单个或全部连接导入导出：默认无凭据，可选密码加密凭据；导入前支持预览、逐项选择和同名处理。
+- 连接复制、健康状态、最近检查与最近成功时间。
 - GitHub Pages 项目主页、tag 驱动的 GitHub Release，以及可关闭的启动更新检查。
 
 ## 运行要求
@@ -74,6 +76,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 逐小版本的交付内容、兼容性、验证和已知限制见 [`docs/versions/`](docs/versions/README.md)。
 
 基于 S3 Browser 功能对标的 `0.5` 至 `0.8` 详细路线见 [`docs/Roadmap-v0.5-v0.8.md`](docs/Roadmap-v0.5-v0.8.md)。
+
+连接包的导出范围、迁移密码、导入预览和重名策略见 [`docs/Connection-Import-Export.md`](docs/Connection-Import-Export.md)。
 
 ## 对象存储命令行 API
 

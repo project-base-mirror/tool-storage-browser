@@ -8,6 +8,8 @@
 - [Folder Sync Tool](https://s3browser.com/amazon-s3-folder-sync.aspx)
 - [Command Line Interface](https://s3browser.com/s3cmd.aspx)
 - [S3 Browser 在线帮助目录](https://s3browser.com/help.aspx)
+- [AWS SDK for .NET 凭据与 Profile 解析顺序](https://docs.aws.amazon.com/sdk-for-net/v3/developer-guide/creds-assign.html)
+- [AWS SDK for .NET 读取共享 Profile](https://docs.aws.amazon.com/sdk-for-net/v3/developer-guide/creds-locate.html)
 
 ## 规划原则
 
@@ -22,19 +24,19 @@
 
 | 领域 | 已完成 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- |
-| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；Region 自动处理；指定 Bucket；DPAPI | AWS Profile/SSO/AssumeRole；配置导入导出；账户分组；代理 | P1 |
+| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；Region 自动处理；指定 Bucket；DPAPI；连接包导入导出；复制与健康状态 | AWS Profile/SSO/AssumeRole；账户分组；代理 | P1 |
 | Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership | CORS、版本控制、生命周期、默认加密、标签、日志、Object Lock | P1–P2 |
 | 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、预签名 URL | 版本管理、Tagging、存储类型、跨账户复制、拖放、直接打开/编辑 | P1–P2 |
 | 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、批次失败明细 | 完整性校验报告、冲突策略、临时空间检查、后台托盘 | P1–P2 |
 | 文件夹同步 | 持久任务、单向镜像、分析后执行、排除规则、可选哈希、删除传播 | 逐项勾选、分析缓存、冲突策略、计划任务、报告导出、增量扫描 | P1 |
 | 自动化 | 独立 CLI、JSON、退出码、连接/Bucket/对象/同步命令 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
-| 交付 | 本地构建/发布脚本、发布包检查、UI 自动化 | Pages、GitHub Release、客户端更新检查、签名、SBOM | P0–P2 |
+| 交付 | 本地构建/发布脚本、发布包检查、UI 自动化、Pages、GitHub Release、客户端更新检查 | 代码签名、SBOM、可复现构建 | P2 |
 
 优先级定义：P0 是交付基础；P1 是近期高价值；P2 是增强能力；P3 是高复杂度或平台相关能力。
 
 ## v0.5.1：项目交付与更新闭环
 
-状态：本轮交付。
+状态：正式发布。
 
 - 建立 GitHub Pages 项目主页，提供功能概览、下载入口、CLI 示例、路线图和版本历史链接。
 - tag 推送触发 Windows Release 工作流，复用仓库发布脚本并上传两种 ZIP、指标文件和校验文件。
@@ -43,6 +45,30 @@
 - 回填 `v0.2.1` 至当前版本的逐版本记录，并明确无 Git tag 的历史来源。
 
 验收：Pages 工作流语法检查；Release workflow 的 tag/版本一致性门禁；更新解析和版本比较单元测试；离线 UI 冒烟不访问网络。
+
+## v0.5.2：连接迁移与状态闭环
+
+状态：开发完成，待 `v0.5.2` tag 发布。
+
+- 单个连接、账户右键和全部连接导出；默认无凭据。
+- 显式含凭据导出使用迁移密码保护，不复制本机 DPAPI 密文。
+- 导入前解锁和预览；逐项选择；凭据导入默认关闭；同名连接可重命名、覆盖或跳过。
+- 复制连接使用新 ID 与去重名称。
+- 保存连接健康状态、最近检查和最近成功时间；缺凭据连接单独提示。
+
+验收：明文连接包不含任何凭据值；加密包错误密码和篡改均拒绝；覆盖保持连接 ID；旧版 profile 配置无迁移步骤可读；全量测试、Release 构建和隔离 UI 冒烟通过。
+
+## v0.5.3：AWS 外部凭据来源
+
+状态：计划。
+
+- 将当前“已保存密钥”抽象为显式凭据来源，不以空 Access Key 代表外部来源。
+- 接入 AWS shared credentials/config 指定 profile、环境变量、容器角色和 EC2 实例角色。
+- 遵循 AWS SDK 凭据链顺序，同时允许用户锁定指定来源，避免环境变化导致连接身份静默切换。
+- 连接包只导出凭据来源与非敏感 profile 名称；环境和角色凭据不复制、不固化到 DPAPI。
+- GUI、CLI、连接测试和运行时 S3 client 使用同一解析器，并显示实际采用的来源，不显示密钥值。
+
+验收：来源切换可回滚；缺失 profile 或角色端点产生可诊断错误；环境/实例凭据不落盘；S3-compatible 连接不会意外读取 AWS 默认链。
 
 ## v0.6：日常管理闭环
 
@@ -72,14 +98,14 @@
 
 验收：未勾选项不入队；改变账户/Bucket 后旧结果失效；删除传播仍需显式确认。
 
-### v0.6.3 账户与凭据来源
+### v0.6.3 账户组织与高级 AWS 身份
 
-- 无凭据导出、显式选择的凭据导入、重复名称处理和预览。
-- AWS shared credentials/config、环境变量和实例/容器角色。
-- AWS SSO 与 AssumeRole 分阶段接入；令牌缓存与长期密钥分开存储。
-- 账户分组、复制连接、连接健康状态与最近成功时间。
+- AWS SSO 与 AssumeRole 分阶段接入；令牌缓存、角色会话和长期密钥分开存储。
+- 账户分组、分组折叠和组内排序；导入预览可指定目标组。
+- AssumeRole 明确显示源身份、目标 Role ARN、External ID 使用状态和会话过期时间。
+- SSO 登录和刷新由用户触发或按到期状态提示，不把浏览器令牌混入连接包。
 
-验收：导出默认不含 Secret；日志不出现 token；凭据来源切换可回滚；自动化数据目录保持隔离。
+验收：日志不出现 token；角色链和会话到期可诊断；删除分组不删除连接；自动化数据目录保持隔离。
 
 ## v0.7：高级 S3 管理
 
