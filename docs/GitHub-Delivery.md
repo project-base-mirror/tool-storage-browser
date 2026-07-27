@@ -42,8 +42,8 @@ https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
 创建并推送 annotated tag：
 
 ```powershell
-git tag -a v0.5.1 -m "S3 Explorer v0.5.1"
-git push origin v0.5.1
+git tag -a v0.5.2 -m "S3 Explorer v0.5.2"
+git push origin v0.5.2
 ```
 
 Release 工作流会：
