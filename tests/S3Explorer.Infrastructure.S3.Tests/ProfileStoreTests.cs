@@ -28,7 +28,10 @@ public sealed class ProfileStoreTests
             CustomHostHeader = "storage.internal:9000",
             FollowTemporaryRedirects = false,
             EnableMultiObjectDelete = false,
-            EnableMultipartCopy = false
+            EnableMultipartCopy = false,
+            HealthStatus = ConnectionHealthStatus.Healthy,
+            LastConnectionCheckedAtUtc = new DateTimeOffset(2026, 7, 27, 8, 30, 0, TimeSpan.Zero),
+            LastConnectionSucceededAtUtc = new DateTimeOffset(2026, 7, 27, 8, 30, 0, TimeSpan.Zero)
         };
 
         try
@@ -46,6 +49,9 @@ public sealed class ProfileStoreTests
             Assert.False(loaded.FollowTemporaryRedirects);
             Assert.False(loaded.EnableMultiObjectDelete);
             Assert.False(loaded.EnableMultipartCopy);
+            Assert.Equal(ConnectionHealthStatus.Healthy, loaded.HealthStatus);
+            Assert.Equal(profile.LastConnectionCheckedAtUtc, loaded.LastConnectionCheckedAtUtc);
+            Assert.Equal(profile.LastConnectionSucceededAtUtc, loaded.LastConnectionSucceededAtUtc);
         }
         finally
         {

@@ -167,6 +167,7 @@ internal sealed class MainForm : Form
         var file = new ToolStripMenuItem("文件(&F)");
         file.DropDownItems.Add(Command("new-connection", "新建连接...", (_, _) => NewConnection(), Keys.Control | Keys.N));
         file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", (_, _) => EditCurrentConnection()));
+        file.DropDownItems.Add(Command("copy-connection", "复制当前连接", (_, _) => CopyCurrentConnection()));
         file.DropDownItems.Add(Command("delete-connection", "删除当前连接", async (_, _) => await DeleteCurrentConnectionAsync()));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Command("connect", "连接", async (_, _) => await ConnectSelectedAsync()));
@@ -353,17 +354,20 @@ internal sealed class MainForm : Form
         connect.Click += async (_, _) => await ConnectSelectedAsync();
         var edit = new ToolStripMenuItem("修改...", UiIcons.Create(UiIconKind.Properties, 16));
         edit.Click += (_, _) => EditCurrentConnection();
+        var copy = new ToolStripMenuItem("复制连接", UiIcons.Create(UiIconKind.Copy, 16));
+        copy.Click += (_, _) => CopyCurrentConnection();
         var export = new ToolStripMenuItem("导出此连接...", UiIcons.Create(UiIconKind.Download, 16));
         export.Click += async (_, _) => await ExportConnectionsAsync(exportAll: false);
         var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
         delete.Click += async (_, _) => await DeleteCurrentConnectionAsync();
-        _accountMenu.Items.AddRange([connect, edit, export, new ToolStripSeparator(), delete]);
+        _accountMenu.Items.AddRange([connect, edit, copy, export, new ToolStripSeparator(), delete]);
         _accountMenu.Opening += (_, args) =>
         {
             var accountSelected = _tree.SelectedNode?.Tag is ConnectionProfile;
             args.Cancel = !accountSelected;
             connect.Enabled = accountSelected;
             edit.Enabled = accountSelected;
+            copy.Enabled = accountSelected;
             export.Enabled = accountSelected;
             delete.Enabled = accountSelected;
         };
@@ -716,14 +720,13 @@ internal sealed class MainForm : Form
         root.Nodes.Clear();
         foreach (var profile in _profiles.OrderBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var defaultBucket = string.IsNullOrWhiteSpace(profile.DefaultBucket) ? string.Empty : $"\n默认 Bucket: {profile.DefaultBucket}";
             var node = new TreeNode(profile.Name)
             {
                 Tag = profile,
                 ImageKey = "account",
-                SelectedImageKey = "account",
-                ToolTipText = $"{profile.Endpoint}\n签名 Region: {profile.EffectiveSignatureRegion}{defaultBucket}\n未连接"
+                SelectedImageKey = "account"
             };
+            ApplyProfileNodePresentation(profile, node);
             node.Nodes.Add(new TreeNode("(双击连接)")
             {
                 ForeColor = SystemColors.GrayText,
@@ -734,6 +737,39 @@ internal sealed class MainForm : Form
         }
         root.Expand();
     }
+
+    private static void ApplyProfileNodePresentation(ConnectionProfile profile, TreeNode node)
+    {
+        var defaultBucket = string.IsNullOrWhiteSpace(profile.DefaultBucket)
+            ? string.Empty
+            : $"\n默认 Bucket: {profile.DefaultBucket}";
+        var lastSuccess = profile.LastConnectionSucceededAtUtc is null
+            ? string.Empty
+            : $"\n最近成功: {FormatLocalTime(profile.LastConnectionSucceededAtUtc)}";
+        var credentials = profile.HasStoredCredentials ? "已保存" : "待补充";
+        node.Text = profile.Name;
+        node.ForeColor = !profile.HasStoredCredentials
+            ? Color.DarkOrange
+            : profile.HealthStatus switch
+            {
+                ConnectionHealthStatus.Healthy => Color.DarkGreen,
+                ConnectionHealthStatus.Failed => Color.Firebrick,
+                _ => SystemColors.WindowText
+            };
+        node.ToolTipText =
+            $"{profile.Endpoint}\n签名 Region: {profile.EffectiveSignatureRegion}{defaultBucket}" +
+            $"\n凭据: {credentials}\n健康状态: {HealthStatusText(profile.HealthStatus)}{lastSuccess}";
+    }
+
+    private static string HealthStatusText(ConnectionHealthStatus status) => status switch
+    {
+        ConnectionHealthStatus.Healthy => "正常",
+        ConnectionHealthStatus.Failed => "失败",
+        _ => "未检查"
+    };
+
+    private static string FormatLocalTime(DateTimeOffset? value) =>
+        value is null ? "—" : value.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 
     private void NewConnection()
     {
@@ -754,6 +790,39 @@ internal sealed class MainForm : Form
         SaveProfilesAndRefresh();
     }
 
+    private void CopyCurrentConnection()
+    {
+        var profile = SelectedTreeProfile();
+        if (profile is null) return;
+        var copy = profile with
+        {
+            Id = Guid.NewGuid(),
+            Name = CreateUniqueCopyName(profile.Name),
+            HealthStatus = ConnectionHealthStatus.Unknown,
+            LastConnectionCheckedAtUtc = null,
+            LastConnectionSucceededAtUtc = null
+        };
+        _profiles = _profiles.Append(copy).ToArray();
+        SaveProfilesAndRefresh();
+        var node = FindProfileNode(copy);
+        if (node is not null)
+        {
+            _tree.SelectedNode = node;
+            node.EnsureVisible();
+        }
+        _logger.Info($"Connection copied source={profile.Name} copy={copy.Name}");
+    }
+
+    private string CreateUniqueCopyName(string sourceName)
+    {
+        var names = _profiles.Select(profile => profile.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var candidate = $"{sourceName} (副本)";
+        var suffix = 2;
+        while (!names.Add(candidate))
+            candidate = $"{sourceName} (副本 {suffix++})";
+        return candidate;
+    }
+
     private async Task DeleteCurrentConnectionAsync()
     {
         var profile = SelectedTreeProfile();
@@ -772,6 +841,33 @@ internal sealed class MainForm : Form
     {
         _profileStore.SaveAsync(_profiles).GetAwaiter().GetResult();
         PopulateProfiles();
+    }
+
+    private async Task<ConnectionProfile> RecordConnectionHealthAsync(
+        ConnectionProfile profile,
+        bool succeeded)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var updated = profile with
+        {
+            HealthStatus = succeeded ? ConnectionHealthStatus.Healthy : ConnectionHealthStatus.Failed,
+            LastConnectionCheckedAtUtc = now,
+            LastConnectionSucceededAtUtc = succeeded ? now : profile.LastConnectionSucceededAtUtc
+        };
+        _profiles = _profiles
+            .Select(item => item.Id == updated.Id ? updated : item)
+            .ToArray();
+        if (_currentProfile?.Id == updated.Id)
+            _currentProfile = updated;
+        try
+        {
+            await _profileStore.SaveAsync(_profiles);
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Failed to persist connection health profile={profile.Name}: {exception.GetType().Name}: {exception.Message}");
+        }
+        return updated;
     }
 
     private async Task ExportConnectionsAsync(bool exportAll)
@@ -943,6 +1039,9 @@ internal sealed class MainForm : Form
             if (revision != _navigationRevision || cancellationToken.IsCancellationRequested)
                 return;
 
+            profile = await RecordConnectionHealthAsync(profile, succeeded: true);
+            profileNode.Tag = profile;
+            ApplyProfileNodePresentation(profile, profileNode);
             _currentProfile = profile;
             _currentBucket = null;
             _currentPrefix = string.Empty;
@@ -996,6 +1095,9 @@ internal sealed class MainForm : Form
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception exception)
         {
+            profile = await RecordConnectionHealthAsync(profile, succeeded: false);
+            profileNode.Tag = profile;
+            ApplyProfileNodePresentation(profile, profileNode);
             _logger.Error($"Connect failed profile={profile.Name} endpoint={profile.Endpoint}", exception);
             ErrorDialog.ShowException(this, "连接失败", "列出 Bucket", exception, profile.Endpoint);
         }
@@ -1039,6 +1141,9 @@ internal sealed class MainForm : Form
             AddSummaryItem("外部 Bucket", profile.ExternalBuckets.Count == 0 ? "未配置" : string.Join(", ", profile.ExternalBuckets));
             AddSummaryItem("Bucket 数量", bucketCount?.ToString() ?? Math.Max(0, node.Nodes.Count).ToString());
             AddSummaryItem("当前状态", _currentProfile?.Id == profile.Id ? "已连接" : "未连接");
+            AddSummaryItem("健康状态", HealthStatusText(profile.HealthStatus));
+            AddSummaryItem("最近检查", FormatLocalTime(profile.LastConnectionCheckedAtUtc));
+            AddSummaryItem("最近成功", FormatLocalTime(profile.LastConnectionSucceededAtUtc));
             AddSummaryItem("临时凭据", profile.UsesTemporarySessionCredentials
                 ? "已启用（Session Token）"
                 : "未启用");
@@ -1980,6 +2085,13 @@ internal sealed class MainForm : Form
         try
         {
             var result = await _storage.TestConnectionAsync(profile, CancellationToken.None);
+            profile = await RecordConnectionHealthAsync(profile, result.Success);
+            var profileNode = FindProfileNode(profile);
+            if (profileNode is not null)
+            {
+                profileNode.Tag = profile;
+                ApplyProfileNodePresentation(profile, profileNode);
+            }
             MessageBox.Show(this,
                 $"{result.Message}\n\nEndpoint: {profile.Endpoint}\nHTTP: {result.HttpStatusCode?.ToString() ?? "—"}\nAWS ErrorCode: {result.ErrorCode ?? "—"}\nRequestId: {result.RequestId ?? "—"}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms",
                 result.Success ? "连接成功" : "连接失败",
@@ -2346,6 +2458,7 @@ internal sealed class MainForm : Form
         var bucketSelected = _tree.SelectedNode?.Tag is BucketNodeTag;
 
         SetEnabled("edit-connection", profileSelected);
+        SetEnabled("copy-connection", profileSelected);
         SetEnabled("delete-connection", profileSelected);
         SetEnabled("export-connection", profileSelected);
         SetEnabled("export-all-connections", _profiles.Count > 0);

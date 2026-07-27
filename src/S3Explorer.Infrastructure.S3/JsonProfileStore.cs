@@ -45,7 +45,7 @@ public sealed class JsonProfileStore : IProfileStore
 
         var document = new ProfileDocument
         {
-            Version = 1,
+            Version = 2,
             Profiles = profiles.Select(profile => PersistedProfile.FromRuntime(profile, _protector)).ToList()
         };
 
@@ -88,6 +88,9 @@ public sealed class JsonProfileStore : IProfileStore
         public int ConnectionTimeoutSeconds { get; set; } = 10;
         public string DefaultBucket { get; set; } = string.Empty;
         public List<string> ExternalBuckets { get; set; } = [];
+        public ConnectionHealthStatus HealthStatus { get; set; }
+        public DateTimeOffset? LastConnectionCheckedAtUtc { get; set; }
+        public DateTimeOffset? LastConnectionSucceededAtUtc { get; set; }
 
         public static PersistedProfile FromRuntime(ConnectionProfile source, ICredentialProtector protector) => new()
         {
@@ -111,7 +114,10 @@ public sealed class JsonProfileStore : IProfileStore
             RequestTimeoutSeconds = source.RequestTimeoutSeconds,
             ConnectionTimeoutSeconds = source.ConnectionTimeoutSeconds,
             DefaultBucket = source.DefaultBucket,
-            ExternalBuckets = source.ExternalBuckets.ToList()
+            ExternalBuckets = source.ExternalBuckets.ToList(),
+            HealthStatus = source.HealthStatus,
+            LastConnectionCheckedAtUtc = source.LastConnectionCheckedAtUtc,
+            LastConnectionSucceededAtUtc = source.LastConnectionSucceededAtUtc
         };
 
         public ConnectionProfile ToRuntime(ICredentialProtector protector) => new()
@@ -136,7 +142,10 @@ public sealed class JsonProfileStore : IProfileStore
             RequestTimeoutSeconds = RequestTimeoutSeconds <= 0 ? 100 : RequestTimeoutSeconds,
             ConnectionTimeoutSeconds = ConnectionTimeoutSeconds <= 0 ? 10 : ConnectionTimeoutSeconds,
             DefaultBucket = DefaultBucket,
-            ExternalBuckets = ExternalBuckets ?? []
+            ExternalBuckets = ExternalBuckets ?? [],
+            HealthStatus = HealthStatus,
+            LastConnectionCheckedAtUtc = LastConnectionCheckedAtUtc,
+            LastConnectionSucceededAtUtc = LastConnectionSucceededAtUtc
         };
     }
 }

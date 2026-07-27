@@ -20,6 +20,13 @@ public enum AddressingStyle
     PathStyle
 }
 
+public enum ConnectionHealthStatus
+{
+    Unknown,
+    Healthy,
+    Failed
+}
+
 public sealed record ConnectionProfile
 {
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -47,6 +54,9 @@ public sealed record ConnectionProfile
     public int ConnectionTimeoutSeconds { get; init; } = 10;
     public string DefaultBucket { get; init; } = string.Empty;
     public IReadOnlyList<string> ExternalBuckets { get; init; } = Array.Empty<string>();
+    public ConnectionHealthStatus HealthStatus { get; init; }
+    public DateTimeOffset? LastConnectionCheckedAtUtc { get; init; }
+    public DateTimeOffset? LastConnectionSucceededAtUtc { get; init; }
 
     public string EffectiveSignatureRegion
     {
