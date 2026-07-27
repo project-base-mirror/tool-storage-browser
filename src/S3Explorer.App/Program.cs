@@ -1,4 +1,5 @@
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.Cdn;
 using S3Explorer.Infrastructure.S3;
 
 namespace S3Explorer.App;
@@ -34,6 +35,12 @@ internal static class Program
                 options.Enabled ? Path.Combine(dataRoot, "transfers.json") : null);
             var syncJobStore = new JsonFolderSyncJobStore(
                 options.Enabled ? Path.Combine(dataRoot, "sync-jobs.json") : null);
+            var cdnConfigurationStore = new JsonCdnConfigurationStore(
+                options.Enabled ? Path.Combine(dataRoot, "cdn-config.json") : null);
+            var cdnCredentialStore = new JsonCdnCredentialStore(
+                new DpapiCdnCredentialProtector(),
+                options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
+            var cdnDeliveryService = new GenericHttpCdnDeliveryService();
             using var updateChecker = new GitHubUpdateChecker();
             var transferRuntime = new TransferRuntimeConfiguration();
             var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
@@ -57,7 +64,19 @@ internal static class Program
             };
 
             logger.Info($"S3 Explorer started. Version={Application.ProductVersion}");
-            form = new MainForm(profileStore, storageService, settingsStore, logger, transferQueue, transferRuntime, syncJobStore, updateChecker, automation);
+            form = new MainForm(
+                profileStore,
+                storageService,
+                settingsStore,
+                logger,
+                transferQueue,
+                transferRuntime,
+                syncJobStore,
+                updateChecker,
+                cdnConfigurationStore,
+                cdnCredentialStore,
+                cdnDeliveryService,
+                automation);
             Application.Run(form);
             return Environment.ExitCode;
         }

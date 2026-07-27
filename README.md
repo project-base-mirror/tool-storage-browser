@@ -21,6 +21,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
 - 单个或全部连接导入导出：默认无凭据，可选密码加密凭据；导入前支持预览、逐项选择和同名处理。
 - 连接复制、健康状态、最近检查与最近成功时间。
+- 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTP 预热与通用刷新端点。
 - GitHub Pages 项目主页、tag 驱动的 GitHub Release，以及可关闭的启动更新检查。
 
 ## 运行要求
@@ -79,6 +80,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 连接包的导出范围、迁移密码、导入预览和重名策略见 [`docs/Connection-Import-Export.md`](docs/Connection-Import-Export.md)。
 
+CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新边界和后续厂商 Provider 计划见 [`docs/Cdn-Delivery-Integration.md`](docs/Cdn-Delivery-Integration.md)。
+
 ## 对象存储命令行 API
 
 发布包同时包含 `S3Explorer.exe` 和 `s3explorer-cli.exe`。CLI 与桌面端共享 DPAPI 加密的连接配置和同步任务：
@@ -114,7 +117,7 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 也可以使用 `scripts\app-automation.cmd`。`Start` 会在需要时构建 Release 版本，启动应用并等待窗口及核心控件就绪；`Status` 会校验 PID、进程路径和启动时间，避免误认同 PID 的其他进程；`Stop` 只发送正常窗口关闭请求，不强制终止进程。
 
-`Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。
+`Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏、CDN 命令注册和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。
 
 ## 发布
 
@@ -166,8 +169,11 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 - 连接配置：`%APPDATA%\S3Explorer\profiles.json`
 - 文件夹同步任务：`%APPDATA%\S3Explorer\sync-jobs.json`
+- CDN 非敏感配置：`%APPDATA%\S3Explorer\cdn-config.json`
+- CDN 独立凭据：`%APPDATA%\S3Explorer\cdn-credentials.json`
 - 日志目录：`%LOCALAPPDATA%\S3Explorer\logs`
 - SecretKey 和 SessionToken 使用 DPAPI CurrentUser 加密后保存。
+- CDN Secret 使用独立 DPAPI entropy 加密，不复用 S3 SecretKey，也不写入普通 CDN 配置文件。
 - 导出配置默认不包含凭据。
 - 日志不得记录 SecretKey、SessionToken、Authorization Header 或完整预签名 URL。
 - 忽略证书错误仅用于用户明确配置的测试环境。
@@ -178,14 +184,17 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
       S3Explorer.App                 WinForms 桌面应用
       S3Explorer.Cli                 命令行对象存储 API
       S3Explorer.Core                核心模型、路径和接口
+      S3Explorer.Infrastructure.Cdn  CDN 配置存储与通用 HTTP 交付服务
       S3Explorer.Infrastructure.S3   AWS SDK、凭据与配置实现
     tests/
       S3Explorer.Core.Tests
+      S3Explorer.Infrastructure.Cdn.Tests
       S3Explorer.Infrastructure.S3.Tests
       S3Explorer.App.Tests
     docs/
       MinIO-Testing.md
       GitHub-Delivery.md
+      Cdn-Delivery-Integration.md
       Release-Plan-v0.2-v0.3.md
       Roadmap-v0.5-v0.8.md
       versions/
@@ -202,6 +211,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 ## 当前限制
 
 当前仍未实现 CORS、生命周期、版本历史、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
+
+CDN 第一阶段仅提供通用 HTTP 交付域名、探测、预热和无需厂商签名的刷新端点；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API、Prefix Purge、上传后自动处理、持久 CDN 作业队列或 CDN CLI。
 
 文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 

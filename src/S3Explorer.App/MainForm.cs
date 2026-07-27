@@ -13,7 +13,7 @@ internal sealed record ObjectClipboardPayload(
     Guid ProfileId, string ProfileName, string SourceBucket,
     IReadOnlyList<ObjectClipboardEntry> Entries, bool Move);
 
-internal sealed class MainForm : Form
+internal sealed partial class MainForm : Form
 {
     private static string DisplayVersion
     {
@@ -107,6 +107,9 @@ internal sealed class MainForm : Form
         TransferRuntimeConfiguration transferRuntime,
         IFolderSyncJobStore syncJobStore,
         GitHubUpdateChecker updateChecker,
+        ICdnConfigurationStore cdnConfigurationStore,
+        ICdnCredentialStore cdnCredentialStore,
+        ICdnDeliveryService cdnDeliveryService,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -117,6 +120,9 @@ internal sealed class MainForm : Form
         _transferRuntime = transferRuntime;
         _syncJobStore = syncJobStore;
         _updateChecker = updateChecker;
+        _cdnConfigurationStore = cdnConfigurationStore;
+        _cdnCredentialStore = cdnCredentialStore;
+        _cdnDeliveryService = cdnDeliveryService;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -262,7 +268,7 @@ internal sealed class MainForm : Form
         help.DropDownItems.Add(new ToolStripMenuItem("关于", null, (_, _) =>
             MessageBox.Show(this, $"S3 Explorer v{Application.ProductVersion}\n\n原生 Windows S3 / S3-compatible 对象存储管理工具。\n.NET 10 · WinForms · AWS SDK for .NET", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information)));
 
-        _menu.Items.AddRange([file, edit, view, bucket, objects, tools, help]);
+        _menu.Items.AddRange([file, edit, view, bucket, objects, BuildCdnMenu(), tools, help]);
     }
 
     private void BuildToolbar()
@@ -385,6 +391,8 @@ internal sealed class MainForm : Form
         _objectMenu.Items.Add("删除", UiIcons.Create(UiIconKind.Delete, 16), async (_, _) => await DeleteSelectedAsync());
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add("属性...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowPropertiesAsync());
+        _objectMenu.Items.Add(new ToolStripSeparator());
+        _objectMenu.Items.Add(BuildObjectCdnContextMenu());
         _objectMenu.Opening += (_, _) =>
         {
             var any = SelectedEntries().Count > 0;
@@ -393,6 +401,7 @@ internal sealed class MainForm : Form
             _objectMenu.Items[2].Enabled = _objectClipboard is not null && EnsureClipboardProfile(false);
             _objectMenu.Items[4].Enabled = any;
             _objectMenu.Items[5].Enabled = any;
+            UpdateCdnContextCommandStates();
         };
     }
 
@@ -440,6 +449,8 @@ internal sealed class MainForm : Form
             acl,
             policy,
             accessControls,
+            new ToolStripSeparator(),
+            BuildBucketCdnContextMenu(),
             new ToolStripSeparator(),
             Unsupported("版本控制..."),
             Unsupported("默认加密..."),
@@ -626,6 +637,7 @@ internal sealed class MainForm : Form
         ApplySettings();
         _profiles = await _profileStore.LoadAsync();
         PopulateProfiles();
+        await LoadCdnStateAsync();
         await _transfers.InitializeAsync();
         await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         _speedTimer.Start();
@@ -639,6 +651,8 @@ internal sealed class MainForm : Form
         var hasIssueLink = _commands.TryGetValue("report-issue", out var issueLink) && issueLink.Enabled;
         var hasConnectionImport = _commands.TryGetValue("import-connections", out var importConnections) && importConnections.Enabled;
         var hasConnectionExport = _commands.TryGetValue("export-all-connections", out var exportConnections);
+        var hasCdnConfiguration = _commands.TryGetValue("cdn-configure", out var cdnConfiguration);
+        var hasCdnUrlCommand = _commands.TryGetValue("cdn-copy-url", out var cdnCopyUrl);
         var checks = new List<AutomationCheck>
         {
             new("window-handle", IsHandleCreated && Handle != IntPtr.Zero, $"Handle={Handle}"),
@@ -656,7 +670,9 @@ internal sealed class MainForm : Form
             new("project-links", hasProjectHome && hasIssueLink,
                 $"Home={projectHome is not null}; Issue={issueLink is not null}"),
             new("connection-transfer-commands", hasConnectionImport && hasConnectionExport,
-                $"Import={importConnections is not null}; Export={exportConnections is not null}")
+                $"Import={importConnections is not null}; Export={exportConnections is not null}"),
+            new("cdn-commands", hasCdnConfiguration && hasCdnUrlCommand,
+                $"Configure={cdnConfiguration is not null}; CopyUrl={cdnCopyUrl is not null}")
         };
 
         var parent = CreateParentDirectoryItem(_objects.Font);
@@ -2504,6 +2520,7 @@ internal sealed class MainForm : Form
         SetEnabled("back", _historyIndex > 0);
         SetEnabled("forward", _historyIndex >= 0 && _historyIndex < _history.Count - 1);
         SetEnabled("up", inBucket && _currentPrefix.Length > 0);
+        UpdateCdnCommandStates(oneFile);
     }
 
     private void SetEnabled(string id, bool enabled)
@@ -2529,6 +2546,7 @@ internal sealed class MainForm : Form
         try
         {
             CancelNavigation();
+            CancelCdnOperation();
             _speedTimer.Stop();
             _requestStatus.Text = closeAction switch
             {
