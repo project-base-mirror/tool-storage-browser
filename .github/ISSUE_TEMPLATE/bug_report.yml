@@ -1,0 +1,142 @@
+name: "🐛 缺陷报告"
+description: "报告可稳定复现的客户端、CLI、传输或同步问题"
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先搜索已有 Issue，并尽量使用最新稳定版本复现。
+
+        **请勿提交 Access Key、Secret Key、Session Token、Authorization Header、完整预签名 URL 或其他凭据。** 日志和截图必须先脱敏。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题模块
+      description: 选择最接近问题发生位置的模块。
+      options:
+        - 安装、启动或更新检查
+        - 账户创建与连接测试
+        - Bucket 列表与管理
+        - 对象浏览与搜索
+        - 上传、下载、复制或移动
+        - 传输队列、暂停、重试或断点续传
+        - 文件夹同步
+        - 命令行 CLI
+        - 界面、图标或交互
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: S3 Explorer 版本
+      description: 可从“帮助 → 关于”或 `s3explorer-cli version` 查看。
+      placeholder: "例如：0.5.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: 安装包类型
+      options:
+        - Framework-dependent ZIP（需要 .NET 10 Desktop Runtime）
+        - Self-contained ZIP
+        - 从源码构建
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 环境
+      placeholder: "例如：Windows 11 24H2 x64，系统语言 zh-CN"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 对象存储服务
+      options:
+        - Amazon S3
+        - MinIO
+        - Ceph RGW
+        - 阿里云 OSS
+        - 腾讯云 COS
+        - Backblaze B2 S3 API
+        - Google Cloud Storage S3 API
+        - 其他 S3-compatible 服务
+        - 与对象存储服务无关
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 实际发生了什么？
+      description: 请写出错误现象、提示信息以及是否每次都会发生。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请使用测试账户和非敏感名称，给出最短可复现步骤。
+      placeholder: |
+        1. 创建一个 MinIO 连接，Region 保持 auto
+        2. 打开指定 Bucket
+        3. 上传大于 100 MiB 的文件
+        4. 暂停后继续，出现……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 正常情况下应该发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 连接与权限补充
+      description: 可填写 Region、是否使用自定义 Endpoint/Path-style、是否拥有 ListBuckets 权限、是否通过指定外部 Bucket 进入。不要填写凭据。
+      placeholder: |
+        Region: auto
+        Endpoint: https://s3.example.com
+        Path-style: 是
+        ListBuckets: 无权限，使用指定 Bucket
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 粘贴相关日志或异常详情。请删除凭据、签名、内部地址、Bucket/Object 敏感名称。
+      render: text
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或其他补充
+      description: 可拖放截图、录屏或最小测试文件。上传前请检查是否包含敏感信息。
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，没有找到相同问题。
+          required: true
+        - label: 我已尽量使用最新稳定版本复现。
+          required: true
+        - label: 我确认内容中不包含 Access Key、Secret Key、Token、签名 URL 或其他敏感信息。
+          required: true
+

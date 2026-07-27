@@ -1,0 +1,151 @@
+name: "🧩 S3 兼容性报告"
+description: "报告某个 S3-compatible 服务的连接、权限或 API 行为差异"
+title: "[Compatibility] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        此表单用于定位不同 S3 服务对 Region、Endpoint、Path-style、ListBuckets 权限及具体 API 的差异。
+
+        **请使用测试账户并彻底脱敏。不要提交访问密钥、Token、Authorization Header、完整签名 URL 或生产 Bucket/Object 名称。**
+
+  - type: input
+    id: provider_name
+    attributes:
+      label: 服务名称与版本
+      description: 托管服务填写产品名；自建服务同时填写版本。
+      placeholder: "例如：MinIO RELEASE.2026-xx-xx / Ceph Reef / 某厂商 S3 API"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider_family
+    attributes:
+      label: 服务类型
+      options:
+        - Amazon S3
+        - MinIO
+        - Ceph RGW
+        - 阿里云 OSS
+        - 腾讯云 COS
+        - Backblaze B2 S3 API
+        - Google Cloud Storage S3 API
+        - 其他公有云 S3-compatible
+        - 其他自建 S3-compatible
+    validations:
+      required: true
+
+  - type: input
+    id: app_version
+    attributes:
+      label: S3 Explorer 版本
+      placeholder: "例如：0.5.1"
+    validations:
+      required: true
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: Endpoint 形式
+      description: 只填写公开域名或匿名化形式，不要包含查询参数、凭据或内部地址。
+      placeholder: "例如：https://s3.example.com"
+    validations:
+      required: true
+
+  - type: input
+    id: region
+    attributes:
+      label: Region
+      placeholder: "例如：auto / us-east-1 / 无 Region"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: addressing
+    attributes:
+      label: 地址风格
+      options:
+        - Virtual-hosted-style
+        - Path-style
+        - 两者都支持
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bucket_access
+    attributes:
+      label: Bucket 发现方式与权限
+      options:
+        - 拥有 ListBuckets 权限并从列表进入
+        - 无 ListBuckets 权限，使用指定 Bucket 进入
+        - 使用外部 Bucket 配置进入
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tls
+    attributes:
+      label: TLS 证书
+      options:
+        - 公共 CA 有效证书
+        - 私有 CA 或自签名证书
+        - 使用 HTTP（仅测试环境）
+        - 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: operation_matrix
+    attributes:
+      label: 已验证可正常工作的操作
+      description: 只勾选已经实际成功完成的操作；未勾选表示未测试或失败，请在下方说明。
+      options:
+        - label: 连接测试
+        - label: 列出 Bucket
+        - label: 无 ListBuckets 权限时进入指定 Bucket
+        - label: 分页列出对象与模拟文件夹
+        - label: 小文件上传与下载
+        - label: Multipart 大文件上传与断点续传
+        - label: 复制、移动、重命名与删除
+        - label: 预签名下载 URL
+        - label: 文件夹同步分析与执行
+        - label: Bucket 属性、Policy 或权限管理
+
+  - type: textarea
+    id: failure
+    attributes:
+      label: 失败的操作与实际结果
+      description: 说明哪个操作失败、HTTP 状态码/S3 Error Code、服务端行为及是否稳定复现。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的兼容行为
+      description: 说明期望自动探测、回退、隐藏参数还是显示明确的不支持提示。
+    validations:
+      required: true
+
+  - type: textarea
+    id: sanitized_details
+    attributes:
+      label: 脱敏请求信息与日志
+      description: 可提供 Request ID、HTTP/S3 错误、响应头和客户端日志；必须删除凭据、签名、内网信息及敏感对象名。
+      render: text
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我使用的是隔离测试账户和非生产数据。
+          required: true
+        - label: 我确认内容中不包含密钥、Token、签名 URL 或其他敏感信息。
+          required: true
+        - label: 我已搜索现有兼容性 Issue，没有找到相同服务与问题。
+          required: true
+
