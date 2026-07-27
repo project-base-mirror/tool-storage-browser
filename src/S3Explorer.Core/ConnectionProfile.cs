@@ -32,6 +32,9 @@ public sealed record ConnectionProfile
     public string SecretKey { get; init; } = string.Empty;
     public string SessionToken { get; init; } = string.Empty;
     public bool UsesTemporarySessionCredentials => !string.IsNullOrWhiteSpace(SessionToken);
+    public bool HasStoredCredentials =>
+        !string.IsNullOrWhiteSpace(AccessKey) &&
+        !string.IsNullOrWhiteSpace(SecretKey);
     public AddressingStyle AddressingStyle { get; init; } = AddressingStyle.Auto;
     public bool UseHttps { get; init; } = true;
     public bool IgnoreCertificateErrors { get; init; }
@@ -73,6 +76,15 @@ public sealed record ConnectionProfile
 
     public void Validate()
     {
+        ValidateConfiguration();
+        if (string.IsNullOrWhiteSpace(AccessKey))
+            throw new ArgumentException("Access Key 不能为空。", nameof(AccessKey));
+        if (string.IsNullOrWhiteSpace(SecretKey))
+            throw new ArgumentException("Secret Key 不能为空。", nameof(SecretKey));
+    }
+
+    public void ValidateConfiguration()
+    {
         if (string.IsNullOrWhiteSpace(Name))
             throw new ArgumentException("连接名称不能为空。", nameof(Name));
 
@@ -82,10 +94,6 @@ public sealed record ConnectionProfile
         EndpointCompatibility.ValidateForService(ServiceType, endpoint);
         if (string.IsNullOrWhiteSpace(EffectiveSignatureRegion))
             throw new ArgumentException("签名 Region 不能为空。", nameof(SignatureRegion));
-        if (string.IsNullOrWhiteSpace(AccessKey))
-            throw new ArgumentException("Access Key 不能为空。", nameof(AccessKey));
-        if (string.IsNullOrWhiteSpace(SecretKey))
-            throw new ArgumentException("Secret Key 不能为空。", nameof(SecretKey));
         if (RequestTimeoutSeconds is < 5 or > 3600)
             throw new ArgumentOutOfRangeException(nameof(RequestTimeoutSeconds), "请求超时必须在 5 到 3600 秒之间。");
         if (ConnectionTimeoutSeconds is < 1 or > 120)
