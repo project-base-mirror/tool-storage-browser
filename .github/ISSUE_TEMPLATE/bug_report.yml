@@ -34,7 +34,7 @@ body:
     attributes:
       label: S3 Explorer 版本
       description: 可从“帮助 → 关于”或 `s3explorer-cli version` 查看。
-      placeholder: "例如：0.5.2"
+      placeholder: "例如：0.5.3"
     validations:
       required: true
 

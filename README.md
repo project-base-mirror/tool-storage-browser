@@ -130,8 +130,8 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-win-x64.zip
-    artifacts/release/S3Explorer-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.3-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.3-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。

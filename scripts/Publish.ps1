@@ -15,10 +15,17 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
 $cliProject = Join-Path $repositoryRoot "src\S3Explorer.Cli\S3Explorer.Cli.csproj"
+$propsPath = Join-Path $repositoryRoot "Directory.Build.props"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $outputRoot = Join-Path $artifactsRoot "release"
-$frameworkName = "S3Explorer-$Runtime"
-$selfContainedName = "S3Explorer-$Runtime-self-contained"
+[xml]$props = Get-Content -LiteralPath $propsPath -Raw
+$version = [string]$props.Project.PropertyGroup.Version
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Directory.Build.props Version must use X.Y.Z: $version"
+}
+$releaseTag = "v$version"
+$frameworkName = "S3Explorer-$releaseTag-$Runtime"
+$selfContainedName = "S3Explorer-$releaseTag-$Runtime-self-contained"
 $frameworkDirectory = Join-Path $outputRoot $frameworkName
 $selfContainedDirectory = Join-Path $outputRoot $selfContainedName
 $frameworkZip = Join-Path $outputRoot "$frameworkName.zip"

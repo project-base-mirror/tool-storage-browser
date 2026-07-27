@@ -42,30 +42,30 @@ https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
 创建并推送 annotated tag：
 
 ```powershell
-git tag -a v0.5.2 -m "S3 Explorer v0.5.2"
-git push origin v0.5.2
+git tag -a v0.5.3 -m "S3 Explorer v0.5.3"
+git push origin v0.5.3
 ```
 
 Release 工作流会：
 
 1. 检出该 tag，并拒绝 tag、项目版本或版本记录不一致的发布。
 2. 在 `windows-latest` 和 .NET 10 SDK 上运行 `scripts/Publish.ps1 -NoOpen`。
-3. 生成 framework-dependent 与 self-contained ZIP、`release-metrics.json` 和 `SHA256SUMS.txt`。
+3. 生成带版本号的 framework-dependent 与 self-contained ZIP、`release-metrics.json` 和 `SHA256SUMS.txt`。
 4. 保存 Actions artifact，并创建同名 GitHub Release；重新运行时覆盖同名资产，不创建重复 Release。
 
 也可以手工运行 **Publish GitHub Release**，但输入必须是已经存在的 tag。工作流不会替用户创建或移动 tag。
 
 ## 下载地址约定
 
-客户端、README 和项目主页使用 GitHub 的稳定 Latest Release 地址：
+Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.3 为例：
 
 ```text
 https://github.com/project-base-mirror/tool-storage-browser/releases/latest
-https://github.com/project-base-mirror/tool-storage-browser/releases/latest/download/S3Explorer-win-x64.zip
-https://github.com/project-base-mirror/tool-storage-browser/releases/latest/download/S3Explorer-win-x64-self-contained.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.3/S3Explorer-v0.5.3-win-x64.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.3/S3Explorer-v0.5.3-win-x64-self-contained.zip
 ```
 
-因此发布资产名称属于兼容接口，修改名称时必须同步更新客户端与站点。
+发布脚本从项目版本自动生成资产名；准备新版本时必须同步更新 Pages 的固定版本链接。客户端从 Latest Release API 读取 tag 并选择同版本资产，同时兼容 v0.5.2 及更早的无版本号文件名。
 
 ## 自动更新的数据边界
 

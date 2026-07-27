@@ -77,17 +77,27 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         Uri? preferredDownload = null;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
-            foreach (var asset in assets.EnumerateArray())
+            var preferredNames = new[]
             {
-                if (!asset.TryGetProperty("name", out var name) ||
-                    name.ValueKind != JsonValueKind.String ||
-                    !string.Equals(name.GetString(), "S3Explorer-win-x64.zip", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                if (asset.TryGetProperty("browser_download_url", out var download) &&
-                    download.ValueKind == JsonValueKind.String &&
-                    TryHttpsUri(download.GetString(), out var uri))
-                    preferredDownload = uri;
-                break;
+                $"S3Explorer-{tagName}-win-x64.zip",
+                "S3Explorer-win-x64.zip"
+            };
+            foreach (var preferredName in preferredNames)
+            {
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    if (!asset.TryGetProperty("name", out var name) ||
+                        name.ValueKind != JsonValueKind.String ||
+                        !string.Equals(name.GetString(), preferredName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (asset.TryGetProperty("browser_download_url", out var download) &&
+                        download.ValueKind == JsonValueKind.String &&
+                        TryHttpsUri(download.GetString(), out var uri))
+                        preferredDownload = uri;
+                    break;
+                }
+                if (preferredDownload is not null)
+                    break;
             }
         }
 

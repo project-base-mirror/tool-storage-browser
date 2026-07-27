@@ -9,6 +9,10 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $publishScript = Join-Path $PSScriptRoot "Publish.ps1"
 $releaseRoot = Join-Path $repositoryRoot "artifacts\release"
+[xml]$props = Get-Content -LiteralPath (Join-Path $repositoryRoot "Directory.Build.props") -Raw
+$version = [string]$props.Project.PropertyGroup.Version
+$frameworkName = "S3Explorer-v$version-win-x64"
+$selfContainedName = "S3Explorer-v$version-win-x64-self-contained"
 
 function Assert-True {
     param(
@@ -53,10 +57,10 @@ if (-not $SkipPackageBuild) {
 }
 
 $expectedPaths = @(
-    "S3Explorer-win-x64",
-    "S3Explorer-win-x64-self-contained",
-    "S3Explorer-win-x64.zip",
-    "S3Explorer-win-x64-self-contained.zip",
+    $frameworkName,
+    $selfContainedName,
+    "$frameworkName.zip",
+    "$selfContainedName.zip",
     "release-metrics.json"
 )
 
@@ -70,7 +74,7 @@ if (-not $SkipPackageBuild) {
     Assert-True -Condition (($actualNames -join '|') -ceq ($expectedNames -join '|')) -Message "artifacts\release contains stale or unexpected top-level entries."
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    foreach ($zipName in @("S3Explorer-win-x64.zip", "S3Explorer-win-x64-self-contained.zip")) {
+    foreach ($zipName in @("$frameworkName.zip", "$selfContainedName.zip")) {
         $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $releaseRoot $zipName))
         try {
             $entryNames = @($archive.Entries | Select-Object -ExpandProperty FullName)
@@ -87,8 +91,8 @@ if (-not $SkipPackageBuild) {
 
 $metrics = Get-Content -LiteralPath (Join-Path $releaseRoot "release-metrics.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics.json must contain exactly two packages."
-Assert-True -Condition ($metrics.packages.name -contains "S3Explorer-win-x64") -Message "Framework-dependent package metric is missing."
-Assert-True -Condition ($metrics.packages.name -contains "S3Explorer-win-x64-self-contained") -Message "Self-contained package metric is missing."
+Assert-True -Condition ($metrics.packages.name -contains $frameworkName) -Message "Framework-dependent package metric is missing."
+Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Message "Self-contained package metric is missing."
 
 Write-Host "Publish script tests passed."
 Write-Host "Verified release directory: $((Resolve-Path -LiteralPath $releaseRoot).Path)"
