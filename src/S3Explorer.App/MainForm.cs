@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.S3;
 
 namespace S3Explorer.App;
 
@@ -63,6 +64,7 @@ internal sealed class MainForm : Form
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly IFolderSyncJobStore _syncJobStore;
     private readonly GitHubUpdateChecker _updateChecker;
+    private readonly ConnectionArchiveService _connectionArchive = new();
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new() { Name = "StatusBar" };
     private readonly ToolStripStatusLabel _connectionStatus = new("未连接");
@@ -170,8 +172,9 @@ internal sealed class MainForm : Form
         file.DropDownItems.Add(Command("connect", "连接", async (_, _) => await ConnectSelectedAsync()));
         file.DropDownItems.Add(Command("disconnect", "断开连接", (_, _) => Disconnect()));
         file.DropDownItems.Add(new ToolStripSeparator());
-        file.DropDownItems.Add(Unsupported("导入连接..."));
-        file.DropDownItems.Add(Unsupported("导出连接..."));
+        file.DropDownItems.Add(Command("import-connections", "导入连接...", async (_, _) => await ImportConnectionsAsync()));
+        file.DropDownItems.Add(Command("export-connection", "导出当前连接...", async (_, _) => await ExportConnectionsAsync(exportAll: false)));
+        file.DropDownItems.Add(Command("export-all-connections", "导出全部连接...", async (_, _) => await ExportConnectionsAsync(exportAll: true)));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(new ToolStripMenuItem("退出", null, (_, _) => Close()));
 
@@ -350,15 +353,18 @@ internal sealed class MainForm : Form
         connect.Click += async (_, _) => await ConnectSelectedAsync();
         var edit = new ToolStripMenuItem("修改...", UiIcons.Create(UiIconKind.Properties, 16));
         edit.Click += (_, _) => EditCurrentConnection();
+        var export = new ToolStripMenuItem("导出此连接...", UiIcons.Create(UiIconKind.Download, 16));
+        export.Click += async (_, _) => await ExportConnectionsAsync(exportAll: false);
         var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
         delete.Click += async (_, _) => await DeleteCurrentConnectionAsync();
-        _accountMenu.Items.AddRange([connect, edit, new ToolStripSeparator(), delete]);
+        _accountMenu.Items.AddRange([connect, edit, export, new ToolStripSeparator(), delete]);
         _accountMenu.Opening += (_, args) =>
         {
             var accountSelected = _tree.SelectedNode?.Tag is ConnectionProfile;
             args.Cancel = !accountSelected;
             connect.Enabled = accountSelected;
             edit.Enabled = accountSelected;
+            export.Enabled = accountSelected;
             delete.Enabled = accountSelected;
         };
     }
@@ -627,6 +633,8 @@ internal sealed class MainForm : Form
         var hasUpdateCommand = _commands.TryGetValue("check-updates", out var updateCommand) && updateCommand.Enabled;
         var hasProjectHome = _commands.TryGetValue("project-home", out var projectHome) && projectHome.Enabled;
         var hasIssueLink = _commands.TryGetValue("report-issue", out var issueLink) && issueLink.Enabled;
+        var hasConnectionImport = _commands.TryGetValue("import-connections", out var importConnections) && importConnections.Enabled;
+        var hasConnectionExport = _commands.TryGetValue("export-all-connections", out var exportConnections);
         var checks = new List<AutomationCheck>
         {
             new("window-handle", IsHandleCreated && Handle != IntPtr.Zero, $"Handle={Handle}"),
@@ -642,7 +650,9 @@ internal sealed class MainForm : Form
             new("status-bar", _status.Name == "StatusBar" && _status.Items.Count > 0, $"Items={_status.Items.Count}"),
             new("update-command", hasUpdateCommand, $"Present={updateCommand is not null}"),
             new("project-links", hasProjectHome && hasIssueLink,
-                $"Home={projectHome is not null}; Issue={issueLink is not null}")
+                $"Home={projectHome is not null}; Issue={issueLink is not null}"),
+            new("connection-transfer-commands", hasConnectionImport && hasConnectionExport,
+                $"Import={importConnections is not null}; Export={exportConnections is not null}")
         };
 
         var parent = CreateParentDirectoryItem(_objects.Font);
@@ -762,6 +772,151 @@ internal sealed class MainForm : Form
     {
         _profileStore.SaveAsync(_profiles).GetAwaiter().GetResult();
         PopulateProfiles();
+    }
+
+    private async Task ExportConnectionsAsync(bool exportAll)
+    {
+        var profiles = exportAll
+            ? _profiles.ToArray()
+            : SelectedTreeProfile() is { } selected ? [selected] : [];
+        if (profiles.Length == 0)
+        {
+            MessageBox.Show(this,
+                exportAll ? "当前没有可导出的连接。" : "请先选择一个连接。",
+                "导出连接", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var options = new ConnectionExportOptionsDialog(
+            profiles.Length,
+            profiles.Count(profile => profile.HasStoredCredentials));
+        if (options.ShowDialog(this) != DialogResult.OK) return;
+
+        var suggestedName = exportAll
+            ? $"S3Explorer-connections-{DateTime.Now:yyyyMMdd}.{ConnectionArchiveService.FileExtension}"
+            : $"{SanitizeFileName(profiles[0].Name)}.{ConnectionArchiveService.FileExtension}";
+        using var saveDialog = new SaveFileDialog
+        {
+            Title = exportAll ? "导出全部连接" : "导出当前连接",
+            Filter = $"S3 Explorer 连接包 (*.{ConnectionArchiveService.FileExtension})|*.{ConnectionArchiveService.FileExtension}|JSON 文件 (*.json)|*.json",
+            FileName = suggestedName,
+            AddExtension = true,
+            DefaultExt = ConnectionArchiveService.FileExtension,
+            OverwritePrompt = true
+        };
+        if (saveDialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var archive = _connectionArchive.Export(profiles, options.IncludeCredentials, options.Password);
+            await File.WriteAllBytesAsync(saveDialog.FileName, archive);
+            _logger.Info($"Connections exported count={profiles.Length} credentials={options.IncludeCredentials} file={saveDialog.FileName}");
+            MessageBox.Show(this,
+                $"已导出 {profiles.Length} 个连接。\n\n" +
+                (options.IncludeCredentials
+                    ? "连接包包含密码加密的凭据。请通过其他安全渠道传递迁移密码。"
+                    : "连接包不包含任何账号凭据。"),
+                "导出完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error($"Connection export failed file={saveDialog.FileName}", exception);
+            ErrorDialog.ShowException(this, "导出失败", "写入连接包", exception, saveDialog.FileName);
+        }
+    }
+
+    private async Task ImportConnectionsAsync()
+    {
+        using var openDialog = new OpenFileDialog
+        {
+            Title = "导入连接",
+            Filter = $"S3 Explorer 连接包 (*.{ConnectionArchiveService.FileExtension};*.json)|*.{ConnectionArchiveService.FileExtension};*.json|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (openDialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var fileInfo = new FileInfo(openDialog.FileName);
+            if (fileInfo.Length > ConnectionArchiveService.MaximumArchiveBytes)
+                throw new InvalidDataException($"连接包不能超过 {ConnectionArchiveService.MaximumArchiveBytes / 1024 / 1024} MiB。");
+            var archive = await File.ReadAllBytesAsync(openDialog.FileName);
+            var inspection = _connectionArchive.Inspect(archive);
+            ConnectionArchivePackage package;
+            if (!inspection.RequiresPassword)
+            {
+                package = _connectionArchive.Import(archive);
+            }
+            else
+            {
+                while (true)
+                {
+                    var password = ConnectionArchivePasswordDialog.RequestPassword(this);
+                    if (password is null) return;
+                    try
+                    {
+                        package = _connectionArchive.Import(archive, password);
+                        break;
+                    }
+                    catch (ConnectionArchiveAuthenticationException exception)
+                    {
+                        _logger.Warning($"Connection archive unlock failed file={openDialog.FileName}: {exception.Message}");
+                        if (MessageBox.Show(this,
+                                "迁移密码错误，或连接包已损坏。是否重新输入？",
+                                "无法解锁连接包", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning) != DialogResult.Retry)
+                            return;
+                    }
+                }
+            }
+
+            using var preview = new ConnectionImportPreviewDialog(package, _profiles);
+            if (preview.ShowDialog(this) != DialogResult.OK) return;
+            var selected = preview.SelectedProfiles;
+            var previousProfiles = _profiles;
+            _profiles = _connectionArchive.Merge(
+                _profiles,
+                selected,
+                preview.ImportCredentials,
+                preview.ConflictStrategy);
+            await _profileStore.SaveAsync(_profiles);
+            PopulateProfiles();
+
+            if (_currentProfile is not null)
+            {
+                _currentProfile = _profiles.FirstOrDefault(profile => profile.Id == _currentProfile.Id);
+                if (_currentProfile is null) Disconnect();
+            }
+
+            var changedCount = CountChangedProfiles(previousProfiles, _profiles);
+            _logger.Info($"Connections imported selected={selected.Count} changed={changedCount} credentials={preview.ImportCredentials} strategy={preview.ConflictStrategy} file={openDialog.FileName}");
+            MessageBox.Show(this,
+                $"导入处理完成：选择 {selected.Count} 个，实际新增或更新 {changedCount} 个。\n\n" +
+                (preview.ImportCredentials
+                    ? "已将所选连接的凭据写入当前用户的 DPAPI 加密配置。"
+                    : "未导入凭据；使用前请编辑连接补充凭据。"),
+                "导入完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or ConnectionArchivePasswordRequiredException)
+        {
+            _logger.Error($"Connection import failed file={openDialog.FileName}", exception);
+            ErrorDialog.ShowException(this, "导入失败", "读取连接包", exception, openDialog.FileName);
+        }
+    }
+
+    private static int CountChangedProfiles(
+        IReadOnlyCollection<ConnectionProfile> before,
+        IReadOnlyCollection<ConnectionProfile> after)
+    {
+        var previous = before.ToDictionary(profile => profile.Id);
+        return after.Count(profile => !previous.TryGetValue(profile.Id, out var oldProfile) || oldProfile != profile);
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var sanitized = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(sanitized) ? "connection" : sanitized;
     }
 
     private async Task ConnectSelectedAsync()
@@ -2192,6 +2347,8 @@ internal sealed class MainForm : Form
 
         SetEnabled("edit-connection", profileSelected);
         SetEnabled("delete-connection", profileSelected);
+        SetEnabled("export-connection", profileSelected);
+        SetEnabled("export-all-connections", _profiles.Count > 0);
         SetEnabled("connect", profileSelected);
         SetEnabled("disconnect", connected);
         SetEnabled("create-bucket", connected);
