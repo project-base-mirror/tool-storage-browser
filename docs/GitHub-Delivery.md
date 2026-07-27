@@ -42,8 +42,8 @@ https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
 创建并推送 annotated tag：
 
 ```powershell
-git tag -a v0.5.3 -m "S3 Explorer v0.5.3"
-git push origin v0.5.3
+git tag -a v0.5.4 -m "S3 Explorer v0.5.4"
+git push origin v0.5.4
 ```
 
 Release 工作流会：
@@ -57,12 +57,12 @@ Release 工作流会：
 
 ## 下载地址约定
 
-Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.3 为例：
+Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.4 为例：
 
 ```text
 https://github.com/project-base-mirror/tool-storage-browser/releases/latest
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.3/S3Explorer-v0.5.3-win-x64.zip
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.3/S3Explorer-v0.5.3-win-x64-self-contained.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.4/S3Explorer-v0.5.4-win-x64.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.4/S3Explorer-v0.5.4-win-x64-self-contained.zip
 ```
 
 发布脚本从项目版本自动生成资产名；准备新版本时必须同步更新 Pages 的固定版本链接。客户端从 Latest Release API 读取 tag 并选择同版本资产，同时兼容 v0.5.2 及更早的无版本号文件名。

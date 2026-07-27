@@ -40,7 +40,7 @@ body:
     id: app_version
     attributes:
       label: S3 Explorer 版本
-      placeholder: "例如：0.5.3"
+      placeholder: "例如：0.5.4"
     validations:
       required: true
 
