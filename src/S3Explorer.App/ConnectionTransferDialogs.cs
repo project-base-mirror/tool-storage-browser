@@ -128,14 +128,18 @@ internal sealed class ConnectionExportOptionsDialog : Form
 
 internal sealed class ConnectionArchivePasswordDialog : Form
 {
-    private readonly TextBox _password = new() { UseSystemPasswordChar = true, Width = 410 };
-
-    private ConnectionArchivePasswordDialog()
+    private readonly TextBox _password = new()
     {
+        UseSystemPasswordChar = true,
+        Dock = DockStyle.Fill
+    };
+
+    internal ConnectionArchivePasswordDialog()
+    {
+        Name = nameof(ConnectionArchivePasswordDialog);
         Text = "解锁连接包";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(470, 170);
-        MinimumSize = MaximumSize = Size;
+        ClientSize = new Size(510, 200);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -146,25 +150,61 @@ internal sealed class ConnectionArchivePasswordDialog : Form
         {
             Text = "该连接包包含加密凭据。请输入导出时设置的迁移密码：",
             AutoSize = true,
-            MaximumSize = new Size(430, 0),
-            Location = new Point(20, 20)
+            Dock = DockStyle.Fill,
+            MaximumSize = new Size(470, 0),
+            Margin = new Padding(0)
         };
-        _password.Location = new Point(20, 66);
+        _password.Margin = new Padding(0, 12, 0, 0);
         var unlock = new Button
         {
+            Name = "UnlockConnectionArchiveButton",
             Text = "解锁并预览",
             DialogResult = DialogResult.OK,
-            Width = 105,
-            Location = new Point(255, 116)
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(126, 34),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(8, 0, 0, 0)
         };
         var cancel = new Button
         {
+            Name = "CancelUnlockButton",
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Width = 80,
-            Location = new Point(370, 116)
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(88, 34),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(8, 0, 0, 0)
         };
-        Controls.AddRange([label, _password, unlock, cancel]);
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = new Padding(0, 18, 0, 0)
+        };
+        actions.Controls.Add(cancel);
+        actions.Controls.Add(unlock);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Padding = new Padding(20)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(label, 0, 0);
+        layout.Controls.Add(_password, 0, 1);
+        layout.Controls.Add(actions, 0, 3);
+        Controls.Add(layout);
         AcceptButton = unlock;
         CancelButton = cancel;
         Shown += (_, _) => _password.Focus();
@@ -199,7 +239,16 @@ internal sealed class ConnectionImportPreviewDialog : Form
         Width = 180
     };
     private readonly Label _selectionSummary = new() { AutoSize = true };
-    private readonly Button _import = new() { Text = "导入所选连接", Width = 105 };
+    private readonly Button _import = new()
+    {
+        Name = "ImportConnectionsButton",
+        Text = "导入所选连接",
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        MinimumSize = new Size(132, 34),
+        Padding = new Padding(10, 2, 10, 2),
+        Margin = new Padding(8, 0, 0, 0)
+    };
 
     public IReadOnlyList<ConnectionProfile> SelectedProfiles => _profiles.CheckedItems
         .Cast<ListViewItem>()
@@ -215,6 +264,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
         ConnectionArchivePackage package,
         IReadOnlyCollection<ConnectionProfile> existingProfiles)
     {
+        Name = nameof(ConnectionImportPreviewDialog);
         Text = "预览导入连接";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(850, 525);
@@ -262,47 +312,146 @@ internal sealed class ConnectionImportPreviewDialog : Form
         ]);
         _conflictStrategy.SelectedIndex = 0;
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 77, Padding = new Padding(14, 12, 14, 6) };
+        var header = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(14, 12, 14, 8),
+            Margin = new Padding(0)
+        };
         var title = new Label
         {
             Text = $"连接包包含 {package.Profiles.Count} 个连接。勾选要导入的连接，然后确认凭据和重名策略。",
             AutoSize = true,
-            Location = new Point(14, 12)
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
         };
         var exported = new Label
         {
             Text = $"导出时间：{package.ExportedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
-            Location = new Point(14, 39)
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 8, 0, 0)
         };
-        header.Controls.AddRange([title, exported]);
+        header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        header.Controls.Add(title, 0, 0);
+        header.Controls.Add(exported, 0, 1);
 
-        var footer = new Panel { Dock = DockStyle.Bottom, Height = 105, Padding = new Padding(14, 8, 14, 10) };
-        var selectAll = new Button { Text = "全选", Width = 65, Location = new Point(14, 8) };
-        var selectNone = new Button { Text = "全不选", Width = 70, Location = new Point(86, 8) };
-        _selectionSummary.Location = new Point(170, 13);
-        _importCredentials.Location = new Point(14, 48);
-        var conflictLabel = new Label { Text = "同名连接：", AutoSize = true, Location = new Point(460, 13) };
-        _conflictStrategy.Location = new Point(540, 8);
-        _import.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
-        _import.Location = new Point(625, 64);
+        var selectAll = new Button
+        {
+            Name = "SelectAllConnectionsButton",
+            Text = "全选",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(84, 34),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(0)
+        };
+        var selectNone = new Button
+        {
+            Name = "SelectNoConnectionsButton",
+            Text = "全不选",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(92, 34),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        _selectionSummary.Margin = new Padding(12, 8, 0, 0);
+        _importCredentials.Margin = new Padding(0, 12, 0, 0);
+        var conflictLabel = new Label
+        {
+            Text = "同名连接：",
+            AutoSize = true,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _conflictStrategy.Margin = new Padding(8, 3, 0, 0);
         var cancel = new Button
         {
+            Name = "CancelConnectionImportButton",
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Width = 80,
-            Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
-            Location = new Point(742, 64)
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(88, 34),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(8, 0, 0, 0)
         };
-        footer.Controls.AddRange([
-            selectAll, selectNone, _selectionSummary, conflictLabel,
-            _conflictStrategy, _importCredentials, _import, cancel
-        ]);
 
-        Controls.Add(_profiles);
-        Controls.Add(footer);
-        Controls.Add(header);
+        var selectionActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(0)
+        };
+        selectionActions.Controls.AddRange([selectAll, selectNone, _selectionSummary]);
+
+        var conflictOptions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Right,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(12, 0, 0, 0)
+        };
+        conflictOptions.Controls.AddRange([conflictLabel, _conflictStrategy]);
+
+        var importActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Right,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = new Padding(12, 12, 0, 0)
+        };
+        importActions.Controls.Add(cancel);
+        importActions.Controls.Add(_import);
+
+        var footer = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 2,
+            Padding = new Padding(14, 8, 14, 10),
+            Margin = new Padding(0)
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footer.Controls.Add(selectionActions, 0, 0);
+        footer.Controls.Add(conflictOptions, 1, 0);
+        footer.Controls.Add(_importCredentials, 0, 1);
+        footer.Controls.Add(importActions, 1, 1);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(header, 0, 0);
+        layout.Controls.Add(_profiles, 0, 1);
+        layout.Controls.Add(footer, 0, 2);
+        Controls.Add(layout);
         AcceptButton = _import;
         CancelButton = cancel;
 
