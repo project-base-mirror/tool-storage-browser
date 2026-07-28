@@ -71,6 +71,8 @@ public sealed class LogViewerDialogTests
 
             var content = Assert.IsType<RichTextBox>(Find(dialog, "LogViewerContent"));
             Assert.True(content.ClientSize.Width > 0 && content.ClientSize.Height > 0);
+            Assert.True(content.ClientSize.Height >= 240,
+                $"Log viewer content was only {content.ClientSize.Height}px high at the minimum window size.");
             Assert.True(content.ReadOnly);
             Assert.False(content.WordWrap);
 

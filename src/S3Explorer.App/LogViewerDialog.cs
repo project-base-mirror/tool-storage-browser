@@ -72,7 +72,7 @@ internal sealed class LogViewerDialog : Form
         Text = "查看日志";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(920, 620);
-        MinimumSize = new Size(700, 480);
+        MinimumSize = new Size(760, 540);
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
         AutoScaleMode = AutoScaleMode.Font;
@@ -139,7 +139,7 @@ internal sealed class LogViewerDialog : Form
 
         var footer = new TableLayoutPanel
         {
-            Dock = DockStyle.Bottom,
+            Dock = DockStyle.Fill,
             AutoSize = true,
             ColumnCount = 2,
             Margin = new Padding(0, 10, 0, 0)
