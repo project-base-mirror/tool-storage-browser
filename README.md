@@ -22,7 +22,8 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
 - 单个或全部连接导入导出：连同相关 CDN Profile、Bucket/前缀关联一起迁移；默认无秘密值，可选密码加密 S3 与 CDN 凭据；导入前支持预览、逐项选择和同名处理。
 - 连接复制、健康状态、最近检查与最近成功时间。
-- 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTP 预热与通用刷新端点。
+- 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、HTTP 预热与通用刷新端点。
+- 上传后 CDN 自动化：关联可分别设置新对象预热、覆盖后刷新或刷新后预热；任务独立重试、取消并在重启后恢复，不改变上传成功状态。
 - GitHub Pages 项目主页、tag 驱动的 GitHub Release，以及可关闭的启动更新检查。
 
 ## 运行要求
@@ -137,8 +138,8 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.5.7-win-x64.zip
-    artifacts/release/S3Explorer-v0.5.7-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.8-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.8-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -219,7 +220,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 当前仍未实现 CORS、生命周期、版本历史、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
 
-CDN 第一阶段仅提供通用 HTTP 交付域名、探测、预热和无需厂商签名的刷新端点；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API、Prefix Purge、上传后自动处理、持久 CDN 作业队列或 CDN CLI。
+CDN 当前提供通用 HTTP 交付域名、探测、预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API、Prefix Purge 或 CDN CLI。
 
 文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 
