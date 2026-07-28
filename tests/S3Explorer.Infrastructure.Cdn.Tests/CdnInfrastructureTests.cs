@@ -19,7 +19,8 @@ public sealed class CdnInfrastructureTests
             var profile = new CdnProfile
             {
                 Name = "site",
-                BaseUrl = "https://cdn.example"
+                BaseUrl = "https://cdn.example",
+                Notes = "生产站点 CDN，变更前联系值班人员。"
             };
             var binding = new CdnBinding
             {

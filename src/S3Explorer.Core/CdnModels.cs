@@ -27,9 +27,11 @@ public enum CdnWarmupMode
 public sealed record CdnProfile
 {
     public const string GenericHttpProviderId = "generic-http";
+    public const int MaximumNotesLength = 2000;
 
     public Guid Id { get; init; } = Guid.NewGuid();
     public string Name { get; init; } = string.Empty;
+    public string Notes { get; init; } = string.Empty;
     public string ProviderId { get; init; } = GenericHttpProviderId;
     public string BaseUrl { get; init; } = string.Empty;
     public Guid? CredentialId { get; init; }
@@ -163,6 +165,8 @@ public static class CdnConfigurationValidator
             if (profile.Id == Guid.Empty) errors.Add("CDN 配置 ID 不能为空。");
             if (!profileIds.Add(profile.Id)) errors.Add($"CDN 配置 ID 重复：{profile.Id}");
             if (string.IsNullOrWhiteSpace(profile.Name)) errors.Add("CDN 配置名称不能为空。");
+            if (profile.Notes.Length > CdnProfile.MaximumNotesLength)
+                errors.Add($"CDN 配置“{profile.Name}”的备注不能超过 {CdnProfile.MaximumNotesLength} 个字符。");
             if (!string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase))
                 errors.Add($"CDN 配置“{profile.Name}”使用了当前版本不支持的 Provider：{profile.ProviderId}");
             if (!TryHttpUri(profile.BaseUrl, out var baseUri) || baseUri is null ||

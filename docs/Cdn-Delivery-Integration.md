@@ -87,6 +87,8 @@ S3Explorer.App
 
 ### 5.1 CdnProfile
 
+CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途、负责人、域名变更窗口等运维信息。备注保存在 `cdn-config.json`，并随连接包迁移；不要在备注中填写 Token、Header secret 或其他凭据。
+
 关键字段：
 
 - `Id`、`Name`、`Enabled`

@@ -194,10 +194,12 @@ public sealed class ConnectionArchiveServiceTests
         var package = _service.Import(archive);
 
         Assert.Contains("https://cdn.example.test", json, StringComparison.Ordinal);
+        Assert.Contains("production delivery", json, StringComparison.Ordinal);
         Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
         Assert.Equal(1, inspection.CdnProfileCount);
         Assert.Equal(0, inspection.CdnCredentialCount);
         Assert.Null(Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+        Assert.Equal("production delivery", Assert.Single(package.ImportedCdnConfiguration.Profiles).Notes);
         Assert.Single(package.ImportedCdnConfiguration.Bindings);
         Assert.Empty(package.ImportedCdnCredentials);
     }
@@ -373,6 +375,7 @@ public sealed class ConnectionArchiveServiceTests
     {
         Name = "cdn-profile",
         BaseUrl = "https://cdn.example.test",
+        Notes = "production delivery",
         CredentialId = credentialId
     };
 

@@ -224,6 +224,7 @@ internal sealed class CdnConfigurationDialog : Form
         _profileGrid.Columns.Clear();
         _profileGrid.Columns.Add("name", "名称");
         _profileGrid.Columns.Add("base", "基础 URL");
+        _profileGrid.Columns.Add("notes", "备注");
         _profileGrid.Columns.Add("warmup", "预热");
         _profileGrid.Columns.Add("purge", "刷新");
         _profileGrid.Columns.Add("credential", "凭据");
@@ -235,10 +236,13 @@ internal sealed class CdnConfigurationDialog : Form
             var index = _profileGrid.Rows.Add(
                 profile.Name,
                 profile.BaseUrl,
+                NotesPreview(profile.Notes),
                 WarmupText(profile),
                 profile.Capabilities.HasFlag(CdnCapabilities.Purge) ? profile.PurgeHttpMethod : "未配置",
                 credentialName);
             _profileGrid.Rows[index].Tag = profile.Id;
+            if (!string.IsNullOrWhiteSpace(profile.Notes))
+                _profileGrid.Rows[index].Cells["notes"].ToolTipText = profile.Notes;
         }
         SelectFirst(_profileGrid);
     }
@@ -465,6 +469,12 @@ internal sealed class CdnConfigurationDialog : Form
         _ => $"Range GET ({profile.WarmupRangeBytes / 1024d / 1024d:N0} MiB)"
     };
 
+    private static string NotesPreview(string notes)
+    {
+        var value = notes.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return value.Length <= 80 ? value : value[..77] + "...";
+    }
+
     private static string AuthenticationText(CdnAuthenticationType type) => type switch
     {
         CdnAuthenticationType.BearerToken => "Bearer Token",
@@ -483,6 +493,14 @@ internal sealed class CdnProfileEditorDialog : Form
     private readonly Guid _id;
     private readonly TextBox _name = new() { Name = "CdnProfileName" };
     private readonly TextBox _baseUrl = new() { Name = "CdnProfileBaseUrl" };
+    private readonly TextBox _notes = new()
+    {
+        Name = "CdnProfileNotes",
+        Multiline = true,
+        ScrollBars = ScrollBars.Vertical,
+        MaxLength = CdnProfile.MaximumNotesLength,
+        MinimumSize = new Size(0, 72)
+    };
     private readonly ComboBox _credential = new()
     {
         Name = "CdnProfileCredential",
@@ -566,6 +584,7 @@ internal sealed class CdnProfileEditorDialog : Form
         var fields = EditorLayout.Fields();
         EditorLayout.AddField(fields, "名称：", _name);
         EditorLayout.AddField(fields, "CDN 基础 URL：", _baseUrl);
+        EditorLayout.AddField(fields, "备注：", _notes);
         EditorLayout.AddField(fields, "独立凭据：", _credential);
         EditorLayout.AddField(fields, "预热模式：", _warmupMode);
         EditorLayout.AddField(fields, "Range 大小 (MiB)：", _rangeMiB);
@@ -604,6 +623,7 @@ internal sealed class CdnProfileEditorDialog : Form
     {
         _name.Text = profile.Name;
         _baseUrl.Text = profile.BaseUrl;
+        _notes.Text = profile.Notes;
         SelectValue(_credential, profile.CredentialId);
         SelectValue(_warmupMode, profile.WarmupMode);
         _rangeMiB.Value = Math.Clamp(
@@ -626,6 +646,7 @@ internal sealed class CdnProfileEditorDialog : Form
         {
             Id = _id,
             Name = _name.Text.Trim(),
+            Notes = _notes.Text.Trim(),
             ProviderId = CdnProfile.GenericHttpProviderId,
             BaseUrl = _baseUrl.Text.Trim(),
             CredentialId = Selected(_credential, (Guid?)null),

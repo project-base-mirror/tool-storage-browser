@@ -61,6 +61,33 @@ public sealed class CdnDialogLayoutTests
     }
 
     [Fact]
+    public void ProfileEditorLoadsAndSavesNotes()
+    {
+        RunSta(() =>
+        {
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com",
+                Notes = "原备注"
+            };
+            using var dialog = new CdnProfileEditorDialog(profile, []);
+            var notes = Assert.IsType<TextBox>(Assert.Single(
+                dialog.Controls.Find("CdnProfileNotes", searchAllChildren: true)));
+
+            Assert.Equal("原备注", notes.Text);
+            Assert.True(notes.Multiline);
+            Assert.Equal(CdnProfile.MaximumNotesLength, notes.MaxLength);
+            notes.Text = "发布域名，证书由平台团队维护。";
+            dialog.Show();
+            FindButton(dialog, "SaveCdnProfileButton").PerformClick();
+
+            Assert.Equal(DialogResult.OK, dialog.DialogResult);
+            Assert.Equal("发布域名，证书由平台团队维护。", dialog.Profile.Notes);
+        });
+    }
+
+    [Fact]
     public void DownloadTestKeepsTestAndCloseActionsReadableAtLargeText()
     {
         RunSta(() =>

@@ -144,6 +144,20 @@ public sealed class CdnModelTests
         Assert.Contains(errors, value => value.Contains("换行符", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ValidatorRejectsOversizedProfileNotes()
+    {
+        var profile = Profile("cdn", "https://cdn.example") with
+        {
+            Notes = new string('n', CdnProfile.MaximumNotesLength + 1)
+        };
+
+        var errors = CdnConfigurationValidator.Validate(
+            new CdnConfiguration([profile], []));
+
+        Assert.Contains(errors, value => value.Contains("备注", StringComparison.Ordinal));
+    }
+
     private static CdnProfile Profile(string name, string url) => new()
     {
         Name = name,
