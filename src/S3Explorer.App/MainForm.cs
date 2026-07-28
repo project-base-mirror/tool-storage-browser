@@ -902,9 +902,15 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        var (cdnConfiguration, cdnCredentials) = SelectCdnArchiveData(profiles, exportAll);
+
         using var options = new ConnectionExportOptionsDialog(
             profiles.Length,
-            profiles.Count(profile => profile.HasStoredCredentials));
+            profiles.Count(profile => profile.HasStoredCredentials),
+            cdnConfiguration.Profiles.Count,
+            cdnCredentials.Count(credential =>
+                credential.AuthenticationType != CdnAuthenticationType.None &&
+                !string.IsNullOrEmpty(credential.Secret)));
         if (options.ShowDialog(this) != DialogResult.OK) return;
 
         var suggestedName = exportAll
@@ -923,14 +929,20 @@ internal sealed partial class MainForm : Form
 
         try
         {
-            var archive = _connectionArchive.Export(profiles, options.IncludeCredentials, options.Password);
+            var archive = _connectionArchive.Export(
+                profiles,
+                options.IncludeCredentials,
+                options.Password,
+                cdnConfiguration,
+                cdnCredentials);
             await File.WriteAllBytesAsync(saveDialog.FileName, archive);
             _logger.Info($"Connections exported count={profiles.Length} credentials={options.IncludeCredentials} file={saveDialog.FileName}");
             MessageBox.Show(this,
-                $"已导出 {profiles.Length} 个连接。\n\n" +
+                $"已导出 {profiles.Length} 个对象存储连接、{cdnConfiguration.Profiles.Count} 个 CDN 配置和 " +
+                $"{cdnConfiguration.Bindings.Count} 个 CDN 关联。\n\n" +
                 (options.IncludeCredentials
-                    ? "连接包包含密码加密的凭据。请通过其他安全渠道传递迁移密码。"
-                    : "连接包不包含任何账号凭据。"),
+                    ? "连接包包含密码加密的 S3/CDN 凭据。请通过其他安全渠道传递迁移密码。"
+                    : "连接包不包含任何秘密值；CDN 认证引用已移除。"),
                 "导出完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
@@ -989,12 +1001,41 @@ internal sealed partial class MainForm : Form
             if (preview.ShowDialog(this) != DialogResult.OK) return;
             var selected = preview.SelectedProfiles;
             var previousProfiles = _profiles;
-            _profiles = _connectionArchive.Merge(
+            var previousCdnConfiguration = _cdnConfiguration;
+            var previousCdnCredentials = _cdnCredentials;
+            var merged = _connectionArchive.MergePackage(
                 _profiles,
-                selected,
+                _cdnConfiguration,
+                _cdnCredentials,
+                package,
+                selected.Select(profile => profile.Id).ToArray(),
                 preview.ImportCredentials,
                 preview.ConflictStrategy);
-            await _profileStore.SaveAsync(_profiles);
+
+            try
+            {
+                await _profileStore.SaveAsync(merged.Profiles);
+                await _cdnCredentialStore.SaveAsync(merged.CdnCredentials);
+                await _cdnConfigurationStore.SaveAsync(merged.CdnConfiguration);
+            }
+            catch (Exception saveException)
+            {
+                try
+                {
+                    await _profileStore.SaveAsync(previousProfiles);
+                    await _cdnCredentialStore.SaveAsync(previousCdnCredentials);
+                    await _cdnConfigurationStore.SaveAsync(previousCdnConfiguration);
+                }
+                catch (Exception rollbackException)
+                {
+                    _logger.Error("Connection and CDN import rollback failed", rollbackException);
+                }
+                throw new IOException("保存导入结果失败，已尝试恢复导入前的连接和 CDN 配置。", saveException);
+            }
+
+            _profiles = merged.Profiles;
+            _cdnConfiguration = merged.CdnConfiguration;
+            _cdnCredentials = merged.CdnCredentials;
             PopulateProfiles();
 
             if (_currentProfile is not null)
@@ -1004,15 +1045,32 @@ internal sealed partial class MainForm : Form
             }
 
             var changedCount = CountChangedProfiles(previousProfiles, _profiles);
-            _logger.Info($"Connections imported selected={selected.Count} changed={changedCount} credentials={preview.ImportCredentials} strategy={preview.ConflictStrategy} file={openDialog.FileName}");
+            var changedCdnProfiles = CountChangedRecords(
+                previousCdnConfiguration.Profiles,
+                _cdnConfiguration.Profiles,
+                profile => profile.Id);
+            var changedCdnBindings = CountChangedRecords(
+                previousCdnConfiguration.Bindings,
+                _cdnConfiguration.Bindings,
+                binding => binding.Id);
+            var changedCdnCredentials = CountChangedRecords(
+                previousCdnCredentials,
+                _cdnCredentials,
+                credential => credential.Id);
+            _logger.Info(
+                $"Connections imported selected={selected.Count} changed={changedCount} " +
+                $"cdnProfiles={changedCdnProfiles} cdnBindings={changedCdnBindings} " +
+                $"cdnCredentials={changedCdnCredentials} credentials={preview.ImportCredentials} " +
+                $"strategy={preview.ConflictStrategy} file={openDialog.FileName}");
             MessageBox.Show(this,
-                $"导入处理完成：选择 {selected.Count} 个，实际新增或更新 {changedCount} 个。\n\n" +
+                $"导入处理完成：选择 {selected.Count} 个对象存储连接，实际新增或更新 {changedCount} 个。\n" +
+                $"CDN：配置 {changedCdnProfiles} 个、关联 {changedCdnBindings} 个、凭据 {changedCdnCredentials} 个发生变化。\n\n" +
                 (preview.ImportCredentials
-                    ? "已将所选连接的凭据写入当前用户的 DPAPI 加密配置。"
-                    : "未导入凭据；使用前请编辑连接补充凭据。"),
+                    ? "已将所选 S3/CDN 凭据重新写入当前用户各自的 DPAPI 加密配置。"
+                    : "未导入秘密值；S3 已保存密钥需补充，受保护的 CDN 配置需重新关联凭据。"),
                 "导入完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or ConnectionArchivePasswordRequiredException)
+        catch (Exception exception)
         {
             _logger.Error($"Connection import failed file={openDialog.FileName}", exception);
             ErrorDialog.ShowException(this, "导入失败", "读取连接包", exception, openDialog.FileName);
@@ -1025,6 +1083,47 @@ internal sealed partial class MainForm : Form
     {
         var previous = before.ToDictionary(profile => profile.Id);
         return after.Count(profile => !previous.TryGetValue(profile.Id, out var oldProfile) || oldProfile != profile);
+    }
+
+    private (CdnConfiguration Configuration, IReadOnlyList<CdnCredential> Credentials) SelectCdnArchiveData(
+        IReadOnlyCollection<ConnectionProfile> profiles,
+        bool exportAll)
+    {
+        if (exportAll)
+            return (_cdnConfiguration, _cdnCredentials);
+
+        var storageIds = profiles.Select(profile => profile.Id).ToHashSet();
+        var bindings = _cdnConfiguration.Bindings
+            .Where(binding => storageIds.Contains(binding.StorageProfileId))
+            .ToArray();
+        var cdnProfileIds = bindings.Select(binding => binding.CdnProfileId).ToHashSet();
+        var cdnProfiles = _cdnConfiguration.Profiles
+            .Where(profile => cdnProfileIds.Contains(profile.Id))
+            .ToArray();
+        var credentialIds = cdnProfiles
+            .Where(profile => profile.CredentialId.HasValue)
+            .Select(profile => profile.CredentialId!.Value)
+            .ToHashSet();
+        var credentials = _cdnCredentials
+            .Where(credential => credentialIds.Contains(credential.Id))
+            .ToArray();
+        return (new CdnConfiguration(cdnProfiles, bindings), credentials);
+    }
+
+    private static int CountChangedRecords<T>(
+        IReadOnlyCollection<T> before,
+        IReadOnlyCollection<T> after,
+        Func<T, Guid> idSelector)
+        where T : notnull
+    {
+        var previous = before.ToDictionary(idSelector);
+        var current = after.ToDictionary(idSelector);
+        return previous.Keys
+            .Union(current.Keys)
+            .Count(id =>
+                !previous.TryGetValue(id, out var oldItem) ||
+                !current.TryGetValue(id, out var newItem) ||
+                !EqualityComparer<T>.Default.Equals(oldItem, newItem));
     }
 
     private static string SanitizeFileName(string value)

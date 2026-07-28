@@ -8,7 +8,7 @@ internal sealed class ConnectionExportOptionsDialog : Form
     private readonly CheckBox _includeCredentials = new()
     {
         Name = "IncludeStoredCredentialsCheckBox",
-        Text = "包含已保存的 Access Key、Secret Key 和 Session Token",
+        Text = "包含已保存凭据（S3 密钥及 CDN Token/Header 密钥）",
         AutoSize = true
     };
     private readonly TextBox _password = new() { UseSystemPasswordChar = true, Width = 310 };
@@ -26,7 +26,11 @@ internal sealed class ConnectionExportOptionsDialog : Form
     public bool IncludeCredentials => _includeCredentials.Checked;
     public string Password => _password.Text;
 
-    public ConnectionExportOptionsDialog(int profileCount, int profilesWithCredentials)
+    public ConnectionExportOptionsDialog(
+        int profileCount,
+        int profilesWithCredentials,
+        int cdnProfileCount = 0,
+        int cdnCredentials = 0)
     {
         Text = "导出连接";
         StartPosition = FormStartPosition.CenterParent;
@@ -40,26 +44,28 @@ internal sealed class ConnectionExportOptionsDialog : Form
 
         var title = new Label
         {
-            Text = $"将导出 {profileCount} 个连接",
+            Text = cdnProfileCount > 0
+                ? $"将导出 {profileCount} 个对象存储连接和 {cdnProfileCount} 个 CDN 配置"
+                : $"将导出 {profileCount} 个对象存储连接",
             Font = new Font(Font, FontStyle.Bold),
             AutoSize = true,
             Location = new Point(20, 18)
         };
         var explanation = new Label
         {
-            Text = "默认只导出服务地址、Region 和 Bucket 等配置，不包含任何凭据。",
+            Text = "默认只导出服务地址、Region、Bucket、CDN 地址和关联等配置，不包含任何秘密值。",
             AutoSize = true,
             MaximumSize = new Size(525, 0),
             Location = new Point(20, 49),
             ForeColor = SystemColors.GrayText
         };
         _includeCredentials.Location = new Point(20, 92);
-        _includeCredentials.Enabled = profilesWithCredentials > 0;
+        _includeCredentials.Enabled = profilesWithCredentials + cdnCredentials > 0;
         var credentialCount = new Label
         {
-            Text = profilesWithCredentials > 0
-                ? $"其中 {profilesWithCredentials} 个连接具有可迁移的已保存凭据。勾选后整包会使用密码加密。"
-                : "所选连接没有可迁移的已保存密钥；AWS 外部来源只会导出非敏感引用。",
+            Text = profilesWithCredentials + cdnCredentials > 0
+                ? $"可迁移凭据：S3 连接 {profilesWithCredentials} 个，CDN 凭据 {cdnCredentials} 个。勾选后整包会使用密码加密。"
+                : "所选内容没有可迁移的已保存密钥；AWS 外部来源只导出非敏感引用，CDN 认证引用会移除。",
             AutoSize = true,
             MaximumSize = new Size(525, 0),
             Location = new Point(39, 120),
@@ -309,8 +315,8 @@ internal sealed class ConnectionImportPreviewDialog : Form
         _importCredentials.Enabled = package.ContainsCredentials;
         _importCredentials.Checked = false;
         _importCredentials.Text = package.ContainsCredentials
-            ? "导入连接包中的已保存密钥（外部来源只导入非敏感引用）"
-            : "连接包不包含已保存密钥；外部来源引用仍会导入";
+            ? $"导入包内凭据：S3 已保存密钥及 {package.ImportedCdnCredentials.Count} 个 CDN Token/Header 密钥"
+            : "连接包不包含秘密值；AWS 外部来源引用仍会导入，CDN 认证需重新关联";
         _conflictStrategy.Items.AddRange([
             new ConflictOption("自动重命名", ConnectionImportConflictStrategy.Rename),
             new ConflictOption("覆盖同名连接", ConnectionImportConflictStrategy.Replace),
@@ -328,9 +334,13 @@ internal sealed class ConnectionImportPreviewDialog : Form
             Padding = new Padding(14, 12, 14, 8),
             Margin = new Padding(0)
         };
+        var cdnConfiguration = package.ImportedCdnConfiguration;
         var title = new Label
         {
-            Text = $"连接包包含 {package.Profiles.Count} 个连接。勾选要导入的连接，然后确认凭据和重名策略。",
+            Name = "ConnectionImportSummary",
+            Text = $"连接包包含 {package.Profiles.Count} 个对象存储连接、" +
+                   $"{cdnConfiguration.Profiles.Count} 个 CDN 配置和 {cdnConfiguration.Bindings.Count} 个关联。" +
+                   "勾选连接后，相关 CDN 项会一并导入。",
             AutoSize = true,
             Dock = DockStyle.Fill,
             Margin = new Padding(0)

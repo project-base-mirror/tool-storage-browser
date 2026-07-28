@@ -20,7 +20,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象和同步任务 API，支持 JSON 输出与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
-- 单个或全部连接导入导出：默认无凭据，可选密码加密凭据；导入前支持预览、逐项选择和同名处理。
+- 单个或全部连接导入导出：连同相关 CDN Profile、Bucket/前缀关联一起迁移；默认无秘密值，可选密码加密 S3 与 CDN 凭据；导入前支持预览、逐项选择和同名处理。
 - 连接复制、健康状态、最近检查与最近成功时间。
 - 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTP 预热与通用刷新端点。
 - GitHub Pages 项目主页、tag 驱动的 GitHub Release，以及可关闭的启动更新检查。
@@ -179,7 +179,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 - SecretKey 和 SessionToken 使用 DPAPI CurrentUser 加密后保存。
 - AWS Profile 连接只保存非敏感 Profile 名称；环境、容器和实例角色凭据不写入 `profiles.json`、连接包或日志。
 - CDN Secret 使用独立 DPAPI entropy 加密，不复用 S3 SecretKey，也不写入普通 CDN 配置文件。
-- 导出配置默认不包含凭据。
+- 导出配置默认不包含 S3 或 CDN 秘密值；显式选择后使用迁移密码重新加密，不复制本机 DPAPI 密文。
 - 日志不得记录 SecretKey、SessionToken、Authorization Header 或完整预签名 URL。
 - 忽略证书错误仅用于用户明确配置的测试环境。
 

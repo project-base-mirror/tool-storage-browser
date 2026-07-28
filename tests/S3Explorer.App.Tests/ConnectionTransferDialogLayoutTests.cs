@@ -66,8 +66,88 @@ public sealed class ConnectionTransferDialogLayoutTests
         });
     }
 
+    [Fact]
+    public void ExportWithOnlyCdnCredentialCanRequestPasswordProtection()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ConnectionExportOptionsDialog(
+                profileCount: 1,
+                profilesWithCredentials: 0,
+                cdnProfileCount: 1,
+                cdnCredentials: 1);
+            var include = Assert.IsType<CheckBox>(Assert.Single(
+                dialog.Controls.Find("IncludeStoredCredentialsCheckBox", searchAllChildren: true)));
+
+            Assert.True(include.Enabled);
+            Assert.Contains("CDN", include.Text, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void ImportPreviewSummarizesCdnProfilesBindingsAndCredentials()
+    {
+        RunSta(() =>
+        {
+            var storage = new ConnectionProfile
+            {
+                Name = "example",
+                Endpoint = "https://s3.amazonaws.com"
+            };
+            var credential = new CdnCredential
+            {
+                Name = "cdn-token",
+                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Secret = "test-only"
+            };
+            var cdn = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com",
+                CredentialId = credential.Id
+            };
+            var package = new ConnectionArchivePackage(
+                [storage],
+                ContainsCredentials: true,
+                ExportedAtUtc: DateTimeOffset.UtcNow,
+                new CdnConfiguration(
+                    [cdn],
+                    [new CdnBinding
+                    {
+                        StorageProfileId = storage.Id,
+                        Bucket = "assets",
+                        CdnProfileId = cdn.Id
+                    }]),
+                [credential]);
+
+            using var dialog = new ConnectionImportPreviewDialog(package, []);
+            var summary = Assert.IsType<Label>(Assert.Single(
+                dialog.Controls.Find("ConnectionImportSummary", searchAllChildren: true)));
+            var importCredentials = dialog.Controls
+                .OfType<Control>()
+                .SelectMany(Flatten)
+                .OfType<CheckBox>()
+                .Single(checkBox => checkBox.Text.Contains("Token/Header", StringComparison.Ordinal));
+
+            Assert.Contains("1 个 CDN 配置", summary.Text, StringComparison.Ordinal);
+            Assert.Contains("1 个关联", summary.Text, StringComparison.Ordinal);
+            Assert.True(importCredentials.Enabled);
+            Assert.False(importCredentials.Checked);
+        });
+    }
+
     private static Button FindButton(Control root, string name) =>
         Assert.IsType<Button>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
+
+    private static IEnumerable<Control> Flatten(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Flatten(child))
+                yield return descendant;
+        }
+    }
 
     private static void AssertButtonIsReadable(Form dialog, Button button)
     {
