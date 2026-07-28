@@ -18,7 +18,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - WinForms 主窗口、连接管理、设置、日志和错误详情。
 - 当前列表过滤、导航历史、布局与列设置持久化。
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
-- 独立 `s3explorer-cli`：连接、Bucket、对象和同步任务 API，支持 JSON 输出与自动化隔离数据目录。
+- 独立 `s3explorer-cli`：连接、Bucket、对象、同步、增量发布、远程验证和 CDN 自动化，支持稳定 JSON 输出、取消与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
 - 单个或全部连接导入导出：连同相关 CDN Profile、Bucket/前缀关联一起迁移；对象存储/CDN 分页选择，两类凭据分别确认；等价配置复用且重复导入不生成副本。
 - 连接复制、健康状态、最近检查与最近成功时间。
@@ -94,26 +94,38 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 ## 对象存储命令行 API
 
-发布包同时包含 `S3Explorer.exe` 和 `s3explorer-cli.exe`。CLI 与桌面端共享 DPAPI 加密的连接配置和同步任务：
+发布包同时包含 `S3Explorer.exe` 和 `s3explorer-cli.exe`。CLI 可脱离 Unity 独立运行，并与桌面端共享 DPAPI 加密的连接、CDN 配置和同步任务：
 
-    s3explorer-cli profile list --json
+    s3explorer-cli profiles list --output json
     s3explorer-cli profile add --name "aws-audit" --type amazon --credential-source profile --aws-profile readonly
-    s3explorer-cli connection test "my-account" --json
-    s3explorer-cli bucket list "my-account" --json
-    s3explorer-cli object list "s3://my-account/my-bucket/path/" --recursive --json
+    s3explorer-cli connection test --profile "my-account" --output json
+    s3explorer-cli bucket list --profile "my-account" --output json
+    s3explorer-cli objects list --profile "my-account" --bucket "my-bucket" --prefix "path/" --recursive --output json
     s3explorer-cli object upload "D:\data\report.zip" "s3://my-account/my-bucket/backups/"
     s3explorer-cli object download "s3://my-account/my-bucket/backups/report.zip" "D:\restore\report.zip"
 
+面向 Unity、CI 和构建机的发布命令只接收 Profile ID/名称，不接收或保存长期密钥：
+
+    s3explorer-cli upload --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --output json --non-interactive --yes
+    s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
+    s3explorer-cli verify --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
+    s3explorer-cli cdn test --profile "cdn-dev" --path "android/1.2.3/config.bytes" --output json --non-interactive
+    s3explorer-cli cdn warmup --profile "cdn-dev" --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
+
+`publish` 会扫描本地产物并计算 SHA-256，与远程 Manifest 比较，只上传新增和变化文件；每个对象上传后都会下载验证 Size/SHA-256，最终 `publish-manifest.json` 仅在文件全部成功时最后上传。默认只支持 `--delete-mode none`，版本目录不会被自动删除。`--dry-run` 可只输出变更计划，`--full` 可忽略远程 Manifest 重新上传全部文件。
+
 同步任务可以由桌面端“工具 → 文件夹同步”创建，也可以完全通过命令行管理：
 
-    s3explorer-cli sync list --json
+    s3explorer-cli sync list --output json
     s3explorer-cli sync add --name "site-backup" --local "D:\site" --remote "s3://my-account/backups/site/" --direction upload --exclude "bin/**" --exclude "*.tmp"
-    s3explorer-cli sync analyze "site-backup" --json
-    s3explorer-cli sync run "site-backup" --json
+    s3explorer-cli sync analyze "site-backup" --output json
+    s3explorer-cli sync run "site-backup" --output json
 
-如果同步任务启用了删除传播，`sync run` 还必须明确提供 `--yes`。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。源码树中可用 `cli.bat help` 查看完整命令。
+交互式终端会对发布、删除传播等操作显示 `[y/N]` 确认；Unity 和 CI 应使用 `--non-interactive --yes`，缺少确认时命令会直接失败而不是等待输入。`--timeout <秒>`、`--cancel-file <路径>` 和 `--log-file <路径>` 可控制超时、外部取消和追加脱敏日志。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。
 
-所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。
+所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。`--output json` 提供结构化结果，旧的 `--json` 仍兼容；普通终端默认输出可读中文提示。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。源码树中可用 `cli.bat help` 查看完整命令。
+
+Unity 2021.3 可只引用 `S3Explorer.Contracts` 的 `netstandard2.1` DTO，并通过 `Process` 调用 CLI。Unity 项目只需保存 Profile ID、Bucket、Prefix 和 CDN Profile ID；AccessKey、SecretKey 与 SessionToken 继续由对象存储工具在 `%APPDATA%\S3Explorer` 下使用 DPAPI 保护。
 
 ## UI 自动化
 
@@ -195,11 +207,13 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
     src/
       S3Explorer.App                 WinForms 桌面应用
-      S3Explorer.Cli                 命令行对象存储 API
+      S3Explorer.Cli                 独立命令行、发布与 CDN 自动化 API
+      S3Explorer.Contracts           Unity/CLI 共享的 netstandard2.1 发布 DTO
       S3Explorer.Core                核心模型、路径和接口
       S3Explorer.Infrastructure.Cdn  CDN 配置存储与通用 HTTP 交付服务
       S3Explorer.Infrastructure.S3   AWS SDK、凭据与配置实现
     tests/
+      S3Explorer.Cli.Tests
       S3Explorer.Core.Tests
       S3Explorer.Infrastructure.Cdn.Tests
       S3Explorer.Infrastructure.S3.Tests
@@ -227,7 +241,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 当前仍未实现 CORS、生命周期、版本历史、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
 
-CDN 当前提供通用 HTTP 交付域名、探测、预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API、Prefix Purge 或 CDN CLI。
+CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API 或 Prefix Purge。
 
 文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 

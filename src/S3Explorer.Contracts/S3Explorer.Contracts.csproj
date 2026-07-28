@@ -4,5 +4,6 @@
     <AssemblyName>S3Explorer.Contracts</AssemblyName>
     <RootNamespace>S3Explorer.Contracts</RootNamespace>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 </Project>

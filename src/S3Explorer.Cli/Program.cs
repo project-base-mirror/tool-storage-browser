@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.Cdn;
 using S3Explorer.Infrastructure.S3;
 
 namespace S3Explorer.Cli;
@@ -42,9 +43,16 @@ internal static class Program
             return UsageError;
         }
 
-        var json = parsed.Flag("json");
+        var output = parsed.Optional("output")?.Trim();
+        var json = parsed.Flag("json") || string.Equals(output, "json", StringComparison.OrdinalIgnoreCase);
+        CliFileLog? fileLog = null;
         try
         {
+            if (!string.IsNullOrWhiteSpace(output) &&
+                !string.Equals(output, "json", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(output, "text", StringComparison.OrdinalIgnoreCase))
+                throw new CliUsageException("--output 仅支持 json 或 text。");
+
             if (parsed.Positionals.Count == 0 || parsed.Positionals[0] is "help" or "--help" or "-h")
             {
                 WriteHelp();
@@ -56,45 +64,90 @@ internal static class Program
                 return 0;
             }
 
+            using var operationCancellation = CliCancellationScope.Create(parsed, cancellation.Token);
+            fileLog = CliFileLog.Create(parsed.Optional("log-file"));
             var dataDirectory = parsed.Optional("data-dir") is { Length: > 0 } explicitDirectory
                 ? RequireAbsolutePath(explicitDirectory, "--data-dir")
                 : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "S3Explorer");
             var profiles = new JsonProfileStore(new DpapiCredentialProtector(), Path.Combine(dataDirectory, "profiles.json"));
             var syncJobs = new JsonFolderSyncJobStore(Path.Combine(dataDirectory, "sync-jobs.json"));
+            var cdnConfiguration = new JsonCdnConfigurationStore(Path.Combine(dataDirectory, "cdn-config.json"));
+            var cdnCredentials = new JsonCdnCredentialStore(
+                new DpapiCdnCredentialProtector(),
+                Path.Combine(dataDirectory, "cdn-credentials.json"));
+            var cdnDelivery = new GenericHttpCdnDeliveryService();
             var storage = new S3StorageService(new S3ClientFactory());
             var command = parsed.Positionals[0].ToLowerInvariant();
             var verb = parsed.Positionals.Count > 1 ? parsed.Positionals[1].ToLowerInvariant() : string.Empty;
 
-            return command switch
+            var exitCode = command switch
             {
-                "profile" or "profiles" => await RunProfileAsync(verb, parsed, profiles, json, cancellation.Token),
-                "connection" => await RunConnectionAsync(verb, parsed, profiles, storage, json, cancellation.Token),
-                "bucket" or "buckets" => await RunBucketAsync(verb, parsed, profiles, storage, json, cancellation.Token),
-                "object" or "objects" => await RunObjectAsync(verb, parsed, profiles, storage, json, cancellation.Token),
-                "sync" => await RunSyncAsync(verb, parsed, profiles, syncJobs, storage, json, cancellation.Token),
+                "profile" or "profiles" => await RunProfileAsync(verb, parsed, profiles, json, operationCancellation.Token),
+                "connection" => await RunConnectionAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
+                "bucket" or "buckets" => await RunBucketAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
+                "object" or "objects" => await RunObjectAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
+                "sync" => await RunSyncAsync(verb, parsed, profiles, syncJobs, storage, json, operationCancellation.Token),
+                "upload" or "publish" or "verify" or "cdn" => await RunAutomationAsync(
+                    command, verb, parsed, profiles, storage,
+                    cdnConfiguration, cdnCredentials, cdnDelivery,
+                    json, operationCancellation.Token),
                 _ => throw new CliUsageException($"未知命令：{command}。运行 s3explorer-cli help 查看可用命令。")
             };
+            fileLog.Write($"command={command} verb={verb} exitCode={exitCode}");
+            return exitCode;
         }
         catch (OperationCanceledException)
         {
+            fileLog?.Write("cancelled exitCode=130");
             WriteError(json, "操作已取消。", 130);
             return 130;
         }
         catch (CliNotFoundException exception)
         {
+            fileLog?.Write($"not-found exitCode={NotFound} message={exception.Message}");
             WriteError(json, exception.Message, NotFound);
             return NotFound;
         }
         catch (CliUsageException exception)
         {
+            fileLog?.Write($"usage-error exitCode={UsageError} message={exception.Message}");
             WriteError(json, exception.Message, UsageError);
             return UsageError;
         }
         catch (Exception exception)
         {
-            WriteError(json, SensitiveDataRedactor.Redact(exception.Message), OperationFailed);
+            var message = SensitiveDataRedactor.Redact(exception.Message);
+            fileLog?.Write($"operation-failed exitCode={OperationFailed} message={message}");
+            WriteError(json, message, OperationFailed);
             return OperationFailed;
         }
+        finally
+        {
+            fileLog?.Dispose();
+        }
+    }
+
+    private static async Task<int> RunAutomationAsync(
+        string command,
+        string verb,
+        CliArguments args,
+        IProfileStore profileStore,
+        IS3StorageService storage,
+        ICdnConfigurationStore cdnConfigurationStore,
+        ICdnCredentialStore cdnCredentialStore,
+        ICdnDeliveryService cdnDeliveryService,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var result = await AutomationCommands.RunAsync(
+            command, verb, args, profileStore, storage,
+            cdnConfigurationStore, cdnCredentialStore, cdnDeliveryService,
+            json, cancellationToken);
+        if (result.ExitCode == 0)
+            WriteSuccess(json, result.Data, result.Text);
+        else
+            WriteOperationFailure(json, result.Text, result.ExitCode, result.Data);
+        return result.ExitCode;
     }
 
     private static async Task<int> RunProfileAsync(
@@ -196,8 +249,11 @@ internal static class Program
         bool json,
         CancellationToken cancellationToken)
     {
-        if (verb != "test") throw new CliUsageException("用法：connection test <name-or-id>");
-        var profile = ResolveProfile(await store.LoadAsync(cancellationToken), RequirePositional(args, 2, "connection test <name-or-id>"));
+        if (verb != "test") throw new CliUsageException("用法：connection test <name-or-id> | connection test --profile <name-or-id>");
+        var profileName = args.Optional("profile") is { Length: > 0 } optionProfile
+            ? optionProfile
+            : RequirePositional(args, 2, "connection test <name-or-id> 或 connection test --profile <name-or-id>");
+        var profile = ResolveProfile(await store.LoadAsync(cancellationToken), profileName);
         var result = await storage.TestConnectionAsync(profile, cancellationToken);
         if (!result.Success)
         {
@@ -217,8 +273,11 @@ internal static class Program
         bool json,
         CancellationToken cancellationToken)
     {
-        if (verb != "list") throw new CliUsageException("用法：bucket list <profile-name-or-id>");
-        var profile = ResolveProfile(await store.LoadAsync(cancellationToken), RequirePositional(args, 2, "bucket list <profile-name-or-id>"));
+        if (verb != "list") throw new CliUsageException("用法：bucket list <profile-name-or-id> | bucket list --profile <profile-name-or-id>");
+        var profileName = args.Optional("profile") is { Length: > 0 } optionProfile
+            ? optionProfile
+            : RequirePositional(args, 2, "bucket list <profile-name-or-id> 或 bucket list --profile <profile-name-or-id>");
+        var profile = ResolveProfile(await store.LoadAsync(cancellationToken), profileName);
         var buckets = await storage.ListBucketsAsync(profile, cancellationToken);
         WriteSuccess(json, buckets, buckets.Count == 0
             ? "没有可见的 Bucket。"
@@ -239,7 +298,28 @@ internal static class Program
         {
             case "list":
             {
-                var (profile, location) = ResolveLocation(profiles, RequirePositional(args, 2, "object list <s3-uri>"));
+                ConnectionProfile profile;
+                S3Location location;
+                if (args.Optional("profile") is { Length: > 0 } profileName)
+                {
+                    profile = ResolveProfile(profiles, profileName);
+                    var bucket = args.Optional("bucket")?.Trim();
+                    if (string.IsNullOrWhiteSpace(bucket)) bucket = profile.DefaultBucket?.Trim();
+                    if (string.IsNullOrWhiteSpace(bucket))
+                        throw new CliUsageException("objects list 使用选项模式时需要 --bucket，或连接必须配置默认 Bucket。");
+                    var prefix = args.Optional("prefix")?.Replace('\\', '/').TrimStart('/') ?? string.Empty;
+                    if (prefix.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                        .Any(segment => segment is "." or ".."))
+                        throw new CliUsageException($"远程前缀不安全：{prefix}");
+                    location = new S3Location(profile.Name, bucket, S3Path.NormalizePrefix(prefix));
+                }
+                else
+                {
+                    (profile, location) = ResolveLocation(
+                        profiles,
+                        RequirePositional(args, 2,
+                            "object list <s3-uri> 或 objects list --profile <name> --bucket <bucket> [--prefix <prefix>]"));
+                }
                 var items = args.Flag("recursive")
                     ? await RecursiveObjectListing.ListFilesAsync(
                         location.Prefix, ObjectListingLimits.DefaultPageSize, ObjectListingLimits.DefaultCacheLimit,
@@ -740,7 +820,15 @@ internal static class Program
 
     private static void RequireConfirmation(CliArguments args, string message)
     {
-        if (!args.Flag("yes")) throw new CliUsageException(message);
+        if (args.Flag("yes")) return;
+        if (args.Flag("non-interactive") || Console.IsInputRedirected)
+            throw new CliUsageException(message);
+
+        Console.Write($"{message.Replace("必须提供 --yes。", string.Empty).Trim()} 继续？[y/N] ");
+        var answer = Console.ReadLine()?.Trim();
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            throw new OperationCanceledException();
     }
 
     private static int ParsePageSize(string? value)
@@ -782,35 +870,52 @@ internal static class Program
         """
         S3 Explorer CLI
 
-        用法:
-          s3explorer-cli profile list [--json]
-          s3explorer-cli profile show <name-or-id> [--json]
+        连接与对象:
+          s3explorer-cli profiles list [--output json]
+          s3explorer-cli profile show <name-or-id> [--output json]
           s3explorer-cli profile add --name <name> --type <amazon|compatible|google|minio|r2|b2|aliyun|tencent|supabase>
               [--endpoint <url>] [--region <region>]
               [--credential-source <stored|profile|environment|container|instance|default>]
               [--aws-profile <name>] [--access-key <key>] [--secret-key-env <ENV_NAME>]
           s3explorer-cli profile delete <name-or-id> --yes
-          s3explorer-cli connection test <name-or-id> [--json]
-          s3explorer-cli bucket list <name-or-id> [--json]
-          s3explorer-cli object list <s3://profile/bucket/prefix> [--recursive] [--json]
+          s3explorer-cli connection test --profile <name-or-id> [--output json]
+          s3explorer-cli bucket list --profile <name-or-id> [--output json]
+          s3explorer-cli objects list --profile <name> --bucket <bucket> [--prefix <prefix>] [--recursive]
+          s3explorer-cli object list <s3://profile/bucket/prefix> [--recursive] [--output json]
           s3explorer-cli object versions <s3://profile/bucket/prefix> [--page-size <1-1000>]
-              [--key-marker <key>] [--version-id-marker <id>] [--json]
+              [--key-marker <key>] [--version-id-marker <id>] [--output json]
           s3explorer-cli object upload <absolute-local-path> <s3://profile/bucket/key>
           s3explorer-cli object download <s3://profile/bucket/key> <absolute-local-path> [--recursive|--version-id <id>]
           s3explorer-cli object delete <s3://profile/bucket/key> [--recursive] --yes
           s3explorer-cli object restore-version <s3://profile/bucket/key> --version-id <id> --yes
           s3explorer-cli object delete-version <s3://profile/bucket/key> --version-id <id> --yes
           s3explorer-cli object clean-delete-markers <s3://profile/bucket/prefix> --yes
-          s3explorer-cli sync list [--json]
+
+        发布自动化:
+          s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>]
+          s3explorer-cli publish --profile <name> --source <folder> --bucket <bucket> --prefix <version-prefix>
+              [--project <name> --product <platform> --version <version>] [--manifest <path>]
+              [--delete-mode none] [--full] [--dry-run] [--cdn-profile <name> --warmup]
+          s3explorer-cli verify --manifest <publish-manifest.json> [--profile <name>] [--bucket <bucket>] [--prefix <prefix>]
+          s3explorer-cli cdn test --profile <cdn-name> (--path <path> | --manifest <file>)
+          s3explorer-cli cdn warmup --profile <cdn-name> (--path <path> | --manifest <file>) [--include-manifest]
+
+        文件夹同步:
+          s3explorer-cli sync list [--output json]
           s3explorer-cli sync add --name <name> --local <absolute-folder> --remote <s3-uri>
               [--direction upload|download] [--exclude <glob>] [--new-only|--changed-only] [--delete] [--hash]
-          s3explorer-cli sync analyze <name-or-id> [--json]
-          s3explorer-cli sync run <name-or-id> [--yes] [--json]
+          s3explorer-cli sync analyze <name-or-id> [--output json]
+          s3explorer-cli sync run <name-or-id> [--yes] [--output json]
           s3explorer-cli sync delete <name-or-id> --yes
 
         全局选项:
           --data-dir <absolute-path>  使用隔离的数据目录，适合自动化与测试
-          --json                      输出稳定 JSON；错误仍写入 stderr
+          --output <json|text>        输出稳定 JSON 或普通文本；--json 仍兼容
+          --non-interactive           禁止交互提示，适合 Unity 与 CI
+          --timeout <seconds>         1–86400 秒后取消
+          --cancel-file <path>        文件出现时取消当前操作
+          --log-file <path>           追加脱敏操作日志
+          --yes                       确认破坏性操作；发布可交互确认
 
         凭据建议:
           优先使用 --secret-key-env <变量名> 或 S3EXPLORER_SECRET_KEY，避免密钥进入命令历史。
@@ -823,7 +928,8 @@ internal sealed class CliArguments
     private static readonly HashSet<string> FlagOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "json", "yes", "recursive", "delete", "hash", "new-only", "changed-only",
-        "path-style", "ignore-certificate-errors"
+        "path-style", "ignore-certificate-errors", "non-interactive", "warmup", "dry-run",
+        "full", "include-manifest"
     };
     private readonly Dictionary<string, List<string>> _options = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Positionals { get; } = [];
