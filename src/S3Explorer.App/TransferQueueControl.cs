@@ -121,6 +121,7 @@ internal sealed class TransferQueueControl : UserControl
         string key,
         string localPath,
         long size,
+        string? versionId = null,
         CancellationToken cancellationToken = default) =>
         _queue.EnqueueAsync(new TransferTaskRecord
         {
@@ -129,6 +130,7 @@ internal sealed class TransferQueueControl : UserControl
             Direction = TransferDirection.Download,
             Bucket = bucket,
             ObjectKey = key,
+            VersionId = versionId,
             LocalPath = localPath,
             TotalBytes = Math.Max(0, size),
             MaxAttempts = _maxAttempts,

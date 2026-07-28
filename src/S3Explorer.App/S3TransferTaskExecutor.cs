@@ -31,9 +31,14 @@ internal sealed class S3TransferTaskExecutor(
             case TransferDirection.Download:
                 var directory = Path.GetDirectoryName(task.LocalPath);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-                await storage.DownloadFileAsync(
-                    profile, task.Bucket, task.ObjectKey, task.LocalPath, transfer, cancellationToken)
-                    .ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(task.VersionId))
+                    await storage.DownloadFileAsync(
+                        profile, task.Bucket, task.ObjectKey, task.LocalPath, transfer, cancellationToken)
+                        .ConfigureAwait(false);
+                else
+                    await storage.DownloadObjectVersionAsync(
+                        profile, task.Bucket, task.ObjectKey, task.VersionId,
+                        task.LocalPath, transfer, cancellationToken).ConfigureAwait(false);
                 return;
 
             case TransferDirection.Copy:

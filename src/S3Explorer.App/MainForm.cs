@@ -216,7 +216,7 @@ internal sealed partial class MainForm : Form
         _commands["show-transfers"] = showTransfers;
         view.DropDownItems.Add(showTransfers);
         view.DropDownItems.Add(Unsupported("显示隐藏对象"));
-        view.DropDownItems.Add(Unsupported("显示版本"));
+        view.DropDownItems.Add(Command("show-versions", "显示版本...", async (_, _) => await ShowObjectVersionsAsync(false)));
         view.DropDownItems.Add(Unsupported("列设置..."));
         view.DropDownItems.Add(new ToolStripSeparator());
         view.DropDownItems.Add(Command("back", "返回", (_, _) => NavigateHistory(-1), Keys.Alt | Keys.Left));
@@ -252,8 +252,9 @@ internal sealed partial class MainForm : Form
         objects.DropDownItems.Add(Command("delete-object-menu", "删除", async (_, _) => await DeleteSelectedAsync()));
         objects.DropDownItems.Add(Command("properties-menu", "属性...", async (_, _) => await ShowPropertiesAsync()));
         objects.DropDownItems.Add(Command("metadata", "Metadata...", async (_, _) => await ShowPropertiesAsync()));
-        foreach (var text in new[] { "权限...", "更改存储类型...", "公开访问", "取消公开访问", "恢复历史版本..." })
+        foreach (var text in new[] { "权限...", "更改存储类型...", "公开访问", "取消公开访问" })
             objects.DropDownItems.Add(Unsupported(text));
+        objects.DropDownItems.Add(Command("object-versions", "查看 / 恢复历史版本...", async (_, _) => await ShowObjectVersionsAsync(true)));
         objects.DropDownItems.Add(Command("presign", "生成预签名 URL...", (_, _) => ShowPresignedUrl()));
 
         var tools = new ToolStripMenuItem("工具(&T)");
@@ -399,6 +400,7 @@ internal sealed partial class MainForm : Form
         _objectMenu.Items.Add("删除", UiIcons.Create(UiIconKind.Delete, 16), async (_, _) => await DeleteSelectedAsync());
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add("属性...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowPropertiesAsync());
+        _objectMenu.Items.Add("查看 / 恢复历史版本...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowObjectVersionsAsync(true));
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add(BuildObjectCdnContextMenu());
         _objectMenu.Opening += (_, _) =>
@@ -1628,6 +1630,29 @@ internal sealed partial class MainForm : Form
             await RefreshAsync();
     }
 
+    private async Task ShowObjectVersionsAsync(bool selectedOnly)
+    {
+        if (!EnsureLocation()) return;
+        var prefix = _currentPrefix;
+        if (selectedOnly)
+        {
+            var selected = SelectedEntries();
+            if (selected.Count != 1 || selected[0].IsDirectory)
+            {
+                MessageBox.Show(this,
+                    "请选择一个对象；也可通过“查看 → 显示版本”浏览当前路径。",
+                    "对象版本", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            prefix = selected[0].Key;
+        }
+        using var dialog = new ObjectVersionsDialog(
+            _storage, _currentProfile!, _currentBucket!, prefix, _transfers);
+        dialog.ShowDialog(this);
+        if (dialog.RemoteChanged)
+            await RefreshAsync();
+    }
+
     private bool TryGetBucketContext(out ConnectionProfile profile, out string bucket)
     {
         if (_tree.SelectedNode?.Tag is BucketNodeTag tag)
@@ -1986,11 +2011,31 @@ internal sealed partial class MainForm : Form
                 keys.Add(entry.Key);
         }
         keys = keys.Distinct(StringComparer.Ordinal).ToList();
-        if (_settings.ConfirmDelete &&
-            MessageBox.Show(this,
-                $"将删除 {keys.Count:N0} 个对象。\n\n此操作可能无法撤销，版本控制 Bucket 的普通删除可能创建 Delete Marker。",
-                "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            return;
+        if (_settings.ConfirmDelete)
+        {
+            var versioningWarning = "版本控制状态未确认；普通删除在版本化 Bucket 中可能创建 Delete Marker。";
+            try
+            {
+                if (BucketCapabilityMatrix.For(_currentProfile!.ServiceType).Versioning.Supported)
+                {
+                    var state = await _storage.GetBucketVersioningAsync(
+                        _currentProfile, _currentBucket!, CancellationToken.None);
+                    versioningWarning = state == BucketVersioningState.Enabled
+                        ? "当前 Bucket 已启用版本控制：本次普通删除将创建 Delete Marker，不会永久删除历史版本。"
+                        : state == BucketVersioningState.Suspended
+                            ? "当前 Bucket 已暂停版本控制：普通删除仍可能创建或替换 null Version 的 Delete Marker。"
+                            : "当前 Bucket 未启用版本控制：删除通常不可撤销。";
+                }
+            }
+            catch (Exception exception)
+            {
+                _logger.Error($"Versioning state check failed bucket={_currentBucket}", exception);
+            }
+            if (MessageBox.Show(this,
+                    $"将删除 {keys.Count:N0} 个对象。\n\n{versioningWarning}",
+                    "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+        }
         try
         {
             SetBusy($"正在删除 {keys.Count:N0} 个对象...");
