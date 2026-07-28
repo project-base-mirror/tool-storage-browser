@@ -42,8 +42,8 @@ https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
 创建并推送 annotated tag：
 
 ```powershell
-git tag -a v0.5.4 -m "S3 Explorer v0.5.4"
-git push origin v0.5.4
+git tag -a v0.5.5 -m "S3 Explorer v0.5.5"
+git push origin v0.5.5
 ```
 
 Release 工作流会：
@@ -57,16 +57,16 @@ Release 工作流会：
 
 ## 下载地址约定
 
-Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.4 为例：
+Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.5 为例：
 
 ```text
 https://github.com/project-base-mirror/tool-storage-browser/releases/latest
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.4/S3Explorer-v0.5.4-win-x64.zip
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.4/S3Explorer-v0.5.4-win-x64-self-contained.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.5/S3Explorer-v0.5.5-win-x64.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.5/S3Explorer-v0.5.5-win-x64-self-contained.zip
 ```
 
-发布脚本从项目版本自动生成资产名；准备新版本时必须同步更新 Pages 的固定版本链接。客户端从 Latest Release API 读取 tag 并选择同版本资产，同时兼容 v0.5.2 及更早的无版本号文件名。
+发布脚本从项目版本自动生成资产名；准备新版本时必须同步更新 Pages 的固定版本链接与 `update.json`。`scripts/Test-UpdateManifest.ps1` 会验证项目版本、tag、Release 页面和下载地址一致。客户端优先读取 Pages 清单，失败后回退 Latest Release API，并继续兼容 v0.5.2 及更早的无版本号文件名。
 
 ## 自动更新的数据边界
 
-客户端只读取公开的 GitHub Latest Release API，不上传账户、Bucket、对象路径、日志或设备标识。Draft 和 prerelease 不会成为默认更新。检查到新版本后仅展示说明并打开用户选择的下载链接，不静默安装。
+客户端只读取公开的 Pages 清单和 GitHub Latest Release API，不上传账户、Bucket、对象路径、日志、凭据或设备标识。最后成功结果只以公开信息缓存到本机；在线通道失败时不会把旧缓存冒充为已经确认的最新版本。检查到新版本后仅展示说明并打开用户选择的下载链接，不静默安装。
