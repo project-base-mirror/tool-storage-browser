@@ -1,5 +1,7 @@
 # GitHub Pages 与 Release 交付说明
 
+从版本准备、完整门禁、合并、打 tag 到线上验收的固定操作步骤见 [`Release-Process.md`](Release-Process.md)。本文只说明 GitHub 交付机制与公开数据边界。
+
 本仓库的公开交付由两个 GitHub Actions 工作流负责：
 
 - `.github/workflows/pages.yml`：`main` 中的 `docs/site/` 变化后部署项目主页。
@@ -39,11 +41,13 @@ https://project-base-mirror.github.io/tool-storage-browser/sitemap.xml
 - 全量测试、CLI/UI 冒烟和发布包检查已在本地通过。
 - tag 指向准备发布的提交，不从未验证的中间提交创建。
 
-创建并推送 annotated tag：
+创建并推送与项目版本一致的 annotated tag：
 
 ```powershell
-git tag -a v0.5.6 -m "S3 Explorer v0.5.6"
-git push origin v0.5.6
+$version = "X.Y.Z"
+$tag = "v$version"
+git tag -a $tag -m "S3 Explorer $tag"
+git push origin $tag
 ```
 
 Release 工作流会：
@@ -57,12 +61,12 @@ Release 工作流会：
 
 ## 下载地址约定
 
-Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址。以 v0.5.6 为例：
+Release 页面使用稳定的 Latest 地址，下载资产使用 tag 与文件名一致的版本化地址：
 
 ```text
 https://github.com/project-base-mirror/tool-storage-browser/releases/latest
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.6/S3Explorer-v0.5.6-win-x64.zip
-https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.6/S3Explorer-v0.5.6-win-x64-self-contained.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64-self-contained.zip
 ```
 
 发布脚本从项目版本自动生成资产名；准备新版本时必须同步更新 Pages 的固定版本链接与 `update.json`。`scripts/Test-UpdateManifest.ps1` 会验证项目版本、tag、Release 页面和下载地址一致。客户端优先读取 Pages 清单，失败后回退 Latest Release API，并继续兼容 v0.5.2 及更早的无版本号文件名。

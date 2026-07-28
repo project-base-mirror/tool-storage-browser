@@ -2,7 +2,7 @@
 
 S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工具。它使用 C#、.NET 10、WinForms 和 AWS SDK for .NET 构建，不依赖浏览器、Electron、Node.js、WebView 或数据库。
 
-[项目主页](https://project-base-mirror.github.io/tool-storage-browser/) · [下载最新版本](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) · [功能路线图](docs/Roadmap-v0.5-v0.8.md) · [逐版本记录](docs/versions/README.md)
+[项目主页](https://project-base-mirror.github.io/tool-storage-browser/) · [下载最新版本](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) · [功能路线图](docs/Roadmap-v0.5-v0.8.md) · [逐版本记录](docs/versions/README.md) · [正式发布流程](docs/Release-Process.md)
 
 当前阶段聚焦 Amazon S3 与 S3-compatible object storage，不集成 rclone、WebDAV、FTP 或 SFTP。
 
@@ -137,8 +137,8 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.5.6-win-x64.zip
-    artifacts/release/S3Explorer-v0.5.6-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.7-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.7-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -159,7 +159,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 `release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、ZIP SHA-256、SDK 版本，以及可选的启动时间和内存数据。
 
-推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；Pages 与 Release 的首次启用、版本门禁和资产名称约定见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
+推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；版本、更新清单、Release 与 Pages 的固定同步步骤见 [`docs/Release-Process.md`](docs/Release-Process.md)，GitHub 交付机制见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
 
 发布脚本回归检查：
 
@@ -198,6 +198,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
       S3Explorer.App.Tests
     docs/
       MinIO-Testing.md
+      Release-Process.md
       GitHub-Delivery.md
       Cdn-Delivery-Integration.md
       Aws-Credential-Sources.md
