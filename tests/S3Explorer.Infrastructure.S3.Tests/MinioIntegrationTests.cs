@@ -160,6 +160,7 @@ public sealed class MinioIntegrationTests
         Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", "minio");
         var bucket = $"s3explorer-v041-{Guid.NewGuid():N}";
         var localFile = Path.GetTempFileName();
+        var historicalDownload = Path.Combine(Path.GetTempPath(), $"s3explorer-history-{Guid.NewGuid():N}.txt");
         var bucketCreated = false;
         S3StorageService? service = null;
         ConnectionProfile? profile = null;
@@ -231,10 +232,47 @@ public sealed class MinioIntegrationTests
             var acl = await service.GetBucketAclAsync(profile, bucket, CancellationToken.None);
             Assert.Equal(BucketAclMode.Private, acl.Mode);
 
-            await File.WriteAllTextAsync(localFile, "S3 Explorer 0.4.1 bucket management");
+            await File.WriteAllTextAsync(localFile, "first version");
             await service.UploadFileAsync(
                 profile, bucket, "objects/中文 + 100%.txt", localFile, "STANDARD",
                 CreateTransferContext(), CancellationToken.None);
+            await File.WriteAllTextAsync(localFile, "second version");
+            await service.UploadFileAsync(
+                profile, bucket, "objects/中文 + 100%.txt", localFile, "STANDARD",
+                CreateTransferContext(), CancellationToken.None);
+
+            var versionPage = await service.ListObjectVersionsAsync(
+                profile, bucket, "objects/中文 + 100%.txt", null, null, 100,
+                CancellationToken.None);
+            var historical = Assert.Single(versionPage.Items, item =>
+                !item.IsDeleteMarker && !item.IsLatest);
+            await service.DownloadObjectVersionAsync(
+                profile, bucket, historical.Key, historical.VersionId, historicalDownload,
+                CreateTransferContext(), CancellationToken.None);
+            Assert.Equal("first version", await File.ReadAllTextAsync(historicalDownload));
+
+            await service.RestoreObjectVersionAsync(
+                profile, bucket, historical.Key, historical.VersionId, CancellationToken.None);
+            var restoredPage = await service.ListObjectVersionsAsync(
+                profile, bucket, historical.Key, null, null, 100, CancellationToken.None);
+            Assert.True(restoredPage.Items.Count(item => !item.IsDeleteMarker) >= 3);
+            await service.DeleteObjectVersionAsync(
+                profile, bucket, historical.Key, historical.VersionId, CancellationToken.None);
+            var afterVersionDelete = await service.ListObjectVersionsAsync(
+                profile, bucket, historical.Key, null, null, 100, CancellationToken.None);
+            Assert.DoesNotContain(afterVersionDelete.Items, item => item.VersionId == historical.VersionId);
+
+            await service.DeleteObjectsAsync(
+                profile, bucket, [historical.Key], CancellationToken.None);
+            var withMarker = await service.ListObjectVersionsAsync(
+                profile, bucket, historical.Key, null, null, 100, CancellationToken.None);
+            var markers = withMarker.Items.Where(item => item.IsDeleteMarker)
+                .Select(item => new ObjectVersionIdentity(item.Key, item.VersionId)).ToArray();
+            Assert.NotEmpty(markers);
+            await service.DeleteObjectVersionsAsync(profile, bucket, markers, CancellationToken.None);
+            var withoutMarker = await service.ListObjectVersionsAsync(
+                profile, bucket, historical.Key, null, null, 100, CancellationToken.None);
+            Assert.DoesNotContain(withoutMarker.Items, item => item.IsDeleteMarker);
 
             using (var client = new S3ClientFactory().Create(profile))
             {
@@ -274,6 +312,7 @@ public sealed class MinioIntegrationTests
                 try { await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
             }
             File.Delete(localFile);
+            File.Delete(historicalDownload);
             Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", previous);
         }
     }

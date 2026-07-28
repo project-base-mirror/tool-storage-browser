@@ -726,6 +726,46 @@ public sealed class S3StorageService : IS3StorageService
         return new(items, response.NextContinuationToken, response.IsTruncated);
     }
 
+    public async Task<PagedObjectVersionResult> ListObjectVersionsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string prefix,
+        string? keyMarker,
+        string? versionIdMarker,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "对象版本列表");
+        using var client = _factory.Create(profile);
+        var response = await client.ListVersionsAsync(new ListVersionsRequest
+        {
+            BucketName = bucket,
+            Prefix = string.IsNullOrWhiteSpace(prefix) ? null : prefix,
+            KeyMarker = string.IsNullOrWhiteSpace(keyMarker) ? null : keyMarker,
+            VersionIdMarker = string.IsNullOrWhiteSpace(versionIdMarker) ? null : versionIdMarker,
+            MaxKeys = Math.Clamp(pageSize, 1, 1000)
+        }, cancellationToken).ConfigureAwait(false);
+        var items = response.Versions.Select(item => new ObjectVersionEntry(
+            item.Key,
+            item.VersionId ?? string.Empty,
+            item.IsLatest,
+            item.IsDeleteMarker,
+            item.IsDeleteMarker ? 0 : item.Size,
+            item.LastModified,
+            item.IsDeleteMarker ? null : item.ETag,
+            item.IsDeleteMarker ? string.Empty : item.StorageClass?.Value ?? "STANDARD"))
+            .OrderBy(item => item.Key, StringComparer.Ordinal)
+            .ThenByDescending(item => item.LastModified)
+            .ToArray();
+        if (response.IsTruncated && string.IsNullOrWhiteSpace(response.NextKeyMarker))
+            throw new InvalidOperationException("ListObjectVersions 返回了无效的下一页 Key Marker。");
+        return new PagedObjectVersionResult(
+            items,
+            response.IsTruncated ? response.NextKeyMarker : null,
+            response.IsTruncated ? response.NextVersionIdMarker : null,
+            response.IsTruncated);
+    }
+
     public async Task UploadFileAsync(
         ConnectionProfile profile,
         string bucket,
@@ -786,10 +826,36 @@ public sealed class S3StorageService : IS3StorageService
         }
     }
 
-    public async Task DownloadFileAsync(
+    public Task DownloadFileAsync(
         ConnectionProfile profile,
         string bucket,
         string key,
+        string localPath,
+        TransferOperationContext transferContext,
+        CancellationToken cancellationToken) =>
+        DownloadFileInternalAsync(
+            profile, bucket, key, null, localPath, transferContext, cancellationToken);
+
+    public Task DownloadObjectVersionAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string versionId,
+        string localPath,
+        TransferOperationContext transferContext,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(versionId))
+            throw new ArgumentException("Version ID 不能为空。", nameof(versionId));
+        return DownloadFileInternalAsync(
+            profile, bucket, key, versionId, localPath, transferContext, cancellationToken);
+    }
+
+    private async Task DownloadFileInternalAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
         string localPath,
         TransferOperationContext transferContext,
         CancellationToken cancellationToken)
@@ -803,7 +869,8 @@ public sealed class S3StorageService : IS3StorageService
             var metadata = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
             {
                 BucketName = bucket,
-                Key = key
+                Key = key,
+                VersionId = versionId
             }, cancellationToken).ConfigureAwait(false);
 
             var remote = new RemoteObjectIdentity(
@@ -843,6 +910,7 @@ public sealed class S3StorageService : IS3StorageService
                 {
                     BucketName = bucket,
                     Key = key,
+                    VersionId = versionId,
                     ByteRange = completed > 0 ? new ByteRange(completed, remote.Length - 1) : null
                 };
                 using var response = await client.GetObjectAsync(request, cancellationToken).ConfigureAwait(false);
@@ -1047,6 +1115,78 @@ public sealed class S3StorageService : IS3StorageService
         }
     }
 
+    public async Task DeleteObjectVersionAsync(
+        ConnectionProfile profile, string bucket, string key, string versionId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(versionId))
+            throw new ArgumentException("Version ID 不能为空。", nameof(versionId));
+        using var client = _factory.Create(profile);
+        await client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = versionId
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteObjectVersionsAsync(
+        ConnectionProfile profile, string bucket,
+        IReadOnlyCollection<ObjectVersionIdentity> versions,
+        CancellationToken cancellationToken)
+    {
+        var unique = versions
+            .Where(item => !string.IsNullOrWhiteSpace(item.Key) && !string.IsNullOrWhiteSpace(item.VersionId))
+            .Distinct()
+            .ToArray();
+        if (unique.Length != versions.Count)
+            throw new ArgumentException("对象版本列表包含空值或重复项。", nameof(versions));
+        if (unique.Length == 0) return;
+        using var client = _factory.Create(profile);
+        foreach (var batch in unique.Chunk(1000))
+        {
+            var request = new DeleteObjectsRequest { BucketName = bucket };
+            request.Objects.AddRange(batch.Select(item => new KeyVersion
+            {
+                Key = item.Key,
+                VersionId = item.VersionId
+            }));
+            var response = await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.DeleteErrors.Count > 0)
+            {
+                var first = response.DeleteErrors[0];
+                throw new InvalidOperationException(
+                    $"永久删除对象版本时有 {response.DeleteErrors.Count:N0} 项失败；首项 Key={first.Key}，VersionId={first.VersionId}，Code={first.Code}。");
+            }
+        }
+    }
+
+    public async Task RestoreObjectVersionAsync(
+        ConnectionProfile profile, string bucket, string key, string versionId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            throw new ArgumentException("对象 Key 不能为空。", nameof(key));
+        if (string.IsNullOrWhiteSpace(versionId))
+            throw new ArgumentException("Version ID 不能为空。", nameof(versionId));
+        using var client = _factory.Create(profile);
+        var metadata = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = versionId
+        }, cancellationToken).ConfigureAwait(false);
+        if (profile.EnableMultipartCopy && metadata.ContentLength > MaximumSingleCopyBytes)
+        {
+            await MultipartCopyAsync(
+                client, bucket, key, bucket, key, metadata.ContentLength, versionId, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+        await CopyObjectSimpleAsync(client, bucket, key, bucket, key, versionId, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task CopyObjectAsync(
         ConnectionProfile profile,
         string sourceBucket,
@@ -1064,7 +1204,7 @@ public sealed class S3StorageService : IS3StorageService
             objectSize = metadata.ContentLength;
             if (objectSize > MaximumSingleCopyBytes)
             {
-                await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, cancellationToken)
+                await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, null, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
@@ -1072,13 +1212,13 @@ public sealed class S3StorageService : IS3StorageService
 
         try
         {
-            await CopyObjectSimpleAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken)
+            await CopyObjectSimpleAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, null, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (AmazonS3Exception ex) when (profile.EnableMultipartCopy && S3CompatibilityPolicy.RequiresMultipartCopy(ex))
         {
             objectSize ??= (await client.GetObjectMetadataAsync(sourceBucket, sourceKey, cancellationToken).ConfigureAwait(false)).ContentLength;
-            await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, cancellationToken)
+            await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket, destinationKey, objectSize.Value, null, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -1497,11 +1637,13 @@ public sealed class S3StorageService : IS3StorageService
         string sourceKey,
         string destinationBucket,
         string destinationKey,
+        string? sourceVersionId,
         CancellationToken cancellationToken) =>
         client.CopyObjectAsync(new CopyObjectRequest
         {
             SourceBucket = sourceBucket,
             SourceKey = sourceKey,
+            SourceVersionId = sourceVersionId,
             DestinationBucket = destinationBucket,
             DestinationKey = destinationKey
         }, cancellationToken);
@@ -1513,6 +1655,7 @@ public sealed class S3StorageService : IS3StorageService
         string destinationBucket,
         string destinationKey,
         long objectSize,
+        string? sourceVersionId,
         CancellationToken cancellationToken)
     {
         if (objectSize <= 0)
@@ -1536,6 +1679,7 @@ public sealed class S3StorageService : IS3StorageService
                 {
                     SourceBucket = sourceBucket,
                     SourceKey = sourceKey,
+                    SourceVersionId = sourceVersionId,
                     DestinationBucket = destinationBucket,
                     DestinationKey = destinationKey,
                     UploadId = initiate.UploadId,

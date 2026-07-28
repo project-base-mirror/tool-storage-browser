@@ -144,6 +144,7 @@ public sealed record TransferTaskRecord
     public TransferTaskState State { get; init; } = TransferTaskState.Queued;
     public string Bucket { get; init; } = string.Empty;
     public string ObjectKey { get; init; } = string.Empty;
+    public string? VersionId { get; init; }
     public string DestinationBucket { get; init; } = string.Empty;
     public string DestinationObjectKey { get; init; } = string.Empty;
     public ObjectConflictPolicy ConflictPolicy { get; init; } = ObjectConflictPolicy.Overwrite;

@@ -13,7 +13,7 @@ public sealed class PersistentTransferQueueTests
         try
         {
             var store = new JsonTransferTaskStore(path);
-            var task = CreateTask();
+            var task = CreateTask() with { VersionId = "historical-version-id" };
             await store.SaveAsync(new TransferStoreSnapshot { Tasks = [task] });
 
             var loaded = await store.LoadAsync();
@@ -21,6 +21,7 @@ public sealed class PersistentTransferQueueTests
 
             Assert.Single(loaded.Tasks);
             Assert.Equal(task.Id, loaded.Tasks[0].Id);
+            Assert.Equal("historical-version-id", loaded.Tasks[0].VersionId);
             Assert.DoesNotContain("secretKey", json, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("sessionToken", json, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(path + ".tmp"));

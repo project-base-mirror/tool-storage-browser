@@ -251,6 +251,33 @@ internal static class Program
                     : string.Join(Environment.NewLine, items.Select(item => $"{(item.IsDirectory ? "DIR " : "FILE")}\t{item.Size}\t{item.Key}")));
                 return 0;
             }
+            case "versions":
+            {
+                var (profile, location) = ResolveLocation(profiles,
+                    RequirePositional(args, 2, "object versions <s3-uri>"));
+                var pageSize = ParsePageSize(args.Optional("page-size"));
+                var page = await storage.ListObjectVersionsAsync(
+                    profile, location.Bucket!, location.Prefix,
+                    args.Optional("key-marker"), args.Optional("version-id-marker"),
+                    pageSize, cancellationToken);
+                var result = new
+                {
+                    items = page.Items,
+                    page.HasMore,
+                    page.NextKeyMarker,
+                    page.NextVersionIdMarker
+                };
+                WriteSuccess(json, result, page.Items.Count == 0
+                    ? "没有对象版本。"
+                    : string.Join(Environment.NewLine, page.Items.Select(item =>
+                        $"{(item.IsDeleteMarker ? "DELETE-MARKER" : "VERSION")}" +
+                        $"\t{(item.IsLatest ? "CURRENT" : "HISTORY")}" +
+                        $"\t{item.Size}\t{item.Key}\t{item.VersionId}")) +
+                      (page.HasMore
+                          ? $"\n下一页: --key-marker {page.NextKeyMarker} --version-id-marker {page.NextVersionIdMarker}"
+                          : string.Empty));
+                return 0;
+            }
             case "upload":
             {
                 var localPath = RequireAbsolutePath(RequirePositional(args, 2, "object upload <local-path> <s3-uri>"), "local-path");
@@ -263,6 +290,20 @@ internal static class Program
             {
                 var (profile, location) = ResolveLocation(profiles, RequirePositional(args, 2, "object download <s3-uri> <local-path>"));
                 var target = RequireAbsolutePath(RequirePositional(args, 3, "object download <s3-uri> <local-path>"), "local-path");
+                var versionId = args.Optional("version-id")?.Trim();
+                if (!string.IsNullOrWhiteSpace(versionId))
+                {
+                    if (args.Flag("recursive"))
+                        throw new CliUsageException("指定 --version-id 时不能使用 --recursive。");
+                    if (string.IsNullOrWhiteSpace(location.Prefix))
+                        throw new CliUsageException("指定版本下载必须包含对象 Key。");
+                    await storage.DownloadObjectVersionAsync(
+                        profile, location.Bucket!, location.Prefix, versionId, target,
+                        NewTransferContext(), cancellationToken);
+                    WriteSuccess(json, new { downloaded = 1, versionId },
+                        $"已下载指定版本：{location.Prefix} ({versionId})");
+                    return 0;
+                }
                 var downloaded = await DownloadPathAsync(storage, profile, location, target, args.Flag("recursive"), cancellationToken);
                 WriteSuccess(json, new { downloaded }, $"下载完成：{downloaded:N0} 个文件");
                 return 0;
@@ -290,8 +331,62 @@ internal static class Program
                 WriteSuccess(json, new { deleted = keys.Count }, $"已删除 {keys.Count:N0} 个对象。");
                 return 0;
             }
+            case "restore-version":
+            {
+                RequireConfirmation(args, "恢复历史版本必须提供 --yes。");
+                var (profile, location) = ResolveLocation(profiles,
+                    RequirePositional(args, 2, "object restore-version <s3-uri> --version-id <id> --yes"));
+                if (string.IsNullOrWhiteSpace(location.Prefix))
+                    throw new CliUsageException("恢复历史版本必须包含对象 Key。");
+                var versionId = args.Require("version-id");
+                await storage.RestoreObjectVersionAsync(
+                    profile, location.Bucket!, location.Prefix, versionId, cancellationToken);
+                WriteSuccess(json, new { location.Prefix, versionId },
+                    $"已将版本 {versionId} 恢复为对象 {location.Prefix} 的新当前版本。");
+                return 0;
+            }
+            case "delete-version":
+            {
+                RequireConfirmation(args, "永久删除对象版本必须提供 --yes。");
+                var (profile, location) = ResolveLocation(profiles,
+                    RequirePositional(args, 2, "object delete-version <s3-uri> --version-id <id> --yes"));
+                if (string.IsNullOrWhiteSpace(location.Prefix))
+                    throw new CliUsageException("删除对象版本必须包含对象 Key。");
+                var versionId = args.Require("version-id");
+                await storage.DeleteObjectVersionAsync(
+                    profile, location.Bucket!, location.Prefix, versionId, cancellationToken);
+                WriteSuccess(json, new { location.Prefix, versionId },
+                    $"已永久删除版本：{location.Prefix} ({versionId})");
+                return 0;
+            }
+            case "clean-delete-markers":
+            {
+                RequireConfirmation(args, "批量清理 Delete Marker 必须提供 --yes。");
+                var (profile, location) = ResolveLocation(profiles,
+                    RequirePositional(args, 2, "object clean-delete-markers <s3-uri> --yes"));
+                var markers = new List<ObjectVersionIdentity>();
+                string? keyMarker = null;
+                string? versionMarker = null;
+                bool hasMore;
+                do
+                {
+                    var page = await storage.ListObjectVersionsAsync(
+                        profile, location.Bucket!, location.Prefix,
+                        keyMarker, versionMarker, 1000, cancellationToken);
+                    markers.AddRange(page.Items.Where(item => item.IsDeleteMarker)
+                        .Select(item => new ObjectVersionIdentity(item.Key, item.VersionId)));
+                    hasMore = page.HasMore;
+                    keyMarker = hasMore ? page.NextKeyMarker : null;
+                    versionMarker = hasMore ? page.NextVersionIdMarker : null;
+                } while (hasMore);
+                await storage.DeleteObjectVersionsAsync(
+                    profile, location.Bucket!, markers, cancellationToken);
+                WriteSuccess(json, new { deleted = markers.Count },
+                    $"已永久删除 {markers.Count:N0} 个 Delete Marker。");
+                return 0;
+            }
             default:
-                throw new CliUsageException("用法：object list|upload|download|delete。运行 help 查看示例。");
+                throw new CliUsageException("用法：object list|versions|upload|download|delete|restore-version|delete-version|clean-delete-markers。运行 help 查看示例。");
         }
     }
 
@@ -648,6 +743,14 @@ internal static class Program
         if (!args.Flag("yes")) throw new CliUsageException(message);
     }
 
+    private static int ParsePageSize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 200;
+        if (!int.TryParse(value, out var parsed) || parsed is < 1 or > 1000)
+            throw new CliUsageException("--page-size 必须是 1–1000 的整数。");
+        return parsed;
+    }
+
     private static string Mask(string value) => value.Length <= 4 ? new string('*', value.Length) : value[..4] + new string('*', 8);
 
     private static string Version => Assembly.GetExecutingAssembly().GetName().Version is { } value
@@ -690,9 +793,14 @@ internal static class Program
           s3explorer-cli connection test <name-or-id> [--json]
           s3explorer-cli bucket list <name-or-id> [--json]
           s3explorer-cli object list <s3://profile/bucket/prefix> [--recursive] [--json]
+          s3explorer-cli object versions <s3://profile/bucket/prefix> [--page-size <1-1000>]
+              [--key-marker <key>] [--version-id-marker <id>] [--json]
           s3explorer-cli object upload <absolute-local-path> <s3://profile/bucket/key>
-          s3explorer-cli object download <s3://profile/bucket/key> <absolute-local-path> [--recursive]
+          s3explorer-cli object download <s3://profile/bucket/key> <absolute-local-path> [--recursive|--version-id <id>]
           s3explorer-cli object delete <s3://profile/bucket/key> [--recursive] --yes
+          s3explorer-cli object restore-version <s3://profile/bucket/key> --version-id <id> --yes
+          s3explorer-cli object delete-version <s3://profile/bucket/key> --version-id <id> --yes
+          s3explorer-cli object clean-delete-markers <s3://profile/bucket/prefix> --yes
           s3explorer-cli sync list [--json]
           s3explorer-cli sync add --name <name> --local <absolute-folder> --remote <s3-uri>
               [--direction upload|download] [--exclude <glob>] [--new-only|--changed-only] [--delete] [--hash]
