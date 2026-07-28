@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.S3;
 using Xunit;
@@ -129,7 +131,7 @@ public sealed class ConnectionArchiveServiceTests
         var text = Encoding.UTF8.GetString(archive);
         var imported = Assert.Single(_service.Import(archive).Profiles);
 
-        Assert.Contains("\"version\": 2", text, StringComparison.Ordinal);
+        Assert.Contains("\"version\": 3", text, StringComparison.Ordinal);
         Assert.Contains("audit", text, StringComparison.Ordinal);
         Assert.DoesNotContain("stale-", text, StringComparison.Ordinal);
         Assert.Equal(CredentialSourceKind.AwsSharedProfile, imported.CredentialSource);
@@ -158,14 +160,192 @@ public sealed class ConnectionArchiveServiceTests
     [Fact]
     public void VersionOneCredentialFreeArchiveStillImportsAsStoredKeys()
     {
-        var current = Encoding.UTF8.GetString(_service.Export([CreateProfile()]));
-        var versionOne = Encoding.UTF8.GetBytes(current.Replace("\"version\": 2", "\"version\": 1", StringComparison.Ordinal));
+        var current = JsonNode.Parse(_service.Export([CreateProfile()]))!.AsObject();
+        current["version"] = 1;
+        current.Remove("cdnProfileCount");
+        current.Remove("cdnCredentialCount");
+        current.Remove("cdnProfiles");
+        current.Remove("cdnBindings");
+        var versionOne = JsonSerializer.SerializeToUtf8Bytes(current);
 
         var imported = Assert.Single(_service.Import(versionOne).Profiles);
 
         Assert.Equal(CredentialSourceKind.StoredKeys, imported.CredentialSource);
         Assert.Empty(imported.AccessKey);
         Assert.Equal("https://storage.example.test", imported.Endpoint);
+    }
+
+    [Fact]
+    public void CredentialFreeExportKeepsCdnConfigurationButOmitsCdnSecretsAndReferences()
+    {
+        var storage = CreateProfile();
+        var credential = CreateCdnCredential();
+        var cdnProfile = CreateCdnProfile(credential.Id);
+        var configuration = new CdnConfiguration(
+            [cdnProfile],
+            [CreateCdnBinding(storage.Id, cdnProfile.Id)]);
+
+        var archive = _service.Export(
+            [storage],
+            cdnConfiguration: configuration,
+            cdnCredentials: [credential]);
+        var json = Encoding.UTF8.GetString(archive);
+        var inspection = _service.Inspect(archive);
+        var package = _service.Import(archive);
+
+        Assert.Contains("https://cdn.example.test", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
+        Assert.Equal(1, inspection.CdnProfileCount);
+        Assert.Equal(0, inspection.CdnCredentialCount);
+        Assert.Null(Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+        Assert.Single(package.ImportedCdnConfiguration.Bindings);
+        Assert.Empty(package.ImportedCdnCredentials);
+    }
+
+    [Fact]
+    public void PasswordProtectedExportMovesCdnSecretsWithoutExposingThemInEnvelope()
+    {
+        var storage = CreateProfile();
+        var credential = CreateCdnCredential();
+        var cdnProfile = CreateCdnProfile(credential.Id);
+        var configuration = new CdnConfiguration(
+            [cdnProfile],
+            [CreateCdnBinding(storage.Id, cdnProfile.Id)]);
+
+        var archive = _service.Export(
+            [storage],
+            includeCredentials: true,
+            password: "portable-password",
+            cdnConfiguration: configuration,
+            cdnCredentials: [credential]);
+        var json = Encoding.UTF8.GetString(archive);
+        var inspection = _service.Inspect(archive);
+        var package = _service.Import(archive, "portable-password");
+
+        Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("cdn-auth", json, StringComparison.Ordinal);
+        Assert.True(inspection.ContainsCredentials);
+        Assert.Equal(1, inspection.CdnCredentialCount);
+        Assert.Equal("cdn-secret-value", Assert.Single(package.ImportedCdnCredentials).Secret);
+        Assert.Equal(
+            Assert.Single(package.ImportedCdnCredentials).Id,
+            Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+    }
+
+    [Fact]
+    public void PackageMergeRemapsStorageCdnCredentialAndBindingIds()
+    {
+        var storage = CreateProfile();
+        var credential = CreateCdnCredential();
+        var cdnProfile = CreateCdnProfile(credential.Id);
+        var package = new ConnectionArchivePackage(
+            [storage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdnProfile], [CreateCdnBinding(storage.Id, cdnProfile.Id)]),
+            [credential]);
+
+        var merged = _service.MergePackage(
+            [],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            [storage.Id],
+            importCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        var importedStorage = Assert.Single(merged.Profiles);
+        var importedCredential = Assert.Single(merged.CdnCredentials);
+        var importedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
+        var importedBinding = Assert.Single(merged.CdnConfiguration.Bindings);
+        Assert.NotEqual(storage.Id, importedStorage.Id);
+        Assert.NotEqual(credential.Id, importedCredential.Id);
+        Assert.NotEqual(cdnProfile.Id, importedCdn.Id);
+        Assert.Equal(importedCredential.Id, importedCdn.CredentialId);
+        Assert.Equal(importedStorage.Id, importedBinding.StorageProfileId);
+        Assert.Equal(importedCdn.Id, importedBinding.CdnProfileId);
+        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.CdnCredentials);
+    }
+
+    [Fact]
+    public void PackageMergeWithoutCredentialChoiceImportsCdnAsUnauthenticated()
+    {
+        var storage = CreateProfile();
+        var credential = CreateCdnCredential();
+        var cdnProfile = CreateCdnProfile(credential.Id);
+        var package = new ConnectionArchivePackage(
+            [storage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdnProfile], [CreateCdnBinding(storage.Id, cdnProfile.Id)]),
+            [credential]);
+
+        var merged = _service.MergePackage(
+            [],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            [storage.Id],
+            importCredentials: false,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Empty(merged.CdnCredentials);
+        Assert.Null(Assert.Single(merged.CdnConfiguration.Profiles).CredentialId);
+        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.CdnCredentials);
+    }
+
+    [Fact]
+    public void PackageMergeReplacePreservesExistingIdsAcrossCdnReferences()
+    {
+        var existingStorage = CreateProfile() with { Id = Guid.NewGuid() };
+        var existingCredential = CreateCdnCredential() with
+        {
+            Id = Guid.NewGuid(),
+            Secret = "old-secret"
+        };
+        var existingCdn = CreateCdnProfile(existingCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            BaseUrl = "https://old-cdn.example.test"
+        };
+        var existingBinding = CreateCdnBinding(existingStorage.Id, existingCdn.Id) with
+        {
+            Id = Guid.NewGuid()
+        };
+
+        var importedStorage = CreateProfile() with { Id = Guid.NewGuid() };
+        var importedCredential = CreateCdnCredential() with { Id = Guid.NewGuid() };
+        var importedCdn = CreateCdnProfile(importedCredential.Id) with { Id = Guid.NewGuid() };
+        var package = new ConnectionArchivePackage(
+            [importedStorage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration(
+                [importedCdn],
+                [CreateCdnBinding(importedStorage.Id, importedCdn.Id)]),
+            [importedCredential]);
+
+        var merged = _service.MergePackage(
+            [existingStorage],
+            new CdnConfiguration([existingCdn], [existingBinding]),
+            [existingCredential],
+            package,
+            [importedStorage.Id],
+            importCredentials: true,
+            ConnectionImportConflictStrategy.Replace);
+
+        Assert.Equal(existingStorage.Id, Assert.Single(merged.Profiles).Id);
+        var mergedCredential = Assert.Single(merged.CdnCredentials);
+        var mergedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
+        var mergedBinding = Assert.Single(merged.CdnConfiguration.Bindings);
+        Assert.Equal(existingCredential.Id, mergedCredential.Id);
+        Assert.Equal("cdn-secret-value", mergedCredential.Secret);
+        Assert.Equal(existingCdn.Id, mergedCdn.Id);
+        Assert.Equal("https://cdn.example.test", mergedCdn.BaseUrl);
+        Assert.Equal(existingCredential.Id, mergedCdn.CredentialId);
+        Assert.Equal(existingBinding.Id, mergedBinding.Id);
+        Assert.Equal(existingStorage.Id, mergedBinding.StorageProfileId);
+        Assert.Equal(existingCdn.Id, mergedBinding.CdnProfileId);
     }
 
     private static ConnectionProfile CreateProfile() => new()
@@ -180,5 +360,28 @@ public sealed class ConnectionArchiveServiceTests
         SessionToken = "session-value",
         DefaultBucket = "external-bucket",
         ExternalBuckets = ["other-bucket"]
+    };
+
+    private static CdnCredential CreateCdnCredential() => new()
+    {
+        Name = "cdn-auth",
+        AuthenticationType = CdnAuthenticationType.BearerToken,
+        Secret = "cdn-secret-value"
+    };
+
+    private static CdnProfile CreateCdnProfile(Guid credentialId) => new()
+    {
+        Name = "cdn-profile",
+        BaseUrl = "https://cdn.example.test",
+        CredentialId = credentialId
+    };
+
+    private static CdnBinding CreateCdnBinding(Guid storageId, Guid cdnProfileId) => new()
+    {
+        StorageProfileId = storageId,
+        Bucket = "external-bucket",
+        SourcePrefix = "assets/",
+        CdnProfileId = cdnProfileId,
+        CdnPathPrefix = "static/"
     };
 }
