@@ -143,6 +143,18 @@
 
 验收：对象存储/CDN 选择互不联动；凭据只在对应开关启用时参与内存比较；同内容不同名称复用；覆盖保留本地 ID；连续导入两次结果不变；秘密值不进入日志或持久化指纹。
 
+## v0.5.10：单文件便携包、MSI 与签名发布链
+
+状态：已完成开发，待正式发布（2026-07-28）。
+
+- framework-dependent 与 self-contained 两个便携 ZIP 都只暴露桌面端和 CLI 的单文件 EXE，不再散放项目 DLL。
+- 新增 x64 MSI 安装包，使用 self-contained 产物安装到 Program Files，并创建开始菜单入口；与便携包共享同一版本号。
+- 发布门禁检查 ZIP 内无 DLL、MSI 产品名/版本和两个入口文件，并把 MSI 纳入 Release、工作流留存、SHA-256 清单与 Pages 下载入口。
+- 发布脚本支持从 Actions secrets 临时加载受信 PFX，签名四个 EXE 和 MSI，使用 SHA-256 与 RFC 3161 时间戳并立即验证。
+- `CODE_SIGNING_REQUIRED=true` 可把缺失或无效签名变成正式发布阻断项；未配置证书时只允许明确生成未签名测试包。
+
+验收：两种 ZIP 只有单文件入口且 CLI 可启动；MSI 数据库版本与项目一致并包含两个 EXE；重复升级使用固定 UpgradeCode；未配置签名与强制签名行为可区分；Release 与 Pages 同步包含安装包。
+
 ## v0.6：日常管理闭环
 
 ### v0.6.0 Bucket 配置第一组

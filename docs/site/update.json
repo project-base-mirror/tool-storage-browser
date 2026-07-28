@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.5.9",
-  "version": "0.5.9",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.5.9",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.9/S3Explorer-v0.5.9-win-x64.zip",
-  "notes": "连接包导入将对象存储与 CDN 分页选择，两类凭据分别确认，并通过语义匹配实现等价配置复用和重复导入幂等。",
-  "publishedAt": "2026-07-28T18:54:02+08:00"
+  "tagName": "v0.5.10",
+  "version": "0.5.10",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.5.10",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.10/S3Explorer-v0.5.10-win-x64.zip",
+  "notes": "新增 MSI 安装包；两个便携 ZIP 的桌面端与 CLI 均改为单文件 EXE，并加入可强制的 Authenticode 签名发布门禁。",
+  "publishedAt": "2026-07-28T19:27:12+08:00"
 }

@@ -28,12 +28,18 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 
 ## 运行要求
 
-推荐使用 framework-dependent 包：
+推荐普通用户使用 MSI 安装包：
+
+- 安装到 Windows Program Files，并创建开始菜单入口。
+- 已包含 .NET 10 运行时，不需要另行安装依赖。
+
+需要免安装运行时可选择 portable ZIP：
 
 - Windows 10 或 Windows 11 x64。
-- .NET 10 Desktop Runtime x64。
+- framework-dependent ZIP 需要 .NET 10 Desktop Runtime x64。
+- self-contained ZIP 自带所需运行时，体积更大。
 
-备用 self-contained 包自带所需运行时，不要求预装 .NET Desktop Runtime，但体积更大。
+无论选择哪个包，桌面端和 CLI 都各自为单文件 EXE。
 
 ## 从源码构建
 
@@ -138,9 +144,9 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.5.9-win-x64.zip
-    artifacts/release/S3Explorer-v0.5.9-win-x64-self-contained.zip
-    artifacts/release/S3Explorer-v0.5.9-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.5.10-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.10-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.10-win-x64-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
