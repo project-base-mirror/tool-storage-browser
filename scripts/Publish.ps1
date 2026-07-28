@@ -93,7 +93,9 @@ function Publish-Package {
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
-        "-p:PublishSingleFile=false",
+        "-p:PublishSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-p:EnableCompressionInSingleFile=$selfContainedValue",
         "-p:PublishReadyToRun=false",
         "-p:DebugType=None",
         "-p:DebugSymbols=false"
@@ -106,7 +108,9 @@ function Publish-Package {
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
-        "-p:PublishSingleFile=false",
+        "-p:PublishSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-p:EnableCompressionInSingleFile=$selfContainedValue",
         "-p:PublishReadyToRun=false",
         "-p:DebugType=None",
         "-p:DebugSymbols=false"
@@ -209,7 +213,7 @@ $metrics = [ordered]@{
     runtime = $Runtime
     dotnetSdkVersion = (& dotnet --version).Trim()
     trimmingEnabled = $false
-    singleFileEnabled = $false
+    singleFileEnabled = $true
     packages = @(
         (New-PackageMetric -Name $frameworkName -Directory $frameworkDirectory -ZipPath $frameworkZip -SelfContained $false),
         (New-PackageMetric -Name $selfContainedName -Directory $selfContainedDirectory -ZipPath $selfContainedZip -SelfContained $true)

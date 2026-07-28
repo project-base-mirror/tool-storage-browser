@@ -144,7 +144,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
 
-发布配置明确关闭 trimming 和单文件打包，避免 AWS SDK、JSON 序列化或 WinForms 反射类型被误删。
+发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent 包仍需要 .NET 10 Desktop Runtime；self-contained 包可直接运行。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
 
 仅重新打包而跳过验证：
 

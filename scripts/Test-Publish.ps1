@@ -84,9 +84,9 @@ if (-not $SkipPackageBuild) {
         try {
             $entryNames = @($archive.Entries | Select-Object -ExpandProperty FullName)
             Assert-True -Condition ($entryNames -contains "S3Explorer.exe") -Message "$zipName does not contain S3Explorer.exe."
-            Assert-True -Condition ($entryNames -contains "S3Explorer.dll") -Message "$zipName does not contain S3Explorer.dll."
             Assert-True -Condition ($entryNames -contains "s3explorer-cli.exe") -Message "$zipName does not contain s3explorer-cli.exe."
-            Assert-True -Condition ($entryNames -contains "s3explorer-cli.dll") -Message "$zipName does not contain s3explorer-cli.dll."
+            $dllEntries = @($entryNames | Where-Object { $_ -match '(?i)\.dll$' })
+            Assert-True -Condition ($dllEntries.Count -eq 0) -Message "$zipName still exposes DLL files: $($dllEntries -join ', ')."
         }
         finally {
             $archive.Dispose()
@@ -96,6 +96,7 @@ if (-not $SkipPackageBuild) {
 
 $metrics = Get-Content -LiteralPath (Join-Path $releaseRoot "release-metrics.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics.json must contain exactly two packages."
+Assert-True -Condition ([bool]$metrics.singleFileEnabled) -Message "release-metrics.json must report single-file publishing."
 Assert-True -Condition ($metrics.packages.name -contains $frameworkName) -Message "Framework-dependent package metric is missing."
 Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Message "Self-contained package metric is missing."
 
