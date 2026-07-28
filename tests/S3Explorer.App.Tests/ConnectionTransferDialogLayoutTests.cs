@@ -85,6 +85,30 @@ public sealed class ConnectionTransferDialogLayoutTests
     }
 
     [Fact]
+    public void ExportOptionsKeepsConfirmationButtonsReadableAtLargeText()
+    {
+        RunSta(() =>
+        {
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            using var dialog = new ConnectionExportOptionsDialog(
+                profileCount: 5,
+                profilesWithCredentials: 5,
+                cdnProfileCount: 4,
+                cdnCredentials: 2);
+            dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
+            PerformLayout(dialog);
+
+            var export = FindButton(dialog, "ContinueConnectionExportButton");
+            var cancel = FindButton(dialog, "CancelConnectionExportButton");
+            AssertButtonIsReadable(dialog, export);
+            AssertButtonIsReadable(dialog, cancel);
+            Assert.Same(export, dialog.AcceptButton);
+            Assert.Same(cancel, dialog.CancelButton);
+        });
+    }
+
+    [Fact]
     public void ImportPreviewSummarizesCdnProfilesBindingsAndCredentials()
     {
         RunSta(() =>

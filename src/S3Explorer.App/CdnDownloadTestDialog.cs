@@ -249,14 +249,19 @@ internal sealed class CdnDownloadTestDialog : Form
 
         var footer = new TableLayoutPanel
         {
-            Dock = DockStyle.Bottom,
-            AutoSize = true,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Height = 52,
+            MinimumSize = new Size(0, 52),
             ColumnCount = 2,
             Padding = new Padding(0, 10, 0, 0)
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _status.Anchor = AnchorStyles.Left;
+        _status.AutoSize = false;
+        _status.Dock = DockStyle.Fill;
+        _status.AutoEllipsis = true;
+        _status.TextAlign = ContentAlignment.MiddleLeft;
         _status.Margin = new Padding(0, 10, 12, 0);
         footer.Controls.Add(_status, 0, 0);
 

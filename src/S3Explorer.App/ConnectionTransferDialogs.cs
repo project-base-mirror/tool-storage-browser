@@ -11,8 +11,8 @@ internal sealed class ConnectionExportOptionsDialog : Form
         Text = "包含已保存凭据（S3 密钥及 CDN Token/Header 密钥）",
         AutoSize = true
     };
-    private readonly TextBox _password = new() { UseSystemPasswordChar = true, Width = 310 };
-    private readonly TextBox _confirmation = new() { UseSystemPasswordChar = true, Width = 310 };
+    private readonly TextBox _password = new() { UseSystemPasswordChar = true, Dock = DockStyle.Fill };
+    private readonly TextBox _confirmation = new() { UseSystemPasswordChar = true, Dock = DockStyle.Fill };
     private readonly Label _passwordLabel = new() { Text = "迁移密码：", AutoSize = true };
     private readonly Label _confirmationLabel = new() { Text = "确认密码：", AutoSize = true };
     private readonly Label _validation = new()
@@ -21,7 +21,16 @@ internal sealed class ConnectionExportOptionsDialog : Form
         ForeColor = Color.Firebrick,
         MaximumSize = new Size(500, 0)
     };
-    private readonly Button _export = new() { Text = "继续导出", Width = 90 };
+    private readonly Button _export = new()
+    {
+        Name = "ContinueConnectionExportButton",
+        Text = "继续导出",
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        MinimumSize = new Size(112, 36),
+        Padding = new Padding(10, 2, 10, 2),
+        Margin = new Padding(8, 0, 0, 0)
+    };
 
     public bool IncludeCredentials => _includeCredentials.Checked;
     public string Password => _password.Text;
@@ -34,13 +43,14 @@ internal sealed class ConnectionExportOptionsDialog : Form
     {
         Text = "导出连接";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(570, 330);
-        MinimumSize = MaximumSize = Size;
+        ClientSize = new Size(620, 410);
+        MinimumSize = new Size(600, 390);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
+        AutoScaleMode = AutoScaleMode.Font;
 
         var title = new Label
         {
@@ -49,17 +59,19 @@ internal sealed class ConnectionExportOptionsDialog : Form
                 : $"将导出 {profileCount} 个对象存储连接",
             Font = new Font(Font, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(20, 18)
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 10)
         };
         var explanation = new Label
         {
             Text = "默认只导出服务地址、Region、Bucket、CDN 地址和关联等配置，不包含任何秘密值。",
             AutoSize = true,
-            MaximumSize = new Size(525, 0),
-            Location = new Point(20, 49),
+            MaximumSize = new Size(560, 0),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 12),
             ForeColor = SystemColors.GrayText
         };
-        _includeCredentials.Location = new Point(20, 92);
+        _includeCredentials.Margin = new Padding(0, 0, 0, 6);
         _includeCredentials.Enabled = profilesWithCredentials + cdnCredentials > 0;
         var credentialCount = new Label
         {
@@ -67,32 +79,76 @@ internal sealed class ConnectionExportOptionsDialog : Form
                 ? $"可迁移凭据：S3 连接 {profilesWithCredentials} 个，CDN 凭据 {cdnCredentials} 个。勾选后整包会使用密码加密。"
                 : "所选内容没有可迁移的已保存密钥；AWS 外部来源只导出非敏感引用，CDN 认证引用会移除。",
             AutoSize = true,
-            MaximumSize = new Size(525, 0),
-            Location = new Point(39, 120),
+            MaximumSize = new Size(540, 0),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(20, 0, 0, 10),
             ForeColor = SystemColors.GrayText
         };
-        _passwordLabel.Location = new Point(39, 165);
-        _password.Location = new Point(148, 161);
-        _confirmationLabel.Location = new Point(39, 201);
-        _confirmation.Location = new Point(148, 197);
-        _validation.Location = new Point(39, 235);
-
-        _export.Location = new Point(365, 280);
+        _passwordLabel.Anchor = AnchorStyles.Left;
+        _passwordLabel.Margin = new Padding(20, 8, 12, 8);
+        _password.Margin = new Padding(0, 5, 0, 5);
+        _confirmationLabel.Anchor = AnchorStyles.Left;
+        _confirmationLabel.Margin = new Padding(20, 8, 12, 8);
+        _confirmation.Margin = new Padding(0, 5, 0, 5);
+        _validation.Dock = DockStyle.Fill;
+        _validation.Margin = new Padding(20, 2, 0, 6);
         var cancel = new Button
         {
+            Name = "CancelConnectionExportButton",
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Width = 80,
-            Location = new Point(465, 280)
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(88, 36),
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(8, 0, 0, 0)
         };
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        actions.Controls.Add(cancel);
+        actions.Controls.Add(_export);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 9,
+            Padding = new Padding(20)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var row = 0; row < 7; row++)
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(title, 0, 0);
+        layout.SetColumnSpan(title, 2);
+        layout.Controls.Add(explanation, 0, 1);
+        layout.SetColumnSpan(explanation, 2);
+        layout.Controls.Add(_includeCredentials, 0, 2);
+        layout.SetColumnSpan(_includeCredentials, 2);
+        layout.Controls.Add(credentialCount, 0, 3);
+        layout.SetColumnSpan(credentialCount, 2);
+        layout.Controls.Add(_passwordLabel, 0, 4);
+        layout.Controls.Add(_password, 1, 4);
+        layout.Controls.Add(_confirmationLabel, 0, 5);
+        layout.Controls.Add(_confirmation, 1, 5);
+        layout.Controls.Add(_validation, 0, 6);
+        layout.SetColumnSpan(_validation, 2);
+        layout.Controls.Add(actions, 0, 8);
+        layout.SetColumnSpan(actions, 2);
 
         _includeCredentials.CheckedChanged += (_, _) => UpdateCredentialControls();
         _export.Click += (_, _) => ConfirmExport();
-        Controls.AddRange([
-            title, explanation, _includeCredentials, credentialCount,
-            _passwordLabel, _password, _confirmationLabel, _confirmation,
-            _validation, _export, cancel
-        ]);
+        Controls.Add(layout);
         AcceptButton = _export;
         CancelButton = cancel;
         UpdateCredentialControls();
@@ -317,6 +373,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
         _importCredentials.Text = package.ContainsCredentials
             ? $"导入包内凭据：S3 已保存密钥及 {package.ImportedCdnCredentials.Count} 个 CDN Token/Header 密钥"
             : "连接包不包含秘密值；AWS 外部来源引用仍会导入，CDN 认证需重新关联";
+        _importCredentials.MaximumSize = new Size(760, 0);
         _conflictStrategy.Items.AddRange([
             new ConflictOption("自动重命名", ConnectionImportConflictStrategy.Rename),
             new ConflictOption("覆盖同名连接", ConnectionImportConflictStrategy.Replace),
@@ -405,7 +462,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
+            WrapContents = true,
             Margin = new Padding(0)
         };
         selectionActions.Controls.AddRange([selectAll, selectNone, _selectionSummary]);
@@ -414,10 +471,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Anchor = AnchorStyles.Right,
+            Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(12, 0, 0, 0)
+            Margin = new Padding(0, 8, 0, 0)
         };
         conflictOptions.Controls.AddRange([conflictLabel, _conflictStrategy]);
 
@@ -425,10 +482,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Anchor = AnchorStyles.Right,
+            Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false,
-            Margin = new Padding(12, 12, 0, 0)
+            Margin = new Padding(0, 10, 0, 0)
         };
         importActions.Controls.Add(cancel);
         importActions.Controls.Add(_import);
@@ -438,19 +495,18 @@ internal sealed class ConnectionImportPreviewDialog : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 2,
+            ColumnCount = 1,
+            RowCount = 4,
             Padding = new Padding(14, 8, 14, 10),
             Margin = new Padding(0)
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var row = 0; row < 4; row++)
+            footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         footer.Controls.Add(selectionActions, 0, 0);
-        footer.Controls.Add(conflictOptions, 1, 0);
-        footer.Controls.Add(_importCredentials, 0, 1);
-        footer.Controls.Add(importActions, 1, 1);
+        footer.Controls.Add(conflictOptions, 0, 1);
+        footer.Controls.Add(_importCredentials, 0, 2);
+        footer.Controls.Add(importActions, 0, 3);
 
         var layout = new TableLayoutPanel
         {
