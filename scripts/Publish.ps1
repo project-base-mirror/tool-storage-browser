@@ -4,6 +4,7 @@ param(
     [string]$Runtime = "win-x64",
     [switch]$SkipValidation,
     [switch]$MeasureRuntime,
+    [switch]$RequireSigning,
     [switch]$NoOpen
 )
 
@@ -15,6 +16,8 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
 $cliProject = Join-Path $repositoryRoot "src\S3Explorer.Cli\S3Explorer.Cli.csproj"
+$installerProject = Join-Path $repositoryRoot "installer\S3Explorer.Installer.wixproj"
+$signingScript = Join-Path $PSScriptRoot "Sign-Artifacts.ps1"
 $propsPath = Join-Path $repositoryRoot "Directory.Build.props"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $outputRoot = Join-Path $artifactsRoot "release"
@@ -30,6 +33,8 @@ $frameworkDirectory = Join-Path $outputRoot $frameworkName
 $selfContainedDirectory = Join-Path $outputRoot $selfContainedName
 $frameworkZip = Join-Path $outputRoot "$frameworkName.zip"
 $selfContainedZip = Join-Path $outputRoot "$selfContainedName.zip"
+$installerName = "S3Explorer-$releaseTag-$Runtime-setup.msi"
+$installerPath = Join-Path $outputRoot $installerName
 $metricsPath = Join-Path $outputRoot "release-metrics.json"
 
 function Invoke-DotNet {
@@ -63,7 +68,7 @@ function New-PackageMetric {
 
     $directoryBytes = Get-DirectorySize -Path $Directory
     $zipFile = Get-Item -LiteralPath $ZipPath
-    return [ordered]@{
+    return [pscustomobject][ordered]@{
         name = $Name
         selfContained = $SelfContained
         directoryBytes = $directoryBytes
@@ -71,6 +76,21 @@ function New-PackageMetric {
         zipBytes = [int64]$zipFile.Length
         zipMiB = [Math]::Round($zipFile.Length / 1MB, 2)
         zipSha256 = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function New-ArtifactMetric {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $file = Get-Item -LiteralPath $Path
+    return [pscustomobject][ordered]@{
+        name = $Name
+        bytes = [int64]$file.Length
+        sizeMiB = [Math]::Round($file.Length / 1MB, 2)
+        sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
 
@@ -132,6 +152,15 @@ function New-ZipArchive {
         $DestinationPath,
         [System.IO.Compression.CompressionLevel]::Optimal,
         $false)
+}
+
+function Invoke-CodeSigning {
+    param([Parameter(Mandatory)][string[]]$ArtifactPaths)
+
+    & $signingScript -Path $ArtifactPaths -Require:$RequireSigning
+    if (-not $?) {
+        throw "Artifact signing failed."
+    }
 }
 
 function Measure-ApplicationRuntime {
@@ -199,8 +228,25 @@ if (-not $SkipValidation) {
 
 Publish-Package -Destination $frameworkDirectory -SelfContained $false
 Publish-Package -Destination $selfContainedDirectory -SelfContained $true
+Invoke-CodeSigning -ArtifactPaths @(
+    (Join-Path $frameworkDirectory "S3Explorer.exe"),
+    (Join-Path $frameworkDirectory "s3explorer-cli.exe"),
+    (Join-Path $selfContainedDirectory "S3Explorer.exe"),
+    (Join-Path $selfContainedDirectory "s3explorer-cli.exe")
+)
 New-ZipArchive -SourceDirectory $frameworkDirectory -DestinationPath $frameworkZip
 New-ZipArchive -SourceDirectory $selfContainedDirectory -DestinationPath $selfContainedZip
+Invoke-DotNet -Arguments @(
+    "build",
+    $installerProject,
+    "-c", $Configuration,
+    "-p:PayloadDir=$selfContainedDirectory",
+    "-p:OutputPath=$outputRoot"
+)
+if (-not (Test-Path -LiteralPath $installerPath)) {
+    throw "Installer build did not produce $installerName."
+}
+Invoke-CodeSigning -ArtifactPaths @($installerPath)
 
 $runtimeMetric = $null
 if ($MeasureRuntime) {
@@ -214,10 +260,15 @@ $metrics = [ordered]@{
     dotnetSdkVersion = (& dotnet --version).Trim()
     trimmingEnabled = $false
     singleFileEnabled = $true
+    signing = [ordered]@{
+        configured = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("S3EXPLORER_SIGNING_PFX_BASE64"))
+        required = [bool]$RequireSigning
+    }
     packages = @(
         (New-PackageMetric -Name $frameworkName -Directory $frameworkDirectory -ZipPath $frameworkZip -SelfContained $false),
         (New-PackageMetric -Name $selfContainedName -Directory $selfContainedDirectory -ZipPath $selfContainedZip -SelfContained $true)
     )
+    installer = New-ArtifactMetric -Name $installerName -Path $installerPath
     runtimeMeasurement = $runtimeMetric
 }
 
@@ -227,6 +278,7 @@ Write-Host ""
 $resolvedOutputRoot = (Resolve-Path -LiteralPath $outputRoot).Path
 Write-Host "Release artifacts: $resolvedOutputRoot"
 $metrics.packages | Format-Table name, directoryMiB, zipMiB, zipSha256 -AutoSize
+$metrics.installer | Format-Table name, sizeMiB, sha256 -AutoSize
 if ($null -ne $runtimeMetric) {
     $runtimeMetric | Format-List
 }

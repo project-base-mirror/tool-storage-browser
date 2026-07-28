@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="S3 Explorer"
+      Manufacturer="project-base-mirror"
+      Version="$(ProductVersion)"
+      Scope="perMachine"
+      UpgradeCode="A4A79148-53A1-4EAB-ADE4-B496E9641BB4">
+    <SummaryInformation Description="S3 Explorer Windows object storage manager" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 S3 Explorer。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://project-base-mirror.github.io/tool-storage-browser/" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/project-base-mirror/tool-storage-browser/issues/new/choose" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="S3 Explorer">
+        <Component Id="ApplicationFiles" Guid="*">
+          <File Id="S3ExplorerExe" Source="$(PayloadDir)\S3Explorer.exe" KeyPath="yes">
+            <Shortcut
+                Id="StartMenuShortcut"
+                Directory="ApplicationProgramsFolder"
+                Name="S3 Explorer"
+                Description="S3 与 S3-compatible 对象存储管理工具"
+                WorkingDirectory="INSTALLFOLDER"
+                Advertise="yes" />
+          </File>
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        </Component>
+        <Component Id="CliFiles" Guid="*">
+          <File Id="S3ExplorerCliExe" Source="$(PayloadDir)\s3explorer-cli.exe" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="S3 Explorer" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="S3 Explorer" Level="1">
+      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="CliFiles" />
+    </Feature>
+  </Package>
+</Wix>

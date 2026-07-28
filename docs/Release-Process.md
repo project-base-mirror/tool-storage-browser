@@ -55,7 +55,19 @@ pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
 
-检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP 和 `release-metrics.json`。确认版本化文件名、入口程序、CLI、依赖和 ZIP SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
+检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、MSI 安装包和 `release-metrics.json`。两个 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe` 等非 DLL 内容，托管依赖和本机运行库必须已打入对应单文件。确认版本化文件名、入口程序、CLI、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
+
+### 正式签名配置
+
+公开发布应使用同一个受信 Authenticode 发布者身份签名两个 ZIP 中的 GUI/CLI EXE 与 MSI。仓库不保存证书或密码；Release 工作流读取：
+
+- Actions secret `CODE_SIGNING_PFX_BASE64`：受信代码签名 PFX 的 Base64 内容。
+- Actions secret `CODE_SIGNING_PFX_PASSWORD`：PFX 密码。
+- Actions variable `CODE_SIGNING_REQUIRED=true`：配置后强制正式发布必须完成签名，缺失或无效证书会让工作流失败。
+
+`scripts/Sign-Artifacts.ps1` 将证书临时导入当前用户证书存储，使用 SHA-256 和 RFC 3161 时间戳签名并立即验证，最后移除本次临时导入的证书和 PFX 文件。密码不作为 SignTool 命令行参数传递。首次配置证书时先在受控分支运行工作流，并检查 EXE/MSI 的“数字签名”页、时间戳与证书链，再把 `CODE_SIGNING_REQUIRED` 设为 `true`。
+
+没有受信证书时可以本地构建未签名包，但不得描述为已解决 SmartScreen。自签名证书只适用于受控测试环境；公共分发应使用 Microsoft Store、Microsoft Artifact Signing、符合 Windows 信任链的 OV/EV 证书，或符合条件的开源签名服务。即使使用有效证书，新发布者仍可能需要逐步积累 SmartScreen 信誉。
 
 ## 4. 提交并快进 main
 
@@ -88,10 +100,11 @@ git tag -a $tag -m "S3 Explorer $tag"
 git push origin $tag
 ```
 
-`Publish GitHub Release` 工作流会再次校验和构建，并发布四个资产：
+`Publish GitHub Release` 工作流会再次校验和构建，并发布五个资产：
 
 - `S3Explorer-vX.Y.Z-win-x64.zip`
 - `S3Explorer-vX.Y.Z-win-x64-self-contained.zip`
+- `S3Explorer-vX.Y.Z-win-x64-setup.msi`
 - `release-metrics.json`
 - `SHA256SUMS.txt`
 
@@ -102,8 +115,8 @@ Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release
 推送 `main` 后，`Deploy project homepage` 会校验并部署 `docs/site/`。等待 Release 与 Pages 两个工作流都成功，再逐项检查：
 
 - [Latest Release](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) 指向新版本。
-- 版本化的两个 ZIP 可下载，名称、大小和 Content-Type 正常。
-- 下载 ZIP 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致。
+- 版本化的两个 ZIP 和 MSI 可下载，名称、大小和 Content-Type 正常。
+- 下载 ZIP/MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致；要求签名的版本还需验证 GUI、CLI 与 MSI 的 Authenticode 签名。
 - [项目主页](https://project-base-mirror.github.io/tool-storage-browser/) 显示新版本和正确下载地址。
 - [`update.json`](https://project-base-mirror.github.io/tool-storage-browser/update.json) 的版本、tag、Release 页面与下载 URL 一致，客户端检查更新可读取。
 - `robots.txt`、`sitemap.xml` 和 `assets/social-card.png` 均返回 HTTP 200。

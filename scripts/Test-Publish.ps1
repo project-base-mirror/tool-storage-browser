@@ -13,6 +13,7 @@ $releaseRoot = Join-Path $repositoryRoot "artifacts\release"
 $version = [string]$props.Project.PropertyGroup.Version
 $frameworkName = "S3Explorer-v$version-win-x64"
 $selfContainedName = "S3Explorer-v$version-win-x64-self-contained"
+$installerName = "S3Explorer-v$version-win-x64-setup.msi"
 
 & (Join-Path $PSScriptRoot "Test-UpdateManifest.ps1")
 if (-not $?) {
@@ -30,7 +31,7 @@ function Assert-True {
     }
 }
 
-foreach ($relativePath in @("build.bat", "publish.bat", "cli.bat", "scripts\Build.ps1", "scripts\Publish.ps1")) {
+foreach ($relativePath in @("build.bat", "publish.bat", "cli.bat", "scripts\Build.ps1", "scripts\Publish.ps1", "scripts\Sign-Artifacts.ps1", "installer\S3Explorer.Installer.wixproj", "installer\Package.wxs")) {
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repositoryRoot $relativePath)) -Message "Missing required script: $relativePath"
 }
 
@@ -66,12 +67,36 @@ $expectedPaths = @(
     $selfContainedName,
     "$frameworkName.zip",
     "$selfContainedName.zip",
+    $installerName,
     "release-metrics.json"
 )
 
 foreach ($relativePath in $expectedPaths) {
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $releaseRoot $relativePath)) -Message "Missing release artifact: $relativePath"
 }
+
+$windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+$msiPath = (Resolve-Path -LiteralPath (Join-Path $releaseRoot $installerName)).Path
+$msiDatabase = $windowsInstaller.GetType().InvokeMember(
+    "OpenDatabase", "InvokeMethod", $null, $windowsInstaller, @($msiPath, 0))
+function Get-MsiQueryValue {
+    param([Parameter(Mandatory)][string]$Query)
+
+    $view = $msiDatabase.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $msiDatabase, @($Query))
+    $null = $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+    $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+    if ($null -eq $record) { return $null }
+    return $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, 1)
+}
+
+$msiVersion = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'"
+$msiProductName = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductName'"
+Assert-True -Condition ($msiVersion -ceq $version) -Message "MSI ProductVersion $msiVersion does not match $version."
+Assert-True -Condition ($msiProductName -ceq "S3 Explorer") -Message "MSI ProductName is invalid: $msiProductName"
+$guiFile = Get-MsiQueryValue -Query "SELECT ``FileName`` FROM ``File`` WHERE ``File``='S3ExplorerExe'"
+$cliFile = Get-MsiQueryValue -Query "SELECT ``FileName`` FROM ``File`` WHERE ``File``='S3ExplorerCliExe'"
+Assert-True -Condition ($guiFile -match '(?i)S3Explorer\.exe$') -Message "MSI does not contain S3Explorer.exe."
+Assert-True -Condition ($cliFile -match '(?i)s3explorer-cli\.exe$') -Message "MSI does not contain s3explorer-cli.exe."
 
 if (-not $SkipPackageBuild) {
     $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)
@@ -99,6 +124,7 @@ Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics
 Assert-True -Condition ([bool]$metrics.singleFileEnabled) -Message "release-metrics.json must report single-file publishing."
 Assert-True -Condition ($metrics.packages.name -contains $frameworkName) -Message "Framework-dependent package metric is missing."
 Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Message "Self-contained package metric is missing."
+Assert-True -Condition ($metrics.installer.name -ceq $installerName) -Message "Installer metric is missing."
 
 Write-Host "Publish script tests passed."
 Write-Host "Verified release directory: $((Resolve-Path -LiteralPath $releaseRoot).Path)"

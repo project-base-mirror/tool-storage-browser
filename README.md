@@ -140,11 +140,12 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
     artifacts/release/S3Explorer-v0.5.9-win-x64.zip
     artifacts/release/S3Explorer-v0.5.9-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.9-win-x64-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
 
-发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent 包仍需要 .NET 10 Desktop Runtime；self-contained 包可直接运行。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
+发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent ZIP 仍需要 .NET 10 Desktop Runtime；self-contained ZIP 可直接解压运行；MSI 使用 self-contained 文件安装到 Program Files，并创建开始菜单入口。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
 
 仅重新打包而跳过验证：
 
@@ -158,7 +159,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
     pwsh .\scripts\Publish.ps1 -MeasureRuntime
 
-`release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、ZIP SHA-256、SDK 版本，以及可选的启动时间和内存数据。
+`release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、MSI 大小、各自产物 SHA-256、SDK 版本、签名配置状态，以及可选的启动时间和内存数据。
 
 推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；版本、更新清单、Release 与 Pages 的固定同步步骤见 [`docs/Release-Process.md`](docs/Release-Process.md)，GitHub 交付机制见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
 

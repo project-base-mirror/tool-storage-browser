@@ -61,12 +61,22 @@ jobs:
 
       - name: Test and build release packages
         shell: pwsh
-        run: ./scripts/Publish.ps1 -NoOpen
+        env:
+          S3EXPLORER_SIGNING_PFX_BASE64: ${{ secrets.CODE_SIGNING_PFX_BASE64 }}
+          S3EXPLORER_SIGNING_PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PFX_PASSWORD }}
+          S3EXPLORER_REQUIRE_SIGNING: ${{ vars.CODE_SIGNING_REQUIRED }}
+        run: |
+          $arguments = @("-NoOpen")
+          if ($env:S3EXPLORER_REQUIRE_SIGNING -eq "true") {
+            $arguments += "-RequireSigning"
+          }
+          ./scripts/Publish.ps1 @arguments
 
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
-          $lines = Get-ChildItem -LiteralPath ./artifacts/release -Filter '*.zip' |
+          $lines = Get-ChildItem -LiteralPath ./artifacts/release -File |
+            Where-Object { $_.Extension -in @('.zip', '.msi') } |
             Sort-Object Name |
             ForEach-Object {
               $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -82,6 +92,7 @@ jobs:
           path: |
             artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64.zip
             artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-self-contained.zip
+            artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-setup.msi
             artifacts/release/release-metrics.json
             artifacts/release/SHA256SUMS.txt
 
@@ -93,6 +104,7 @@ jobs:
           $assets = @(
             "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64.zip",
             "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64-self-contained.zip",
+            "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64-setup.msi",
             './artifacts/release/release-metrics.json',
             './artifacts/release/SHA256SUMS.txt'
           )

@@ -1,0 +1,10 @@
+<Project Sdk="WixToolset.Sdk/5.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>S3Explorer-v$(Version)-win-x64-setup</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <DebugType>None</DebugType>
+    <DefaultCompressionLevel>high</DefaultCompressionLevel>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(Version);PayloadDir=$(PayloadDir)</DefineConstants>
+  </PropertyGroup>
+</Project>
