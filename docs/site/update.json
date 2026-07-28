@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.0",
-  "version": "0.6.0",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.0",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.0/S3Explorer-v0.6.0-win-x64.zip",
-  "notes": "新增 Bucket CORS 双视图、版本控制、SSE-S3/SSE-KMS 默认加密和 Bucket Tags，并在保存前展示配置差异。",
-  "publishedAt": "2026-07-28T23:05:08+08:00"
+  "tagName": "v0.6.1",
+  "version": "0.6.1",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.1",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.1/S3Explorer-v0.6.1-win-x64.zip",
+  "notes": "新增 Bucket 配置、分页对象版本浏览、指定 Version ID 下载与恢复、永久版本删除和 Delete Marker 清理，并提供对应 CLI。",
+  "publishedAt": "2026-07-28T23:13:17+08:00"
 }
