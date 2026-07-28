@@ -350,6 +350,175 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal(existingCdn.Id, mergedBinding.CdnProfileId);
     }
 
+    [Fact]
+    public void PackageMergeReusesEquivalentConfigurationAcrossDifferentNames()
+    {
+        var existingStorage = CreateProfile() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "existing-storage",
+            HealthStatus = ConnectionHealthStatus.Healthy,
+            LastConnectionSucceededAtUtc = DateTimeOffset.UtcNow
+        };
+        var existingCredential = CreateCdnCredential() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "existing-token"
+        };
+        var existingCdn = CreateCdnProfile(existingCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "existing-cdn"
+        };
+        var existingBinding = CreateCdnBinding(existingStorage.Id, existingCdn.Id) with
+        {
+            Id = Guid.NewGuid()
+        };
+        var importedStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "portable-copy" };
+        var importedCredential = CreateCdnCredential() with { Id = Guid.NewGuid(), Name = "portable-token" };
+        var importedCdn = CreateCdnProfile(importedCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "portable-cdn"
+        };
+        var package = new ConnectionArchivePackage(
+            [importedStorage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration(
+                [importedCdn],
+                [CreateCdnBinding(importedStorage.Id, importedCdn.Id)]),
+            [importedCredential]);
+
+        var merged = _service.MergePackage(
+            [existingStorage],
+            new CdnConfiguration([existingCdn], [existingBinding]),
+            [existingCredential],
+            package,
+            new ConnectionArchiveImportSelection([importedStorage.Id], [importedCdn.Id]),
+            importStorageCredentials: true,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Equal(existingStorage.Id, Assert.Single(merged.Profiles).Id);
+        Assert.Equal(existingCredential.Id, Assert.Single(merged.CdnCredentials).Id);
+        Assert.Equal(existingCdn.Id, Assert.Single(merged.CdnConfiguration.Profiles).Id);
+        Assert.Equal(existingBinding.Id, Assert.Single(merged.CdnConfiguration.Bindings).Id);
+    }
+
+    [Fact]
+    public void RepeatedPackageMergeIsIdempotent()
+    {
+        var storage = CreateProfile();
+        var credential = CreateCdnCredential();
+        var cdn = CreateCdnProfile(credential.Id);
+        var package = new ConnectionArchivePackage(
+            [storage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdn], [CreateCdnBinding(storage.Id, cdn.Id)]),
+            [credential]);
+        var selection = new ConnectionArchiveImportSelection([storage.Id], [cdn.Id]);
+
+        var first = _service.MergePackage(
+            [], CdnConfiguration.Empty, [], package, selection,
+            importStorageCredentials: true,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+        var second = _service.MergePackage(
+            first.Profiles, first.CdnConfiguration, first.CdnCredentials, package, selection,
+            importStorageCredentials: true,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Equal(first.Profiles, second.Profiles);
+        Assert.Equal(first.CdnCredentials, second.CdnCredentials);
+        Assert.Equal(first.CdnConfiguration.Profiles, second.CdnConfiguration.Profiles);
+        Assert.Equal(first.CdnConfiguration.Bindings, second.CdnConfiguration.Bindings);
+    }
+
+    [Fact]
+    public void CdnOnlySelectionReusesEquivalentLocalStorageDependency()
+    {
+        var localStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "local-storage" };
+        var archivedStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "archived-storage" };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var package = new ConnectionArchivePackage(
+            [archivedStorage],
+            ContainsCredentials: false,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdn], [CreateCdnBinding(archivedStorage.Id, cdn.Id)]));
+
+        var merged = _service.MergePackage(
+            [localStorage],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            new ConnectionArchiveImportSelection([], [cdn.Id]),
+            importStorageCredentials: false,
+            importCdnCredentials: false,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Equal(localStorage.Id, Assert.Single(merged.Profiles).Id);
+        var importedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
+        var binding = Assert.Single(merged.CdnConfiguration.Bindings);
+        Assert.Equal(localStorage.Id, binding.StorageProfileId);
+        Assert.Equal(importedCdn.Id, binding.CdnProfileId);
+    }
+
+    [Fact]
+    public void StorageOnlySelectionDoesNotImplicitlyImportCdn()
+    {
+        var storage = CreateProfile();
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var package = new ConnectionArchivePackage(
+            [storage],
+            ContainsCredentials: false,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdn], [CreateCdnBinding(storage.Id, cdn.Id)]));
+
+        var merged = _service.MergePackage(
+            [],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            new ConnectionArchiveImportSelection([storage.Id], []),
+            importStorageCredentials: false,
+            importCdnCredentials: false,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Single(merged.Profiles);
+        Assert.Empty(merged.CdnConfiguration.Profiles);
+        Assert.Empty(merged.CdnConfiguration.Bindings);
+    }
+
+    [Fact]
+    public void PreviewOnlyComparesSecretsWhenCredentialImportIsSelected()
+    {
+        var archived = CreateProfile() with { SecretKey = "new-secret" };
+        var existing = archived with
+        {
+            Id = Guid.NewGuid(),
+            SecretKey = "old-secret"
+        };
+        var package = new ConnectionArchivePackage(
+            [archived],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow);
+
+        var withoutSecrets = _service.PreviewPackage(
+            [existing], CdnConfiguration.Empty, [], package, importStorageCredentials: false);
+        var withSecrets = _service.PreviewPackage(
+            [existing], CdnConfiguration.Empty, [], package, importStorageCredentials: true);
+
+        Assert.Equal(
+            ConnectionArchiveImportStatus.ExistingEquivalent,
+            Assert.Single(withoutSecrets.StorageProfiles).Status);
+        Assert.Equal(
+            ConnectionArchiveImportStatus.NameConflict,
+            Assert.Single(withSecrets.StorageProfiles).Status);
+    }
+
     private static ConnectionProfile CreateProfile() => new()
     {
         Name = "Portable",

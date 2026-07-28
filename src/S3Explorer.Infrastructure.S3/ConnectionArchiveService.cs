@@ -39,6 +39,35 @@ public sealed record ConnectionArchiveMergeResult(
     CdnConfiguration CdnConfiguration,
     IReadOnlyList<CdnCredential> CdnCredentials);
 
+public sealed record ConnectionArchiveImportSelection(
+    IReadOnlyCollection<Guid> StorageProfileIds,
+    IReadOnlyCollection<Guid> CdnProfileIds);
+
+public enum ConnectionArchiveImportStatus
+{
+    New,
+    ExistingEquivalent,
+    NameConflict
+}
+
+public sealed record ConnectionArchiveStoragePreview(
+    Guid ImportedId,
+    ConnectionArchiveImportStatus Status,
+    Guid? ExistingId = null,
+    string ExistingName = "");
+
+public sealed record ConnectionArchiveCdnPreview(
+    Guid ImportedId,
+    ConnectionArchiveImportStatus Status,
+    IReadOnlyList<Guid> RequiredStorageProfileIds,
+    IReadOnlyList<Guid> MissingStorageProfileIds,
+    Guid? ExistingId = null,
+    string ExistingName = "");
+
+public sealed record ConnectionArchiveImportPreview(
+    IReadOnlyList<ConnectionArchiveStoragePreview> StorageProfiles,
+    IReadOnlyList<ConnectionArchiveCdnPreview> CdnProfiles);
+
 public sealed class ConnectionArchiveService
 {
     public const string FileExtension = "s3connections";
@@ -252,6 +281,8 @@ public sealed class ConnectionArchiveService
             var imported = importCredentials
                 ? source
                 : source with { AccessKey = string.Empty, SecretKey = string.Empty, SessionToken = string.Empty };
+            if (result.Any(existing => StorageProfilesEquivalent(existing, imported, importCredentials)))
+                continue;
             var existingIndex = result.FindIndex(item =>
                 string.Equals(item.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
 
@@ -283,6 +314,87 @@ public sealed class ConnectionArchiveService
         return result;
     }
 
+    public ConnectionArchiveImportPreview PreviewPackage(
+        IReadOnlyCollection<ConnectionProfile> existingProfiles,
+        CdnConfiguration existingCdnConfiguration,
+        IReadOnlyCollection<CdnCredential> existingCdnCredentials,
+        ConnectionArchivePackage package,
+        bool importStorageCredentials = false,
+        bool importCdnCredentials = false)
+    {
+        ArgumentNullException.ThrowIfNull(existingProfiles);
+        ArgumentNullException.ThrowIfNull(existingCdnConfiguration);
+        ArgumentNullException.ThrowIfNull(existingCdnCredentials);
+        ArgumentNullException.ThrowIfNull(package);
+
+        var storage = package.Profiles.Select(source =>
+        {
+            var imported = PortableStorage(source, importStorageCredentials);
+            var exact = existingProfiles.FirstOrDefault(existing =>
+                StorageProfilesEquivalent(existing, imported, importStorageCredentials));
+            var sameName = existingProfiles.FirstOrDefault(existing =>
+                string.Equals(existing.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
+            return new ConnectionArchiveStoragePreview(
+                source.Id,
+                exact is not null
+                    ? ConnectionArchiveImportStatus.ExistingEquivalent
+                    : sameName is not null
+                        ? ConnectionArchiveImportStatus.NameConflict
+                        : ConnectionArchiveImportStatus.New,
+                exact?.Id ?? sameName?.Id,
+                exact?.Name ?? sameName?.Name ?? string.Empty);
+        }).ToArray();
+
+        var credentialIdMap = new Dictionary<Guid, Guid>();
+        if (importCdnCredentials)
+        {
+            foreach (var source in package.ImportedCdnCredentials)
+            {
+                var exact = existingCdnCredentials.FirstOrDefault(existing =>
+                    CdnCredentialsEquivalent(existing, source));
+                if (exact is not null) credentialIdMap[source.Id] = exact.Id;
+            }
+        }
+
+        var configuration = package.ImportedCdnConfiguration;
+        var cdn = configuration.Profiles.Select(source =>
+        {
+            var credentialId = source.CredentialId is Guid sourceCredentialId &&
+                               credentialIdMap.TryGetValue(sourceCredentialId, out var mappedCredentialId)
+                ? mappedCredentialId
+                : (Guid?)null;
+            var imported = source with { CredentialId = credentialId };
+            var exact = existingCdnConfiguration.Profiles.FirstOrDefault(existing =>
+                CdnProfilesEquivalent(existing, imported, importCdnCredentials));
+            var sameName = existingCdnConfiguration.Profiles.FirstOrDefault(existing =>
+                string.Equals(existing.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
+            var requiredStorage = configuration.Bindings
+                .Where(binding => binding.CdnProfileId == source.Id)
+                .Select(binding => binding.StorageProfileId)
+                .Distinct()
+                .ToArray();
+            var missingStorage = requiredStorage.Where(sourceStorageId =>
+            {
+                var sourceStorage = package.Profiles.FirstOrDefault(profile => profile.Id == sourceStorageId);
+                return sourceStorage is not null && !existingProfiles.Any(existing =>
+                    StorageProfilesEquivalent(existing, PortableStorage(sourceStorage, false), false));
+            }).ToArray();
+            return new ConnectionArchiveCdnPreview(
+                source.Id,
+                exact is not null
+                    ? ConnectionArchiveImportStatus.ExistingEquivalent
+                    : sameName is not null
+                        ? ConnectionArchiveImportStatus.NameConflict
+                        : ConnectionArchiveImportStatus.New,
+                requiredStorage,
+                missingStorage,
+                exact?.Id ?? sameName?.Id,
+                exact?.Name ?? sameName?.Name ?? string.Empty);
+        }).ToArray();
+
+        return new ConnectionArchiveImportPreview(storage, cdn);
+    }
+
     public ConnectionArchiveMergeResult MergePackage(
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration existingCdnConfiguration,
@@ -292,29 +404,66 @@ public sealed class ConnectionArchiveService
         bool importCredentials,
         ConnectionImportConflictStrategy conflictStrategy)
     {
+        var selectedStorageIds = selectedImportedProfileIds.ToHashSet();
+        var selectedCdnIds = package.ImportedCdnConfiguration.Bindings
+            .Where(binding => selectedStorageIds.Contains(binding.StorageProfileId))
+            .Select(binding => binding.CdnProfileId)
+            .ToHashSet();
+        if (selectedStorageIds.SetEquals(package.Profiles.Select(profile => profile.Id)))
+            selectedCdnIds.UnionWith(package.ImportedCdnConfiguration.Profiles.Select(profile => profile.Id));
+        return MergePackage(
+            existingProfiles,
+            existingCdnConfiguration,
+            existingCdnCredentials,
+            package,
+            new ConnectionArchiveImportSelection(selectedStorageIds, selectedCdnIds),
+            importCredentials,
+            importCredentials,
+            conflictStrategy);
+    }
+
+    public ConnectionArchiveMergeResult MergePackage(
+        IReadOnlyCollection<ConnectionProfile> existingProfiles,
+        CdnConfiguration existingCdnConfiguration,
+        IReadOnlyCollection<CdnCredential> existingCdnCredentials,
+        ConnectionArchivePackage package,
+        ConnectionArchiveImportSelection selection,
+        bool importStorageCredentials,
+        bool importCdnCredentials,
+        ConnectionImportConflictStrategy conflictStrategy)
+    {
         ArgumentNullException.ThrowIfNull(existingProfiles);
         ArgumentNullException.ThrowIfNull(existingCdnConfiguration);
         ArgumentNullException.ThrowIfNull(existingCdnCredentials);
         ArgumentNullException.ThrowIfNull(package);
-        ArgumentNullException.ThrowIfNull(selectedImportedProfileIds);
+        ArgumentNullException.ThrowIfNull(selection);
         CdnConfigurationValidator.EnsureValid(existingCdnConfiguration, existingCdnCredentials);
 
-        var selectedIds = selectedImportedProfileIds.ToHashSet();
-        var packageIds = package.Profiles.Select(profile => profile.Id).ToHashSet();
-        if (!selectedIds.IsSubsetOf(packageIds))
-            throw new ArgumentException("所选连接不属于当前连接包。", nameof(selectedImportedProfileIds));
+        var selectedStorageIds = selection.StorageProfileIds.ToHashSet();
+        var selectedCdnIds = selection.CdnProfileIds.ToHashSet();
+        var packageStorageIds = package.Profiles.Select(profile => profile.Id).ToHashSet();
+        var packageCdnIds = package.ImportedCdnConfiguration.Profiles.Select(profile => profile.Id).ToHashSet();
+        if (!selectedStorageIds.IsSubsetOf(packageStorageIds))
+            throw new ArgumentException("所选对象存储连接不属于当前连接包。", nameof(selection));
+        if (!selectedCdnIds.IsSubsetOf(packageCdnIds))
+            throw new ArgumentException("所选 CDN 配置不属于当前连接包。", nameof(selection));
 
         var profiles = existingProfiles.ToList();
         var storageIdMap = new Dictionary<Guid, Guid>();
-        foreach (var source in package.Profiles.Where(profile => selectedIds.Contains(profile.Id)))
+        foreach (var source in package.Profiles.Where(profile => selectedStorageIds.Contains(profile.Id)))
         {
             source.ValidateConfiguration();
-            var imported = importCredentials
-                ? source
-                : source with { AccessKey = string.Empty, SecretKey = string.Empty, SessionToken = string.Empty };
+            var imported = PortableStorage(source, importStorageCredentials);
+            var exact = profiles.FirstOrDefault(existing =>
+                StorageProfilesEquivalent(existing, imported, importStorageCredentials));
+            if (exact is not null)
+            {
+                storageIdMap[source.Id] = exact.Id;
+                continue;
+            }
+
             var existingIndex = profiles.FindIndex(item =>
                 string.Equals(item.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
-
             if (existingIndex < 0)
             {
                 var added = imported with { Id = Guid.NewGuid() };
@@ -347,34 +496,42 @@ public sealed class ConnectionArchiveService
         }
 
         var importedConfiguration = package.ImportedCdnConfiguration;
-        var importEntireCdnPackage = selectedIds.SetEquals(packageIds) &&
-            storageIdMap.Count == package.Profiles.Count;
         var selectedBindings = importedConfiguration.Bindings
-            .Where(binding => storageIdMap.ContainsKey(binding.StorageProfileId))
+            .Where(binding => selectedCdnIds.Contains(binding.CdnProfileId))
             .ToArray();
-        var selectedCdnProfileIds = selectedBindings
-            .Select(binding => binding.CdnProfileId)
-            .ToHashSet();
-        if (importEntireCdnPackage)
-            selectedCdnProfileIds.UnionWith(importedConfiguration.Profiles.Select(profile => profile.Id));
+        foreach (var dependencyId in selectedBindings.Select(binding => binding.StorageProfileId).Distinct())
+        {
+            if (storageIdMap.ContainsKey(dependencyId)) continue;
+            var source = package.Profiles.FirstOrDefault(profile => profile.Id == dependencyId);
+            if (source is null) continue;
+            var imported = PortableStorage(source, false);
+            var exact = profiles.FirstOrDefault(existing =>
+                StorageProfilesEquivalent(existing, imported, false));
+            if (exact is not null) storageIdMap[source.Id] = exact.Id;
+        }
 
         var importedCdnProfiles = importedConfiguration.Profiles
-            .Where(profile => selectedCdnProfileIds.Contains(profile.Id))
+            .Where(profile => selectedCdnIds.Contains(profile.Id))
             .ToArray();
         var selectedCredentialIds = importedCdnProfiles
             .Where(profile => profile.CredentialId.HasValue)
             .Select(profile => profile.CredentialId!.Value)
             .ToHashSet();
-        if (importEntireCdnPackage)
-            selectedCredentialIds.UnionWith(package.ImportedCdnCredentials.Select(credential => credential.Id));
 
         var credentials = existingCdnCredentials.ToList();
         var credentialIdMap = new Dictionary<Guid, Guid>();
-        if (importCredentials)
+        if (importCdnCredentials)
         {
             foreach (var source in package.ImportedCdnCredentials
                          .Where(credential => selectedCredentialIds.Contains(credential.Id)))
             {
+                var exact = credentials.FirstOrDefault(existing => CdnCredentialsEquivalent(existing, source));
+                if (exact is not null)
+                {
+                    credentialIdMap[source.Id] = exact.Id;
+                    continue;
+                }
+
                 var existingIndex = credentials.FindIndex(item =>
                     string.Equals(item.Name, source.Name, StringComparison.OrdinalIgnoreCase));
                 if (existingIndex < 0)
@@ -418,6 +575,14 @@ public sealed class ConnectionArchiveService
                 ? mappedCredentialId
                 : (Guid?)null;
             var imported = source with { CredentialId = credentialId };
+            var exact = cdnProfiles.FirstOrDefault(existing =>
+                CdnProfilesEquivalent(existing, imported, importCdnCredentials));
+            if (exact is not null)
+            {
+                cdnProfileIdMap[source.Id] = exact.Id;
+                continue;
+            }
+
             var existingIndex = cdnProfiles.FindIndex(item =>
                 string.Equals(item.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
             if (existingIndex < 0)
@@ -464,11 +629,14 @@ public sealed class ConnectionArchiveService
                 StorageProfileId = storageProfileId,
                 CdnProfileId = cdnProfileId
             };
-            var exactIndex = bindings.FindIndex(binding => SameBinding(binding, imported));
-            if (exactIndex >= 0)
+            if (bindings.Any(binding => BindingsEquivalent(binding, imported)))
+                continue;
+
+            var identityIndex = bindings.FindIndex(binding => SameBindingIdentity(binding, imported));
+            if (identityIndex >= 0)
             {
                 if (conflictStrategy == ConnectionImportConflictStrategy.Replace)
-                    bindings[exactIndex] = imported with { Id = bindings[exactIndex].Id };
+                    bindings[identityIndex] = imported with { Id = bindings[identityIndex].Id };
                 continue;
             }
 
@@ -610,7 +778,124 @@ public sealed class ConnectionArchiveService
         return candidate;
     }
 
-    private static bool SameBinding(CdnBinding left, CdnBinding right) =>
+    private static ConnectionProfile PortableStorage(ConnectionProfile source, bool includeCredentials) =>
+        includeCredentials
+            ? source
+            : source with
+            {
+                AccessKey = string.Empty,
+                SecretKey = string.Empty,
+                SessionToken = string.Empty
+            };
+
+    private static bool StorageProfilesEquivalent(
+        ConnectionProfile left,
+        ConnectionProfile right,
+        bool compareStoredCredentials)
+    {
+        var same = left.ServiceType == right.ServiceType &&
+            string.Equals(NormalizeEndpoint(left), NormalizeEndpoint(right), StringComparison.Ordinal) &&
+            string.Equals(NormalizeRegion(left.Region), NormalizeRegion(right.Region), StringComparison.Ordinal) &&
+            string.Equals(left.EffectiveSignatureRegion, right.EffectiveSignatureRegion, StringComparison.OrdinalIgnoreCase) &&
+            left.CredentialSource == right.CredentialSource &&
+            string.Equals(left.AwsProfileName?.Trim(), right.AwsProfileName?.Trim(), StringComparison.Ordinal) &&
+            left.AddressingStyle == right.AddressingStyle &&
+            left.UseHttps == right.UseHttps &&
+            left.IgnoreCertificateErrors == right.IgnoreCertificateErrors &&
+            string.Equals(left.CustomHostHeader?.Trim(), right.CustomHostHeader?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            left.FollowTemporaryRedirects == right.FollowTemporaryRedirects &&
+            left.EnableMultiObjectDelete == right.EnableMultiObjectDelete &&
+            left.EnableMultipartCopy == right.EnableMultipartCopy &&
+            string.Equals(left.DefaultStorageClass?.Trim(), right.DefaultStorageClass?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            left.RequestTimeoutSeconds == right.RequestTimeoutSeconds &&
+            left.ConnectionTimeoutSeconds == right.ConnectionTimeoutSeconds &&
+            string.Equals(left.DefaultBucket?.Trim(), right.DefaultBucket?.Trim(), StringComparison.Ordinal) &&
+            NormalizeBuckets(left.ExternalBuckets).SequenceEqual(NormalizeBuckets(right.ExternalBuckets), StringComparer.Ordinal);
+        if (!same || !compareStoredCredentials || left.CredentialSource != CredentialSourceKind.StoredKeys)
+            return same;
+        return string.Equals(left.AccessKey, right.AccessKey, StringComparison.Ordinal) &&
+               string.Equals(left.SecretKey, right.SecretKey, StringComparison.Ordinal) &&
+               string.Equals(left.SessionToken, right.SessionToken, StringComparison.Ordinal);
+    }
+
+    private static bool CdnCredentialsEquivalent(CdnCredential left, CdnCredential right) =>
+        left.AuthenticationType == right.AuthenticationType &&
+        string.Equals(left.HeaderName?.Trim(), right.HeaderName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.Secret, right.Secret, StringComparison.Ordinal);
+
+    private static bool CdnProfilesEquivalent(
+        CdnProfile left,
+        CdnProfile right,
+        bool compareCredential) =>
+        string.Equals(NormalizeCdnUrl(left.BaseUrl), NormalizeCdnUrl(right.BaseUrl), StringComparison.Ordinal) &&
+        string.Equals(left.Notes, right.Notes, StringComparison.Ordinal) &&
+        string.Equals(left.ProviderId?.Trim(), right.ProviderId?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+        (!compareCredential || left.CredentialId == right.CredentialId) &&
+        left.WarmupMode == right.WarmupMode &&
+        left.WarmupRangeBytes == right.WarmupRangeBytes &&
+        string.Equals(left.PurgeEndpointTemplate?.Trim(), right.PurgeEndpointTemplate?.Trim(), StringComparison.Ordinal) &&
+        string.Equals(left.PurgeHttpMethod?.Trim(), right.PurgeHttpMethod?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.PurgeBodyTemplate, right.PurgeBodyTemplate, StringComparison.Ordinal) &&
+        string.Equals(left.PurgeContentType?.Trim(), right.PurgeContentType?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+        left.TimeoutSeconds == right.TimeoutSeconds &&
+        left.FollowRedirects == right.FollowRedirects &&
+        left.Enabled == right.Enabled;
+
+    private static string NormalizeEndpoint(ConnectionProfile profile)
+    {
+        var normalized = EndpointCompatibility.NormalizeServiceUrl(profile.ServiceType, profile.Endpoint);
+        var uri = new Uri(normalized, UriKind.Absolute);
+        var builder = new UriBuilder(uri)
+        {
+            Scheme = uri.Scheme.ToLowerInvariant(),
+            Host = uri.Host.ToLowerInvariant(),
+            Path = uri.AbsolutePath.TrimEnd('/')
+        };
+        if (builder.Uri.IsDefaultPort) builder.Port = -1;
+        return builder.Uri.GetLeftPart(UriPartial.Path);
+    }
+
+    private static string NormalizeCdnUrl(string value)
+    {
+        var uri = new Uri(value.Trim(), UriKind.Absolute);
+        var builder = new UriBuilder(uri)
+        {
+            Scheme = uri.Scheme.ToLowerInvariant(),
+            Host = uri.Host.ToLowerInvariant(),
+            Path = uri.AbsolutePath.TrimEnd('/')
+        };
+        if (builder.Uri.IsDefaultPort) builder.Port = -1;
+        return builder.Uri.GetLeftPart(UriPartial.Path);
+    }
+
+    private static string NormalizeRegion(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        return normalized.Length == 0 || string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase)
+            ? "auto"
+            : normalized.ToLowerInvariant();
+    }
+
+    private static IReadOnlyList<string> NormalizeBuckets(IReadOnlyList<string>? values) =>
+        (values ?? [])
+        .Select(value => value?.Trim() ?? string.Empty)
+        .Where(value => value.Length > 0)
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(value => value, StringComparer.Ordinal)
+        .ToArray();
+
+    private static bool BindingsEquivalent(CdnBinding left, CdnBinding right) =>
+        SameBindingIdentity(left, right) &&
+        string.Equals(
+            CdnUrlMapper.NormalizePrefix(left.CdnPathPrefix),
+            CdnUrlMapper.NormalizePrefix(right.CdnPathPrefix),
+            StringComparison.Ordinal) &&
+        left.NewObjectAction == right.NewObjectAction &&
+        left.OverwriteAction == right.OverwriteAction &&
+        left.IsDefault == right.IsDefault &&
+        left.Enabled == right.Enabled;
+
+    private static bool SameBindingIdentity(CdnBinding left, CdnBinding right) =>
         left.StorageProfileId == right.StorageProfileId &&
         left.CdnProfileId == right.CdnProfileId &&
         string.Equals(left.Bucket, right.Bucket, StringComparison.Ordinal) &&
