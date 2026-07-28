@@ -38,7 +38,9 @@ internal sealed class UpdateDialog : Form
         };
         var privacy = new Label
         {
-            Text = "更新检查只读取公开 GitHub Release 信息；安装由你确认。",
+            Text = release.IsFromCache
+                ? $"在线通道暂时不可用，显示 {release.CachedAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm} 的缓存；安装由你确认。"
+                : "更新检查只读取项目 Pages/GitHub 的公开发布信息；安装由你确认。",
             ForeColor = Color.FromArgb(90, 103, 120),
             Location = new Point(88, 74),
             AutoSize = true

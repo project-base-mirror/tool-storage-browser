@@ -80,6 +80,7 @@ internal sealed partial class MainForm : Form
     private readonly List<S3Location> _history = [];
     private readonly Dictionary<string, ToolStripItem> _commands = new(StringComparer.OrdinalIgnoreCase);
     private readonly OperationCancellation _navigationCancellation = new();
+    private readonly CancellationTokenSource _updateCancellation = new();
 
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private AppSettings _settings = new();
@@ -2242,17 +2243,22 @@ internal sealed partial class MainForm : Form
         try
         {
             var currentVersion = typeof(MainForm).Assembly.GetName().Version ?? new Version(0, 0, 0, 0);
-            var release = await _updateChecker.GetLatestAsync();
+            var release = await _updateChecker.GetLatestAsync(_updateCancellation.Token);
             if (!release.IsNewerThan(currentVersion))
             {
                 if (!automatic && !IsDisposed)
-                    MessageBox.Show(this,
-                        $"当前版本 {DisplayVersion} 已是最新稳定版本。",
-                        "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                {
+                    var message = release.IsFromCache
+                        ? $"在线更新通道暂时不可用。最近成功检查缓存的版本是 {release.TagName}，无法据此确认当前版本 {DisplayVersion} 是否为最新版本。"
+                        : $"当前版本 {DisplayVersion} 已是最新稳定版本。";
+                    MessageBox.Show(this, message, "检查更新", MessageBoxButtons.OK,
+                        release.IsFromCache ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+                }
                 return;
             }
 
             if (IsDisposed || Disposing) return;
+            _logger.Info($"Update check source={release.Source}; latest={release.TagName}; cachedAt={release.CachedAtUtc:O}");
             using var dialog = new UpdateDialog(currentVersion, release);
             if (dialog.ShowDialog(this) == DialogResult.OK && dialog.SelectedUri is not null)
                 OpenExternalUrl(dialog.SelectedUri.AbsoluteUri);
@@ -2268,7 +2274,7 @@ internal sealed partial class MainForm : Form
         catch (OperationCanceledException exception)
         {
             _logger.Warning($"Update check timed out: {exception.Message}");
-            if (!automatic && !IsDisposed)
+            if (!automatic && !_closing && !IsDisposed)
                 MessageBox.Show(this,
                     "检查更新超时，请确认网络连接后重试。",
                     "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -2547,6 +2553,7 @@ internal sealed partial class MainForm : Form
         {
             CancelNavigation();
             CancelCdnOperation();
+            _updateCancellation.Cancel();
             _speedTimer.Stop();
             _requestStatus.Text = closeAction switch
             {

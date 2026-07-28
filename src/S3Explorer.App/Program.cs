@@ -41,7 +41,8 @@ internal static class Program
                 new DpapiCdnCredentialProtector(),
                 options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
-            using var updateChecker = new GitHubUpdateChecker();
+            using var updateChecker = new GitHubUpdateChecker(
+                cachePath: options.Enabled ? Path.Combine(dataRoot, "update-cache.json") : null);
             var transferRuntime = new TransferRuntimeConfiguration();
             var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
             var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
