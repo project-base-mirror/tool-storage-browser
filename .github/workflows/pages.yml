@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "docs/site/**"
+      - "scripts/Test-UpdateManifest.ps1"
+      - "Directory.Build.props"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -29,6 +31,10 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v6
+
+      - name: Validate update manifest and download links
+        shell: pwsh
+        run: ./scripts/Test-UpdateManifest.ps1
 
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4

@@ -14,6 +14,11 @@ $version = [string]$props.Project.PropertyGroup.Version
 $frameworkName = "S3Explorer-v$version-win-x64"
 $selfContainedName = "S3Explorer-v$version-win-x64-self-contained"
 
+& (Join-Path $PSScriptRoot "Test-UpdateManifest.ps1")
+if (-not $?) {
+    throw "Update manifest validation failed."
+}
+
 function Assert-True {
     param(
         [Parameter(Mandatory)][bool]$Condition,

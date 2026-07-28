@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "tagName": "v0.5.4",
+  "version": "0.5.4",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.5.4",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.5.4/S3Explorer-v0.5.4-win-x64.zip",
+  "notes": "CDN 内容交付第一阶段：CDN Profile、独立凭据、Bucket/前缀关联、下载探测、预热和通用 HTTP 刷新。",
+  "publishedAt": "2026-07-27T00:00:00+08:00"
+}

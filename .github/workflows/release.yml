@@ -55,6 +55,10 @@ jobs:
           }
           "RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Validate Pages update manifest
+        shell: pwsh
+        run: ./scripts/Test-UpdateManifest.ps1
+
       - name: Test and build release packages
         shell: pwsh
         run: ./scripts/Publish.ps1 -NoOpen
