@@ -229,8 +229,10 @@ internal sealed partial class MainForm : Form
         bucket.DropDownItems.Add(Command("bucket-properties", "Bucket 属性...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Overview)));
         bucket.DropDownItems.Add(Command("bucket-acl", "Bucket 权限...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Acl)));
         bucket.DropDownItems.Add(Command("bucket-policy", "Bucket Policy...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Policy)));
-        bucket.DropDownItems.Add(Unsupported("CORS 配置..."));
-        bucket.DropDownItems.Add(Unsupported("版本控制..."));
+        bucket.DropDownItems.Add(Command("bucket-cors", "CORS 配置...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Cors)));
+        bucket.DropDownItems.Add(Command("bucket-versioning", "版本控制...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Versioning)));
+        bucket.DropDownItems.Add(Command("bucket-encryption", "默认加密...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Encryption)));
+        bucket.DropDownItems.Add(Command("bucket-tags", "Bucket Tags...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Tags)));
         bucket.DropDownItems.Add(Unsupported("生命周期规则..."));
         bucket.DropDownItems.Add(Command("bucket-access-controls", "Public Access Block / Object Ownership...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.AccessControls)));
         bucket.DropDownItems.Add(Unsupported("Object Lock..."));
@@ -436,6 +438,14 @@ internal sealed partial class MainForm : Form
             await ShowBucketManagementAsync(BucketManagementPage.Policy));
         var accessControls = ContextCommand("bucket-access-controls", "Public Access Block / Object Ownership...", UiIconKind.Info, async (_, _) =>
             await ShowBucketManagementAsync(BucketManagementPage.AccessControls));
+        var cors = ContextCommand("bucket-cors", "CORS 配置...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Cors));
+        var versioning = ContextCommand("bucket-versioning", "版本控制...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Versioning));
+        var encryption = ContextCommand("bucket-encryption", "默认加密...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Encryption));
+        var tags = ContextCommand("bucket-tags", "Bucket Tags...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Tags));
         var empty = ContextCommand("empty-bucket", "清空 Bucket...", UiIconKind.Delete, async (_, _) =>
             await ShowBucketManagementAsync(BucketManagementPage.EmptyBucket));
         var delete = ContextCommand("delete-bucket", "删除 Bucket...", UiIconKind.Delete, async (_, _) => await DeleteBucketAsync());
@@ -458,12 +468,12 @@ internal sealed partial class MainForm : Form
             new ToolStripSeparator(),
             BuildBucketCdnContextMenu(),
             new ToolStripSeparator(),
-            Unsupported("版本控制..."),
-            Unsupported("默认加密..."),
+            versioning,
+            encryption,
             Unsupported("生命周期配置..."),
-            Unsupported("CORS 配置..."),
+            cors,
             Unsupported("Object Lock..."),
-            Unsupported("标签..."),
+            tags,
             Unsupported("日志设置..."),
             Unsupported("跨区域复制..."),
             new ToolStripSeparator(),

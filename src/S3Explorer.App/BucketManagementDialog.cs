@@ -9,10 +9,14 @@ internal enum BucketManagementPage
     Policy,
     Acl,
     AccessControls,
+    Cors,
+    Versioning,
+    Encryption,
+    Tags,
     EmptyBucket
 }
 
-internal sealed class BucketManagementDialog : Form
+internal sealed partial class BucketManagementDialog : Form
 {
     private readonly IS3StorageService _storage;
     private readonly ConnectionProfile _profile;
@@ -79,7 +83,8 @@ internal sealed class BucketManagementDialog : Form
 
         _tabs.TabPages.AddRange([
             BuildOverviewTab(), BuildPolicyTab(), BuildAclTab(),
-            BuildAccessTab(), BuildEmptyTab()
+            BuildAccessTab(), BuildCorsTab(), BuildVersioningTab(),
+            BuildEncryptionTab(), BuildTagsTab(), BuildEmptyTab()
         ]);
         _tabs.SelectedIndex = Math.Clamp((int)initialPage, 0, _tabs.TabPages.Count - 1);
 
@@ -98,7 +103,12 @@ internal sealed class BucketManagementDialog : Form
         AcceptButton = close;
         CancelButton = close;
 
-        Shown += async (_, _) => await LoadAllAsync();
+        Shown += async (_, _) =>
+        {
+            await LoadAllAsync();
+            await LoadSelectedConfigurationAsync();
+        };
+        _tabs.SelectedIndexChanged += async (_, _) => await LoadSelectedConfigurationAsync();
         FormClosed += (_, _) => _cancellation.Cancel();
         _policyReload.Click += async (_, _) => await LoadPolicyAsync();
         _policyFormat.Click += (_, _) => FormatPolicy();
@@ -230,8 +240,11 @@ internal sealed class BucketManagementDialog : Form
         AppendCapability(text, "Bucket ACL", value.Capabilities.Acl);
         AppendCapability(text, "Public Access Block", value.Capabilities.PublicAccessBlock);
         AppendCapability(text, "Object Ownership", value.Capabilities.ObjectOwnership);
+        AppendCapability(text, "CORS", value.Capabilities.Cors);
         AppendCapability(text, "Versioning", value.Capabilities.Versioning);
         AppendCapability(text, "Encryption", value.Capabilities.Encryption);
+        AppendCapability(text, "SSE-KMS", value.Capabilities.KmsEncryption);
+        AppendCapability(text, "Tagging", value.Capabilities.Tagging);
         AppendCapability(text, "安全清空", value.Capabilities.EmptyBucket);
         _overview.Text = text.ToString();
 
@@ -260,6 +273,7 @@ internal sealed class BucketManagementDialog : Form
         SetControls(ownershipSupported, _ownership, _ownershipSave);
         if (value.ObjectOwnership is not null) _ownership.SelectedItem = value.ObjectOwnership.Value;
         _accessReason.Text = $"Public Access Block：{value.Capabilities.PublicAccessBlock.Reason}\r\nObject Ownership：{value.Capabilities.ObjectOwnership.Reason}";
+        ApplyConfigurationCapabilities(value.Capabilities);
     }
 
     private async Task LoadPolicyAsync()
