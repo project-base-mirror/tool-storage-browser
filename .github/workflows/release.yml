@@ -66,11 +66,11 @@ jobs:
           S3EXPLORER_SIGNING_PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PFX_PASSWORD }}
           S3EXPLORER_REQUIRE_SIGNING: ${{ vars.CODE_SIGNING_REQUIRED }}
         run: |
-          $arguments = @("-NoOpen")
+          $publishParameters = @{ NoOpen = $true }
           if ($env:S3EXPLORER_REQUIRE_SIGNING -eq "true") {
-            $arguments += "-RequireSigning"
+            $publishParameters.RequireSigning = $true
           }
-          ./scripts/Publish.ps1 @arguments
+          ./scripts/Publish.ps1 @publishParameters
 
       - name: Generate SHA-256 checksums
         shell: pwsh
