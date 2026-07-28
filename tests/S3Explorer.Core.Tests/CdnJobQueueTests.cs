@@ -127,6 +127,56 @@ public sealed class CdnJobQueueTests
         Assert.Equal(CdnJobState.Cancelled, Assert.Single(queue.Snapshot.Jobs).State);
     }
 
+    [Fact]
+    public async Task ActiveDuplicateUrlIsCoalescedEvenWithDifferentIdempotencyKeys()
+    {
+        var executor = new BlockingExecutor();
+        await using var queue = new PersistentCdnJobQueue(new MemoryStore(), executor);
+        await queue.InitializeAsync();
+        var first = Job("first");
+        var created = await queue.EnqueueAsync(first);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await executor.Started.Task.WaitAsync(timeout.Token);
+        var duplicate = await queue.EnqueueAsync(Job("second") with
+        {
+            CdnProfileId = first.CdnProfileId,
+            Action = first.Action,
+            Urls = first.Urls
+        });
+
+        Assert.Equal(created.Id, duplicate.Id);
+        Assert.Single(queue.Snapshot.Jobs);
+    }
+
+    [Fact]
+    public async Task RunsDifferentProfilesInParallelButSerializesEachProfile()
+    {
+        var executor = new ProfileBlockingExecutor();
+        await using var queue = new PersistentCdnJobQueue(
+            new MemoryStore(),
+            executor,
+            maxConcurrency: 4,
+            maxConcurrencyPerProfile: 1);
+        await queue.InitializeAsync();
+        var firstProfile = Guid.NewGuid();
+        var secondProfile = Guid.NewGuid();
+        await queue.EnqueueAsync(Job("first") with { CdnProfileId = firstProfile });
+        await queue.EnqueueAsync(Job("blocked-same-profile") with
+        {
+            CdnProfileId = firstProfile,
+            Urls = ["https://cdn.example/second.bin"]
+        });
+        await queue.EnqueueAsync(Job("other-profile") with { CdnProfileId = secondProfile });
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await executor.TwoProfilesStarted.Task.WaitAsync(timeout.Token);
+
+        Assert.Equal(2, executor.StartedProfiles.Count);
+        Assert.Contains(firstProfile, executor.StartedProfiles);
+        Assert.Contains(secondProfile, executor.StartedProfiles);
+    }
+
     private static CdnJobRecord Job(string key) => new()
     {
         IdempotencyKey = key,
@@ -184,6 +234,27 @@ public sealed class CdnJobQueueTests
             CancellationToken cancellationToken)
         {
             Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
+    private sealed class ProfileBlockingExecutor : ICdnJobExecutor
+    {
+        private readonly object _sync = new();
+        public HashSet<Guid> StartedProfiles { get; } = [];
+        public TaskCompletionSource TwoProfilesStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<CdnProviderResult> ExecuteAsync(
+            CdnJobRecord job,
+            CancellationToken cancellationToken)
+        {
+            lock (_sync)
+            {
+                StartedProfiles.Add(job.CdnProfileId);
+                if (StartedProfiles.Count >= 2) TwoProfilesStarted.TrySetResult();
+            }
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             throw new InvalidOperationException("unreachable");
         }

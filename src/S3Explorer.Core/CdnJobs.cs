@@ -156,6 +156,7 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
     private CdnJobStoreSnapshot _snapshot = new();
     private Task? _worker;
     private int _maxConcurrency;
+    private readonly int _maxConcurrencyPerProfile;
     private bool _initialized;
     private bool _disposed;
 
@@ -163,12 +164,14 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
         ICdnJobStore store,
         ICdnJobExecutor executor,
         int maxConcurrency = 2,
+        int maxConcurrencyPerProfile = 1,
         Func<DateTimeOffset>? clock = null,
         Func<double>? jitter = null)
     {
         _store = store;
         _executor = executor;
         _maxConcurrency = Math.Clamp(maxConcurrency, 1, 16);
+        _maxConcurrencyPerProfile = Math.Clamp(maxConcurrencyPerProfile, 1, 16);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _jitter = jitter ?? Random.Shared.NextDouble;
     }
@@ -240,6 +243,12 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             var existing = _snapshot.Jobs.FirstOrDefault(value =>
                 string.Equals(value.IdempotencyKey, job.IdempotencyKey, StringComparison.Ordinal));
             if (existing is not null) return existing;
+            var activeDuplicate = _snapshot.Jobs.FirstOrDefault(value =>
+                value.CdnProfileId == job.CdnProfileId &&
+                value.Action == job.Action &&
+                (value.State is CdnJobState.Pending or CdnJobState.Running or CdnJobState.WaitingProvider) &&
+                value.Urls.SequenceEqual(job.Urls, StringComparer.Ordinal));
+            if (activeDuplicate is not null) return activeDuplicate;
             if (_snapshot.Jobs.Any(value => value.Id == job.Id))
                 throw new InvalidOperationException($"CDN 任务 ID 已存在：{job.Id}");
             await CommitLockedAsync(
@@ -386,17 +395,23 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             var available = Math.Max(0, _maxConcurrency - _running.Count);
             var candidates = _snapshot.Jobs
                 .Where(job =>
-                    job.State is CdnJobState.Pending or CdnJobState.WaitingProvider &&
+                    (job.State is CdnJobState.Pending or CdnJobState.WaitingProvider) &&
                     (job.NextAttemptAt is null || job.NextAttemptAt <= now))
                 .OrderBy(job => job.NextAttemptAt ?? job.CreatedAt)
                 .ThenBy(job => job.CreatedAt)
-                .Take(available)
                 .ToArray();
             if (candidates.Length == 0) return;
 
             var jobs = _snapshot.Jobs.ToArray();
+            var runningPerProfile = _running.Keys
+                .Select(id => FindJob(_snapshot, id).CdnProfileId)
+                .GroupBy(id => id)
+                .ToDictionary(group => group.Key, group => group.Count());
             foreach (var candidate in candidates)
             {
+                if (started.Count >= available) break;
+                runningPerProfile.TryGetValue(candidate.CdnProfileId, out var profileRunning);
+                if (profileRunning >= _maxConcurrencyPerProfile) continue;
                 var runningJob = candidate with
                 {
                     State = CdnJobState.Running,
@@ -415,7 +430,9 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
                 };
                 _running.Add(candidate.Id, runtime);
                 started.Add((runningJob, runtime));
+                runningPerProfile[candidate.CdnProfileId] = profileRunning + 1;
             }
+            if (started.Count == 0) return;
             await CommitLockedAsync(_snapshot with { Jobs = jobs }, _lifetime.Token).ConfigureAwait(false);
         }
         finally

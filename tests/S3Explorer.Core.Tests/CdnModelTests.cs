@@ -158,6 +158,45 @@ public sealed class CdnModelTests
         Assert.Contains(errors, value => value.Contains("备注", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ValidatorRejectsInvalidUploadAutomationPolicies()
+    {
+        var storageId = Guid.NewGuid();
+        var profile = Profile("cdn", "https://cdn.example");
+        var invalidNewObject = Binding(storageId, profile.Id, "", "", true) with
+        {
+            NewObjectAction = CdnUploadAction.Purge
+        };
+        var invalidOverwrite = Binding(storageId, profile.Id, "other/", "", true) with
+        {
+            OverwriteAction = CdnUploadAction.PurgeThenWarmup
+        };
+
+        var errors = CdnConfigurationValidator.Validate(
+            new CdnConfiguration([profile], [invalidNewObject, invalidOverwrite]));
+
+        Assert.Contains(errors, value => value.Contains("新对象自动化动作无效", StringComparison.Ordinal));
+        Assert.Contains(errors, value => value.Contains("需要 CDN 配置", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidatorAcceptsExplicitUploadAutomationPolicies()
+    {
+        var storageId = Guid.NewGuid();
+        var profile = Profile("cdn", "https://cdn.example") with
+        {
+            PurgeEndpointTemplate = "https://api.example/purge?url={url}"
+        };
+        var binding = Binding(storageId, profile.Id, "", "", true) with
+        {
+            NewObjectAction = CdnUploadAction.Warmup,
+            OverwriteAction = CdnUploadAction.PurgeThenWarmup
+        };
+
+        Assert.Empty(CdnConfigurationValidator.Validate(
+            new CdnConfiguration([profile], [binding])));
+    }
+
     [Theory]
     [InlineData(CdnCertificateProblems.None, 60, "正常")]
     [InlineData(CdnCertificateProblems.None, 7, "即将到期")]

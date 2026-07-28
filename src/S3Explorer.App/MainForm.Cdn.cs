@@ -9,6 +9,7 @@ internal sealed partial class MainForm
     private readonly ICdnCredentialStore _cdnCredentialStore;
     private readonly ICdnDeliveryService _cdnDeliveryService;
     private readonly PersistentCdnJobQueue _cdnJobQueue;
+    private readonly CdnUploadAutomationCoordinator _cdnUploadAutomation;
     private readonly ICdnCertificateInspector _cdnCertificateInspector;
     private CdnConfiguration _cdnConfiguration = CdnConfiguration.Empty;
     private IReadOnlyList<CdnCredential> _cdnCredentials = [];
@@ -183,6 +184,23 @@ internal sealed partial class MainForm
     {
         using var dialog = new CdnJobsDialog(_cdnJobQueue, _cdnConfiguration.Profiles);
         dialog.ShowDialog(this);
+    }
+
+    private async Task ProcessCompletedCdnUploadsAsync(IEnumerable<TransferTaskRecord> tasks)
+    {
+        try
+        {
+            var jobs = await _cdnUploadAutomation.ProcessCompletedUploadsAsync(tasks, _cdnConfiguration);
+            if (jobs.Count > 0)
+            {
+                _logger.Info($"CDN upload automation enqueued jobs={jobs.Count}");
+                _requestStatus.Text = $"已生成 {jobs.Count} 个 CDN 自动化任务";
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("CDN upload automation failed", exception);
+        }
     }
 
     private bool TryResolveSelectedCdnTarget(

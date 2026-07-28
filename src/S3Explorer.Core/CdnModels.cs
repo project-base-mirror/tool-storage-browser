@@ -69,6 +69,8 @@ public sealed record CdnBinding
     public string SourcePrefix { get; init; } = string.Empty;
     public Guid CdnProfileId { get; init; }
     public string CdnPathPrefix { get; init; } = string.Empty;
+    public CdnUploadAction NewObjectAction { get; init; } = CdnUploadAction.None;
+    public CdnUploadAction OverwriteAction { get; init; } = CdnUploadAction.None;
     public bool IsDefault { get; init; } = true;
     public bool Enabled { get; init; } = true;
 }
@@ -282,6 +284,18 @@ public static class CdnConfigurationValidator
             if (string.IsNullOrWhiteSpace(binding.Bucket)) errors.Add("CDN 关联必须指定 Bucket。");
             if (!profileIds.Contains(binding.CdnProfileId))
                 errors.Add($"Bucket“{binding.Bucket}”引用了不存在的 CDN 配置。");
+            if (binding.NewObjectAction is not (CdnUploadAction.None or CdnUploadAction.Warmup))
+                errors.Add($"Bucket“{binding.Bucket}”的新对象自动化动作无效。");
+            if (binding.OverwriteAction is not (
+                    CdnUploadAction.None or CdnUploadAction.Purge or CdnUploadAction.PurgeThenWarmup))
+                errors.Add($"Bucket“{binding.Bucket}”的覆盖对象自动化动作无效。");
+            var profile = configuration.Profiles.FirstOrDefault(value => value.Id == binding.CdnProfileId);
+            if (binding.OverwriteAction is CdnUploadAction.Purge or CdnUploadAction.PurgeThenWarmup &&
+                profile is not null &&
+                !profile.Capabilities.HasFlag(CdnCapabilities.Purge))
+            {
+                errors.Add($"Bucket“{binding.Bucket}”的覆盖自动化需要 CDN 配置“{profile.Name}”提供刷新端点。");
+            }
         }
 
         foreach (var duplicate in configuration.Bindings

@@ -158,6 +158,60 @@ public sealed class CdnDialogLayoutTests
     }
 
     [Fact]
+    public void BindingEditorLoadsAndSavesUploadAutomationAtLargeText()
+    {
+        RunSta(() =>
+        {
+            var storage = new ConnectionProfile
+            {
+                Name = "site-storage",
+                Endpoint = "https://s3.example.com"
+            };
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com",
+                PurgeEndpointTemplate = "https://api.example.com/purge?url={url}"
+            };
+            var binding = new CdnBinding
+            {
+                StorageProfileId = storage.Id,
+                Bucket = "site",
+                CdnProfileId = profile.Id,
+                NewObjectAction = CdnUploadAction.Warmup,
+                OverwriteAction = CdnUploadAction.PurgeThenWarmup
+            };
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            using var dialog = new CdnBindingEditorDialog(
+                binding,
+                [storage],
+                [profile],
+                storage,
+                "site");
+            dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
+            PerformLayout(dialog);
+
+            var newObject = Assert.IsType<ComboBox>(Assert.Single(
+                dialog.Controls.Find("CdnBindingNewObjectAction", searchAllChildren: true)));
+            var overwrite = Assert.IsType<ComboBox>(Assert.Single(
+                dialog.Controls.Find("CdnBindingOverwriteAction", searchAllChildren: true)));
+            Assert.Equal(1, newObject.SelectedIndex);
+            Assert.Equal(2, overwrite.SelectedIndex);
+            AssertButtonIsReadable(dialog, FindButton(dialog, "SaveCdnBindingButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CancelCdnBindingButton"));
+
+            newObject.SelectedIndex = 0;
+            overwrite.SelectedIndex = 1;
+            dialog.Show();
+            FindButton(dialog, "SaveCdnBindingButton").PerformClick();
+
+            Assert.Equal(CdnUploadAction.None, dialog.Binding.NewObjectAction);
+            Assert.Equal(CdnUploadAction.Purge, dialog.Binding.OverwriteAction);
+        });
+    }
+
+    [Fact]
     public void DownloadTestKeepsTestAndCloseActionsReadableAtLargeText()
     {
         RunSta(() =>

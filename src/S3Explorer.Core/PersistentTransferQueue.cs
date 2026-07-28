@@ -9,6 +9,9 @@ public interface ITransferTaskExecutionContext
         DownloadCheckpoint? downloadCheckpoint,
         MultipartUploadCheckpoint? multipartCheckpoint,
         CancellationToken cancellationToken = default);
+    Task UpdateDestinationSnapshotAsync(
+        bool destinationExistedBeforeTransfer,
+        CancellationToken cancellationToken = default);
 }
 
 public interface ITransferTaskExecutor
@@ -53,6 +56,12 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             CancellationToken cancellationToken = default) =>
             owner.UpdateCheckpointAsync(
                 taskId, transferredBytes, downloadCheckpoint, multipartCheckpoint, cancellationToken);
+
+        public Task UpdateDestinationSnapshotAsync(
+            bool destinationExistedBeforeTransfer,
+            CancellationToken cancellationToken = default) =>
+            owner.UpdateDestinationSnapshotAsync(
+                taskId, destinationExistedBeforeTransfer, cancellationToken);
     }
 
     private readonly ITransferTaskStore _store;
@@ -668,6 +677,31 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
                 TransferredBytes = bounded,
                 DownloadCheckpoint = downloadCheckpoint,
                 MultipartCheckpoint = multipartCheckpoint,
+                UpdatedAt = _clock()
+            });
+            await CommitLockedAsync(next, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+        Publish(taskId);
+    }
+
+    private async Task UpdateDestinationSnapshotAsync(
+        Guid taskId,
+        bool destinationExistedBeforeTransfer,
+        CancellationToken cancellationToken)
+    {
+        await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var task = FindTask(_snapshot, taskId);
+            if (task.State != TransferTaskState.Running || task.DestinationExistedBeforeTransfer is not null)
+                return;
+            var next = ReplaceTask(_snapshot, taskId, current => current with
+            {
+                DestinationExistedBeforeTransfer = destinationExistedBeforeTransfer,
                 UpdatedAt = _clock()
             });
             await CommitLockedAsync(next, cancellationToken).ConfigureAwait(false);

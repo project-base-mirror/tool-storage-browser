@@ -185,6 +185,23 @@ public sealed class PersistentTransferQueueTests
         Assert.All(queue.Snapshot.Tasks, task => Assert.Equal(TransferTaskState.Completed, task.State));
     }
 
+    [Fact]
+    public async Task ExecutorCanPersistDestinationSnapshotBeforeUploadCompletes()
+    {
+        var store = new MemoryStore();
+        var executor = new DestinationSnapshotExecutor();
+        await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+
+        await queue.EnqueueAsync(CreateTask());
+        await WaitUntilAsync(() => queue.ActiveCount == 0);
+
+        var task = Assert.Single(store.Snapshot.Tasks);
+        Assert.Equal(TransferTaskState.Completed, task.State);
+        Assert.True(task.DestinationExistedBeforeTransfer);
+        Assert.True(executor.ObservedPersistedSnapshot);
+    }
+
     private static TransferTaskRecord CreateTask(TransferTaskState state = TransferTaskState.Queued) => new()
     {
         Id = Guid.NewGuid(),
@@ -257,6 +274,20 @@ public sealed class PersistentTransferQueueTests
                 throw new IOException("simulated failure");
             context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class DestinationSnapshotExecutor : ITransferTaskExecutor
+    {
+        public bool ObservedPersistedSnapshot { get; private set; }
+
+        public async Task ExecuteAsync(
+            ITransferTaskExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await context.UpdateDestinationSnapshotAsync(true, cancellationToken);
+            ObservedPersistedSnapshot = context.Task.DestinationExistedBeforeTransfer == true;
+            context.ReportProgress(new TransferProgress(context.Task.TotalBytes, context.Task.TotalBytes));
         }
     }
 

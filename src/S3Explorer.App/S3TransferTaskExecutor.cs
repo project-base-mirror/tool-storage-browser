@@ -5,7 +5,9 @@ namespace S3Explorer.App;
 internal sealed class S3TransferTaskExecutor(
     IProfileStore profiles,
     IS3StorageService storage,
-    TransferRuntimeConfiguration runtime) : ITransferTaskExecutor
+    TransferRuntimeConfiguration runtime,
+    ICdnConfigurationStore cdnConfigurationStore,
+    SimpleFileLogger logger) : ITransferTaskExecutor
 {
     public async Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken)
     {
@@ -19,6 +21,8 @@ internal sealed class S3TransferTaskExecutor(
             case TransferDirection.Upload:
                 if (!File.Exists(task.LocalPath))
                     throw new FileNotFoundException("上传源文件不存在。", task.LocalPath);
+                await CaptureDestinationSnapshotAsync(context, profile, cancellationToken)
+                    .ConfigureAwait(false);
                 await storage.UploadFileAsync(
                     profile, task.Bucket, task.ObjectKey, task.LocalPath, task.StorageClass, transfer, cancellationToken)
                     .ConfigureAwait(false);
@@ -62,6 +66,38 @@ internal sealed class S3TransferTaskExecutor(
 
             default:
                 throw new InvalidOperationException($"不支持的传输方向：{task.Direction}");
+        }
+    }
+
+    private async Task CaptureDestinationSnapshotAsync(
+        ITransferTaskExecutionContext context,
+        ConnectionProfile profile,
+        CancellationToken cancellationToken)
+    {
+        var task = context.Task;
+        if (task.DestinationExistedBeforeTransfer is not null)
+            return;
+
+        try
+        {
+            var configuration = await cdnConfigurationStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+            if (!CdnUploadAutomationCoordinator.RequiresDestinationSnapshot(
+                    configuration, task.ProfileId, task.Bucket, task.ObjectKey))
+                return;
+
+            var existed = await storage.ObjectExistsAsync(
+                profile, task.Bucket, task.ObjectKey, cancellationToken).ConfigureAwait(false);
+            await context.UpdateDestinationSnapshotAsync(existed, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.Error(
+                $"CDN upload destination snapshot failed profile={profile.Name} bucket={task.Bucket} key={task.ObjectKey}",
+                exception);
         }
     }
 

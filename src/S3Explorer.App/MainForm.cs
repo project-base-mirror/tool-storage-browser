@@ -127,6 +127,7 @@ internal sealed partial class MainForm : Form
         _cdnCredentialStore = cdnCredentialStore;
         _cdnDeliveryService = cdnDeliveryService;
         _cdnJobQueue = cdnJobQueue;
+        _cdnUploadAutomation = new CdnUploadAutomationCoordinator(cdnJobQueue);
         _cdnCertificateInspector = cdnCertificateInspector;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
@@ -616,6 +617,8 @@ internal sealed partial class MainForm : Form
         };
         _transfers.TransferCompleted += async (_, args) =>
         {
+            if (!_closing)
+                await ProcessCompletedCdnUploadsAsync([args.Task]);
             if (!_closing &&
                 _currentProfile?.Id == args.Task.ProfileId &&
                 (string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal) ||
@@ -645,6 +648,7 @@ internal sealed partial class MainForm : Form
         await LoadCdnStateAsync();
         await _cdnJobQueue.InitializeAsync();
         await _transfers.InitializeAsync();
+        await ProcessCompletedCdnUploadsAsync(_transferQueue.Snapshot.Tasks);
         await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         _speedTimer.Start();
         UpdateCommandStates();

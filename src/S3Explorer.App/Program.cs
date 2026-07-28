@@ -52,7 +52,12 @@ internal static class Program
             using var updateChecker = new GitHubUpdateChecker(
                 cachePath: options.Enabled ? Path.Combine(dataRoot, "update-cache.json") : null);
             var transferRuntime = new TransferRuntimeConfiguration();
-            var transferExecutor = new S3TransferTaskExecutor(profileStore, storageService, transferRuntime);
+            var transferExecutor = new S3TransferTaskExecutor(
+                profileStore,
+                storageService,
+                transferRuntime,
+                cdnConfigurationStore,
+                logger);
             var transferQueue = new PersistentTransferQueue(transferStore, transferExecutor);
 
             Application.ThreadException += (_, eventArgs) =>

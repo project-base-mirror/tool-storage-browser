@@ -160,6 +160,7 @@ public sealed record TransferTaskRecord
     public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? StartedAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
+    public bool? DestinationExistedBeforeTransfer { get; init; }
     public TransferFailureInfo? Failure { get; init; }
     public DownloadCheckpoint? DownloadCheckpoint { get; init; }
     public MultipartUploadCheckpoint? MultipartCheckpoint { get; init; }

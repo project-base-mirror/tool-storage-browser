@@ -301,6 +301,8 @@ internal sealed class CdnConfigurationDialog : Form
         _bindingGrid.Columns.Add("source", "源前缀");
         _bindingGrid.Columns.Add("cdn", "CDN");
         _bindingGrid.Columns.Add("target", "CDN 路径前缀");
+        _bindingGrid.Columns.Add("newObject", "新对象");
+        _bindingGrid.Columns.Add("overwrite", "覆盖对象");
         _bindingGrid.Columns.Add("default", "默认");
         foreach (var binding in _bindings
             .OrderBy(value => StorageName(value.StorageProfileId), StringComparer.OrdinalIgnoreCase)
@@ -313,11 +315,22 @@ internal sealed class CdnConfigurationDialog : Form
                 CdnUrlMapper.NormalizePrefix(binding.SourcePrefix),
                 _profiles.FirstOrDefault(value => value.Id == binding.CdnProfileId)?.Name ?? "缺失",
                 CdnUrlMapper.NormalizePrefix(binding.CdnPathPrefix),
+                UploadActionText(binding.NewObjectAction),
+                UploadActionText(binding.OverwriteAction),
                 binding.IsDefault ? "是" : "否");
             _bindingGrid.Rows[index].Tag = binding.Id;
         }
         SelectFirst(_bindingGrid);
     }
+
+    private static string UploadActionText(CdnUploadAction action) => action switch
+    {
+        CdnUploadAction.None => "不处理",
+        CdnUploadAction.Warmup => "预热",
+        CdnUploadAction.Purge => "刷新",
+        CdnUploadAction.PurgeThenWarmup => "刷新后预热",
+        _ => "未知"
+    };
 
     private void AddProfile()
     {
@@ -1080,6 +1093,16 @@ internal sealed class CdnBindingEditorDialog : Form
         DropDownStyle = ComboBoxStyle.DropDownList
     };
     private readonly TextBox _targetPrefix = new() { Name = "CdnBindingTargetPrefix" };
+    private readonly ComboBox _newObjectAction = new()
+    {
+        Name = "CdnBindingNewObjectAction",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
+    private readonly ComboBox _overwriteAction = new()
+    {
+        Name = "CdnBindingOverwriteAction",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
     private readonly CheckBox _default = new()
     {
         Name = "CdnBindingDefault",
@@ -1121,6 +1144,15 @@ internal sealed class CdnBindingEditorDialog : Form
             _storage.Items.Add(new Choice<Guid>(profile.Id, profile.Name));
         foreach (var profile in cdnProfiles.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
             _cdn.Items.Add(new Choice<Guid>(profile.Id, profile.Name));
+        _newObjectAction.Items.AddRange([
+            new Choice<CdnUploadAction>(CdnUploadAction.None, "不自动处理"),
+            new Choice<CdnUploadAction>(CdnUploadAction.Warmup, "HTTP 预热")
+        ]);
+        _overwriteAction.Items.AddRange([
+            new Choice<CdnUploadAction>(CdnUploadAction.None, "不自动处理"),
+            new Choice<CdnUploadAction>(CdnUploadAction.Purge, "刷新缓存"),
+            new Choice<CdnUploadAction>(CdnUploadAction.PurgeThenWarmup, "刷新后预热")
+        ]);
 
         var fields = EditorLayout.Fields();
         EditorLayout.AddField(fields, "对象存储连接：", _storage);
@@ -1128,11 +1160,13 @@ internal sealed class CdnBindingEditorDialog : Form
         EditorLayout.AddField(fields, "对象 Key 源前缀：", _sourcePrefix);
         EditorLayout.AddField(fields, "CDN 配置：", _cdn);
         EditorLayout.AddField(fields, "CDN 路径前缀：", _targetPrefix);
+        EditorLayout.AddField(fields, "上传新对象后：", _newObjectAction);
+        EditorLayout.AddField(fields, "覆盖对象后：", _overwriteAction);
         EditorLayout.AddWide(fields, _default);
         EditorLayout.AddWide(fields, _enabled);
         EditorLayout.AddWide(fields, new Label
         {
-            Text = "解析时只使用最长的匹配源前缀；同一范围可关联多个 CDN，但只能有一个默认项。前缀会自动规范为以“/”结尾。",
+            Text = "解析时只使用最长的匹配源前缀；同一范围可关联多个 CDN，但只能有一个默认项。自动化默认关闭；覆盖刷新需要 CDN 配置提供刷新端点。",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             MaximumSize = new Size(550, 0)
@@ -1148,6 +1182,8 @@ internal sealed class CdnBindingEditorDialog : Form
         _sourcePrefix.Text = binding?.SourcePrefix ?? string.Empty;
         SelectValue(_cdn, binding?.CdnProfileId ?? cdnProfiles.FirstOrDefault()?.Id ?? Guid.Empty);
         _targetPrefix.Text = binding?.CdnPathPrefix ?? string.Empty;
+        SelectAction(_newObjectAction, binding?.NewObjectAction ?? CdnUploadAction.None);
+        SelectAction(_overwriteAction, binding?.OverwriteAction ?? CdnUploadAction.None);
         _default.Checked = binding?.IsDefault ?? true;
         _enabled.Checked = binding?.Enabled ?? true;
     }
@@ -1174,6 +1210,8 @@ internal sealed class CdnBindingEditorDialog : Form
             SourcePrefix = CdnUrlMapper.NormalizePrefix(_sourcePrefix.Text),
             CdnProfileId = cdnId,
             CdnPathPrefix = CdnUrlMapper.NormalizePrefix(_targetPrefix.Text),
+            NewObjectAction = SelectedAction(_newObjectAction),
+            OverwriteAction = SelectedAction(_overwriteAction),
             IsDefault = _default.Checked,
             Enabled = _enabled.Checked
         };
@@ -1184,11 +1222,27 @@ internal sealed class CdnBindingEditorDialog : Form
     private static Guid Selected(ComboBox combo) =>
         combo.SelectedItem is Choice<Guid> choice ? choice.Value : Guid.Empty;
 
+    private static CdnUploadAction SelectedAction(ComboBox combo) =>
+        combo.SelectedItem is Choice<CdnUploadAction> choice ? choice.Value : CdnUploadAction.None;
+
     private static void SelectValue(ComboBox combo, Guid value)
     {
         for (var index = 0; index < combo.Items.Count; index++)
         {
             if (combo.Items[index] is Choice<Guid> choice && choice.Value == value)
+            {
+                combo.SelectedIndex = index;
+                return;
+            }
+        }
+        combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
+    }
+
+    private static void SelectAction(ComboBox combo, CdnUploadAction value)
+    {
+        for (var index = 0; index < combo.Items.Count; index++)
+        {
+            if (combo.Items[index] is Choice<CdnUploadAction> choice && choice.Value == value)
             {
                 combo.SelectedIndex = index;
                 return;
