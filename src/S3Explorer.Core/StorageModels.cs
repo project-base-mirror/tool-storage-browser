@@ -30,7 +30,8 @@ public sealed record ConnectionTestResult(
     string Message,
     int? HttpStatusCode = null,
     string? ErrorCode = null,
-    string? RequestId = null);
+    string? RequestId = null,
+    string? CredentialSource = null);
 
 public sealed record ObjectProperties(
     string Bucket,

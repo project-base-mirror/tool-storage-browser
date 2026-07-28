@@ -60,6 +60,46 @@ public sealed class ProfileStoreTests
         }
     }
 
+    [Fact]
+    public async Task ExternalCredentialSourcePersistsOnlyNonSensitiveReference()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "profiles.json");
+        var store = new JsonProfileStore(new FakeProtector(), path);
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Shared profile",
+            CredentialSource = CredentialSourceKind.AwsSharedProfile,
+            AwsProfileName = "production-readonly",
+            AccessKey = "must-not-persist-access",
+            SecretKey = "must-not-persist-secret",
+            SessionToken = "must-not-persist-session"
+        };
+
+        try
+        {
+            await store.SaveAsync([profile]);
+            var json = await File.ReadAllTextAsync(path);
+
+            Assert.Contains("awsSharedProfile", json, StringComparison.Ordinal);
+            Assert.Contains("production-readonly", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("must-not-persist", json, StringComparison.Ordinal);
+
+            var loaded = Assert.Single(await store.LoadAsync());
+            Assert.Equal(CredentialSourceKind.AwsSharedProfile, loaded.CredentialSource);
+            Assert.Equal("production-readonly", loaded.AwsProfileName);
+            Assert.Empty(loaded.AccessKey);
+            Assert.Empty(loaded.SecretKey);
+            Assert.Empty(loaded.SessionToken);
+            loaded.Validate();
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private sealed class FakeProtector : ICredentialProtector
     {
         public string Protect(string plaintext) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plaintext));

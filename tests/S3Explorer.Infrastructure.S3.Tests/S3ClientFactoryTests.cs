@@ -142,4 +142,19 @@ public sealed class S3ClientFactoryTests
         Assert.False(snapshot.ForcePathStyle);
         Assert.False(snapshot.DisableHostPrefixInjection);
     }
+
+    [Fact]
+    public void SnapshotDescribesRequestedExternalCredentialSourceWithoutResolvingIt()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "AWS profile",
+            CredentialSource = CredentialSourceKind.AwsSharedProfile,
+            AwsProfileName = "readonly"
+        };
+
+        var snapshot = new S3ClientFactory().Describe(profile);
+
+        Assert.Equal("AWS shared profile：readonly", snapshot.CredentialSource);
+    }
 }

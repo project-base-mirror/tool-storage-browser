@@ -27,6 +27,16 @@ public enum ConnectionHealthStatus
     Failed
 }
 
+public enum CredentialSourceKind
+{
+    StoredKeys,
+    AwsSharedProfile,
+    AwsEnvironmentVariables,
+    AwsContainerRole,
+    AwsInstanceRole,
+    AwsDefaultChain
+}
+
 public sealed record ConnectionProfile
 {
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -38,10 +48,34 @@ public sealed record ConnectionProfile
     public string AccessKey { get; init; } = string.Empty;
     public string SecretKey { get; init; } = string.Empty;
     public string SessionToken { get; init; } = string.Empty;
-    public bool UsesTemporarySessionCredentials => !string.IsNullOrWhiteSpace(SessionToken);
+    public CredentialSourceKind CredentialSource { get; init; } = CredentialSourceKind.StoredKeys;
+    public string AwsProfileName { get; init; } = string.Empty;
+    public bool UsesTemporarySessionCredentials =>
+        CredentialSource == CredentialSourceKind.StoredKeys &&
+        !string.IsNullOrWhiteSpace(SessionToken);
     public bool HasStoredCredentials =>
+        CredentialSource == CredentialSourceKind.StoredKeys &&
         !string.IsNullOrWhiteSpace(AccessKey) &&
         !string.IsNullOrWhiteSpace(SecretKey);
+    public bool HasCredentialConfiguration => CredentialSource switch
+    {
+        CredentialSourceKind.StoredKeys => HasStoredCredentials,
+        CredentialSourceKind.AwsSharedProfile => !string.IsNullOrWhiteSpace(AwsProfileName),
+        _ => true
+    };
+    public bool UsesExternalAwsCredentials => CredentialSource != CredentialSourceKind.StoredKeys;
+    public string CredentialSourceDisplayName => CredentialSource switch
+    {
+        CredentialSourceKind.StoredKeys => UsesTemporarySessionCredentials
+            ? "已保存密钥（Session Token）"
+            : "已保存密钥",
+        CredentialSourceKind.AwsSharedProfile => $"AWS shared profile：{AwsProfileName.Trim()}",
+        CredentialSourceKind.AwsEnvironmentVariables => "AWS 环境变量",
+        CredentialSourceKind.AwsContainerRole => "AWS 容器角色",
+        CredentialSourceKind.AwsInstanceRole => "AWS EC2 实例角色",
+        CredentialSourceKind.AwsDefaultChain => "AWS 默认凭据链",
+        _ => CredentialSource.ToString()
+    };
     public AddressingStyle AddressingStyle { get; init; } = AddressingStyle.Auto;
     public bool UseHttps { get; init; } = true;
     public bool IgnoreCertificateErrors { get; init; }
@@ -87,10 +121,13 @@ public sealed record ConnectionProfile
     public void Validate()
     {
         ValidateConfiguration();
-        if (string.IsNullOrWhiteSpace(AccessKey))
-            throw new ArgumentException("Access Key 不能为空。", nameof(AccessKey));
-        if (string.IsNullOrWhiteSpace(SecretKey))
-            throw new ArgumentException("Secret Key 不能为空。", nameof(SecretKey));
+        if (CredentialSource == CredentialSourceKind.StoredKeys)
+        {
+            if (string.IsNullOrWhiteSpace(AccessKey))
+                throw new ArgumentException("Access Key 不能为空。", nameof(AccessKey));
+            if (string.IsNullOrWhiteSpace(SecretKey))
+                throw new ArgumentException("Secret Key 不能为空。", nameof(SecretKey));
+        }
     }
 
     public void ValidateConfiguration()
@@ -104,6 +141,18 @@ public sealed record ConnectionProfile
         EndpointCompatibility.ValidateForService(ServiceType, endpoint);
         if (string.IsNullOrWhiteSpace(EffectiveSignatureRegion))
             throw new ArgumentException("签名 Region 不能为空。", nameof(SignatureRegion));
+        if (CredentialSource != CredentialSourceKind.StoredKeys && ServiceType != S3ServiceType.AmazonS3)
+            throw new ArgumentException(
+                "AWS 外部凭据来源仅适用于 Amazon S3；S3-compatible 连接必须使用明确保存的密钥。",
+                nameof(CredentialSource));
+        if (CredentialSource == CredentialSourceKind.AwsSharedProfile)
+        {
+            var profileName = AwsProfileName?.Trim() ?? string.Empty;
+            if (profileName.Length == 0)
+                throw new ArgumentException("选择 AWS shared profile 时必须填写 Profile 名称。", nameof(AwsProfileName));
+            if (profileName.Any(char.IsControl))
+                throw new ArgumentException("AWS Profile 名称不能包含控制字符。", nameof(AwsProfileName));
+        }
         if (RequestTimeoutSeconds is < 5 or > 3600)
             throw new ArgumentOutOfRangeException(nameof(RequestTimeoutSeconds), "请求超时必须在 5 到 3600 秒之间。");
         if (ConnectionTimeoutSeconds is < 1 or > 120)

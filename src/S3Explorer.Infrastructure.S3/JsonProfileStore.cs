@@ -45,7 +45,7 @@ public sealed class JsonProfileStore : IProfileStore
 
         var document = new ProfileDocument
         {
-            Version = 2,
+            Version = 3,
             Profiles = profiles.Select(profile => PersistedProfile.FromRuntime(profile, _protector)).ToList()
         };
 
@@ -76,6 +76,8 @@ public sealed class JsonProfileStore : IProfileStore
         public string AccessKey { get; set; } = string.Empty;
         public string ProtectedSecretKey { get; set; } = string.Empty;
         public string ProtectedSessionToken { get; set; } = string.Empty;
+        public CredentialSourceKind CredentialSource { get; set; } = CredentialSourceKind.StoredKeys;
+        public string AwsProfileName { get; set; } = string.Empty;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
@@ -100,9 +102,17 @@ public sealed class JsonProfileStore : IProfileStore
             Endpoint = source.Endpoint,
             Region = source.Region,
             SignatureRegion = source.SignatureRegion,
-            AccessKey = source.AccessKey,
-            ProtectedSecretKey = protector.Protect(source.SecretKey),
-            ProtectedSessionToken = protector.Protect(source.SessionToken),
+            AccessKey = source.CredentialSource == CredentialSourceKind.StoredKeys ? source.AccessKey : string.Empty,
+            ProtectedSecretKey = source.CredentialSource == CredentialSourceKind.StoredKeys
+                ? protector.Protect(source.SecretKey)
+                : string.Empty,
+            ProtectedSessionToken = source.CredentialSource == CredentialSourceKind.StoredKeys
+                ? protector.Protect(source.SessionToken)
+                : string.Empty,
+            CredentialSource = source.CredentialSource,
+            AwsProfileName = source.CredentialSource == CredentialSourceKind.AwsSharedProfile
+                ? source.AwsProfileName.Trim()
+                : string.Empty,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
             IgnoreCertificateErrors = source.IgnoreCertificateErrors,
@@ -131,6 +141,8 @@ public sealed class JsonProfileStore : IProfileStore
             AccessKey = AccessKey,
             SecretKey = protector.Unprotect(ProtectedSecretKey),
             SessionToken = protector.Unprotect(ProtectedSessionToken),
+            CredentialSource = CredentialSource,
+            AwsProfileName = AwsProfileName,
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,

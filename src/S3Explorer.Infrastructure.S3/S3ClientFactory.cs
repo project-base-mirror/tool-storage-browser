@@ -15,20 +15,29 @@ public sealed record S3ClientOptionsSnapshot(
     bool DisableHostPrefixInjection,
     bool AllowAutoRedirect,
     bool IgnoreCertificateErrors,
-    string CustomHostHeader);
+    string CustomHostHeader,
+    string CredentialSource);
+
+public sealed record S3ClientCreation(
+    IAmazonS3 Client,
+    AwsCredentialResolution CredentialResolution);
 
 public sealed class S3ClientFactory
 {
+    private readonly AwsCredentialResolver _credentialResolver;
+
+    public S3ClientFactory(AwsCredentialResolver? credentialResolver = null) =>
+        _credentialResolver = credentialResolver ?? new AwsCredentialResolver();
+
     public IAmazonS3 Create(ConnectionProfile profile)
+        => CreateResolved(profile).Client;
+
+    public S3ClientCreation CreateResolved(ConnectionProfile profile)
     {
         profile.Validate();
         var config = CreateConfig(profile);
-
-        AWSCredentials credentials = profile.UsesTemporarySessionCredentials
-            ? new SessionAWSCredentials(profile.AccessKey, profile.SecretKey, profile.SessionToken)
-            : new BasicAWSCredentials(profile.AccessKey, profile.SecretKey);
-
-        var client = new AmazonS3Client(credentials, config);
+        var resolution = _credentialResolver.Resolve(profile);
+        var client = new AmazonS3Client(resolution.Credentials, config);
         if (!string.IsNullOrWhiteSpace(profile.CustomHostHeader))
         {
             var customHost = profile.CustomHostHeader.Trim();
@@ -39,7 +48,7 @@ public sealed class S3ClientFactory
             };
         }
 
-        return client;
+        return new(client, resolution);
     }
 
     public AmazonS3Config CreateConfig(ConnectionProfile profile)
@@ -85,7 +94,8 @@ public sealed class S3ClientFactory
             config.DisableHostPrefixInjection,
             config.AllowAutoRedirect,
             profile.IgnoreCertificateErrors,
-            profile.CustomHostHeader.Trim());
+            profile.CustomHostHeader.Trim(),
+            profile.CredentialSourceDisplayName);
     }
 
     private sealed class CompatibilityHttpClientFactory : HttpClientFactory

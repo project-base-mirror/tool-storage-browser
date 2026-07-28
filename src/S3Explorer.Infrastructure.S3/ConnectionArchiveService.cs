@@ -32,7 +32,8 @@ public sealed class ConnectionArchiveService
     public const int PasswordMinimumLength = 8;
 
     private const string FormatName = "s3explorer-connections";
-    private const int FormatVersion = 1;
+    private const int FormatVersion = 2;
+    private const int MinimumSupportedFormatVersion = 1;
     private const int SaltSize = 16;
     private const int NonceSize = 12;
     private const int TagSize = 16;
@@ -240,7 +241,7 @@ public sealed class ConnectionArchiveService
     {
         if (!string.Equals(envelope.Format, FormatName, StringComparison.Ordinal))
             throw new InvalidDataException("文件不是 S3 Explorer 连接包。");
-        if (envelope.Version != FormatVersion)
+        if (envelope.Version is < MinimumSupportedFormatVersion or > FormatVersion)
             throw new InvalidDataException($"不支持连接包版本 {envelope.Version}。");
         if (envelope.ProfileCount is <= 0 or > MaximumProfileCount)
             throw new InvalidDataException("连接包中的连接数量无效。");
@@ -361,6 +362,8 @@ public sealed class ConnectionArchiveService
         public string? AccessKey { get; set; }
         public string? SecretKey { get; set; }
         public string? SessionToken { get; set; }
+        public CredentialSourceKind CredentialSource { get; set; } = CredentialSourceKind.StoredKeys;
+        public string AwsProfileName { get; set; } = string.Empty;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
@@ -382,9 +385,19 @@ public sealed class ConnectionArchiveService
             Endpoint = source.Endpoint,
             Region = source.Region,
             SignatureRegion = source.SignatureRegion,
-            AccessKey = includeCredentials ? source.AccessKey : null,
-            SecretKey = includeCredentials ? source.SecretKey : null,
-            SessionToken = includeCredentials && source.SessionToken.Length > 0 ? source.SessionToken : null,
+            AccessKey = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys
+                ? source.AccessKey
+                : null,
+            SecretKey = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys
+                ? source.SecretKey
+                : null,
+            SessionToken = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys && source.SessionToken.Length > 0
+                ? source.SessionToken
+                : null,
+            CredentialSource = source.CredentialSource,
+            AwsProfileName = source.CredentialSource == CredentialSourceKind.AwsSharedProfile
+                ? source.AwsProfileName.Trim()
+                : string.Empty,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
             IgnoreCertificateErrors = source.IgnoreCertificateErrors,
@@ -410,6 +423,8 @@ public sealed class ConnectionArchiveService
             AccessKey = AccessKey ?? string.Empty,
             SecretKey = SecretKey ?? string.Empty,
             SessionToken = SessionToken ?? string.Empty,
+            CredentialSource = CredentialSource,
+            AwsProfileName = AwsProfileName,
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,

@@ -112,6 +112,32 @@ public sealed class ConnectionArchiveServiceTests
             _service.Import(tampered, "portable-password"));
     }
 
+    [Fact]
+    public void ExternalCredentialExportKeepsSourceReferenceButNeverCopiesSecrets()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "AWS shared",
+            CredentialSource = CredentialSourceKind.AwsSharedProfile,
+            AwsProfileName = "audit",
+            AccessKey = "stale-access",
+            SecretKey = "stale-secret",
+            SessionToken = "stale-session"
+        };
+
+        var archive = _service.Export([profile]);
+        var text = Encoding.UTF8.GetString(archive);
+        var imported = Assert.Single(_service.Import(archive).Profiles);
+
+        Assert.Contains("\"version\": 2", text, StringComparison.Ordinal);
+        Assert.Contains("audit", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("stale-", text, StringComparison.Ordinal);
+        Assert.Equal(CredentialSourceKind.AwsSharedProfile, imported.CredentialSource);
+        Assert.Equal("audit", imported.AwsProfileName);
+        Assert.Empty(imported.AccessKey);
+        imported.Validate();
+    }
+
     private static ConnectionProfile CreateProfile() => new()
     {
         Name = "Portable",

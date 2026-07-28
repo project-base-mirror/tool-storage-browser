@@ -162,6 +162,51 @@ public sealed class CoreBehaviorTests
         Assert.True(temporary.UsesTemporarySessionCredentials);
     }
 
+    [Fact]
+    public void ExternalAwsCredentialSourceDoesNotUseBlankKeysAsImplicitState()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "AWS environment",
+            CredentialSource = CredentialSourceKind.AwsEnvironmentVariables
+        };
+
+        profile.Validate();
+
+        Assert.True(profile.HasCredentialConfiguration);
+        Assert.True(profile.UsesExternalAwsCredentials);
+        Assert.False(profile.HasStoredCredentials);
+        Assert.Equal("AWS 环境变量", profile.CredentialSourceDisplayName);
+    }
+
+    [Fact]
+    public void SharedProfileRequiresAnExplicitProfileName()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "AWS profile",
+            CredentialSource = CredentialSourceKind.AwsSharedProfile
+        };
+
+        var exception = Assert.Throws<ArgumentException>(() => profile.Validate());
+
+        Assert.Contains("Profile 名称", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void S3CompatibleConnectionCannotReadAwsExternalCredentialChain()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
+        {
+            Name = "MinIO",
+            CredentialSource = CredentialSourceKind.AwsDefaultChain
+        };
+
+        var exception = Assert.Throws<ArgumentException>(() => profile.Validate());
+
+        Assert.Contains("S3-compatible", exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("bad host/path")]
     [InlineData("bad host")]

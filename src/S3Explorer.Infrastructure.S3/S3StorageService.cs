@@ -19,10 +19,13 @@ public sealed class S3StorageService : IS3StorageService
     public async Task<ConnectionTestResult> TestConnectionAsync(ConnectionProfile profile, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var credentialSource = profile.CredentialSourceDisplayName;
         using var connectionTimeout = CreateConnectionTimeout(profile, cancellationToken);
         try
         {
-            using var client = _factory.Create(profile);
+            var creation = _factory.CreateResolved(profile);
+            credentialSource = creation.CredentialResolution.DisplayName;
+            using var client = creation.Client;
             var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
             stopwatch.Stop();
             var bucketCount = response.Buckets
@@ -31,7 +34,8 @@ public sealed class S3StorageService : IS3StorageService
                 .Distinct(StringComparer.Ordinal)
                 .Count();
             return new(true, stopwatch.Elapsed, bucketCount,
-                $"连接成功，发现或配置了 {bucketCount} 个 Bucket。");
+                $"连接成功，发现或配置了 {bucketCount} 个 Bucket。",
+                CredentialSource: creation.CredentialResolution.DisplayName);
         }
         catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex))
         {
@@ -40,12 +44,14 @@ public sealed class S3StorageService : IS3StorageService
             var message = configuredCount > 0
                 ? $"已到达 S3 服务；当前凭据无权列出全部 Bucket，将使用已配置的 {configuredCount} 个 Bucket。"
                 : "已到达 S3 服务，但当前凭据无权列出全部 Bucket。请配置默认 Bucket 或外部 Bucket。";
-            return new(true, stopwatch.Elapsed, configuredCount, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId);
+            return new(true, stopwatch.Elapsed, configuredCount, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
+                credentialSource);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && connectionTimeout.IsCancellationRequested)
         {
             stopwatch.Stop();
-            return new(false, stopwatch.Elapsed, 0, $"连接超时（{profile.ConnectionTimeoutSeconds} 秒）。", null, "ConnectionTimeout");
+            return new(false, stopwatch.Elapsed, 0, $"连接超时（{profile.ConnectionTimeoutSeconds} 秒）。", null, "ConnectionTimeout",
+                CredentialSource: credentialSource);
         }
         catch (AmazonS3Exception ex)
         {
@@ -54,12 +60,13 @@ public sealed class S3StorageService : IS3StorageService
             var message = reachedServer
                 ? $"请求已到达服务器，但操作失败：{ex.ErrorCode} - {ex.Message}"
                 : ex.Message;
-            return new(false, stopwatch.Elapsed, 0, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId);
+            return new(false, stopwatch.Elapsed, 0, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
+                credentialSource);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             stopwatch.Stop();
-            return new(false, stopwatch.Elapsed, 0, ex.Message);
+            return new(false, stopwatch.Elapsed, 0, ex.Message, CredentialSource: credentialSource);
         }
     }
 
