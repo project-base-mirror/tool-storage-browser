@@ -111,6 +111,7 @@ internal sealed partial class MainForm : Form
         ICdnConfigurationStore cdnConfigurationStore,
         ICdnCredentialStore cdnCredentialStore,
         ICdnDeliveryService cdnDeliveryService,
+        PersistentCdnJobQueue cdnJobQueue,
         ICdnCertificateInspector cdnCertificateInspector,
         AutomationSession? automation = null)
     {
@@ -125,6 +126,7 @@ internal sealed partial class MainForm : Form
         _cdnConfigurationStore = cdnConfigurationStore;
         _cdnCredentialStore = cdnCredentialStore;
         _cdnDeliveryService = cdnDeliveryService;
+        _cdnJobQueue = cdnJobQueue;
         _cdnCertificateInspector = cdnCertificateInspector;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
@@ -641,6 +643,7 @@ internal sealed partial class MainForm : Form
         _profiles = await _profileStore.LoadAsync();
         PopulateProfiles();
         await LoadCdnStateAsync();
+        await _cdnJobQueue.InitializeAsync();
         await _transfers.InitializeAsync();
         await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         _speedTimer.Start();
@@ -2657,7 +2660,6 @@ internal sealed partial class MainForm : Form
         try
         {
             CancelNavigation();
-            CancelCdnOperation();
             _updateCancellation.Cancel();
             _speedTimer.Stop();
             _requestStatus.Text = closeAction switch
@@ -2683,6 +2685,7 @@ internal sealed partial class MainForm : Form
             }
 
             await SaveSettingsAsync();
+            await _cdnJobQueue.DisposeAsync();
             await _transferQueue.DisposeAsync();
             _closing = true;
             BeginInvoke(Close);
