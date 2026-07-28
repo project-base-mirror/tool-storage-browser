@@ -20,7 +20,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象和同步任务 API，支持 JSON 输出与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
-- 单个或全部连接导入导出：连同相关 CDN Profile、Bucket/前缀关联一起迁移；默认无秘密值，可选密码加密 S3 与 CDN 凭据；导入前支持预览、逐项选择和同名处理。
+- 单个或全部连接导入导出：连同相关 CDN Profile、Bucket/前缀关联一起迁移；对象存储/CDN 分页选择，两类凭据分别确认；等价配置复用且重复导入不生成副本。
 - 连接复制、健康状态、最近检查与最近成功时间。
 - 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、HTTP 预热与通用刷新端点。
 - 上传后 CDN 自动化：关联可分别设置新对象预热、覆盖后刷新或刷新后预热；任务独立重试、取消并在重启后恢复，不改变上传成功状态。
@@ -138,8 +138,8 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.5.8-win-x64.zip
-    artifacts/release/S3Explorer-v0.5.8-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.9-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.9-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
