@@ -1,6 +1,10 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
@@ -136,6 +140,66 @@ public sealed class CdnInfrastructureTests
         Assert.Equal(5000, result.ContentLength);
         Assert.Contains("HIT", result.CacheStatus, StringComparison.Ordinal);
         Assert.Equal("bytes=0-1023", captured?.Range);
+    }
+
+    [Fact]
+    public async Task CertificateInspectorReadsValidityFromRealTlsHandshake()
+    {
+        var checkedAt = DateTimeOffset.UtcNow;
+        using var certificate = CreateServerCertificate(
+            checkedAt.AddDays(-1),
+            checkedAt.AddDays(45));
+        var result = await InspectLoopbackCertificateAsync(certificate, checkedAt);
+
+        Assert.Equal("localhost", result.Endpoint.Host);
+        Assert.InRange(result.DaysRemaining, 44, 45);
+        Assert.False(result.Problems.HasFlag(CdnCertificateProblems.Expired));
+        Assert.False(result.Problems.HasFlag(CdnCertificateProblems.NotYetValid));
+        Assert.False(result.Problems.HasFlag(CdnCertificateProblems.NameMismatch));
+        Assert.True(result.Problems.HasFlag(CdnCertificateProblems.UntrustedChain));
+        Assert.Contains("CN=localhost", result.Subject, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(64, result.Sha256Fingerprint.Length);
+        Assert.NotEmpty(result.TlsProtocol);
+    }
+
+    [Fact]
+    public async Task CertificateInspectorReportsExpiredCertificate()
+    {
+        var checkedAt = DateTimeOffset.UtcNow;
+        using var certificate = CreateServerCertificate(
+            checkedAt.AddDays(-10),
+            checkedAt.AddDays(-2));
+        var result = await InspectLoopbackCertificateAsync(certificate, checkedAt);
+
+        Assert.True(result.Problems.HasFlag(CdnCertificateProblems.Expired));
+        Assert.Contains("已过期", result.StatusText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CertificateInspectorReportsNameMismatch()
+    {
+        var checkedAt = DateTimeOffset.UtcNow;
+        using var certificate = CreateServerCertificate(
+            checkedAt.AddDays(-1),
+            checkedAt.AddDays(45));
+        var result = await InspectLoopbackCertificateAsync(
+            certificate,
+            checkedAt,
+            host: "127.0.0.1");
+
+        Assert.True(result.Problems.HasFlag(CdnCertificateProblems.NameMismatch));
+        Assert.Contains("域名不匹配", result.StatusText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CertificateInspectorRejectsNonHttpsProfileWithoutConnecting()
+    {
+        var profile = Profile() with { BaseUrl = "http://cdn.example" };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new TlsCdnCertificateInspector().InspectAsync(profile, CancellationToken.None));
+
+        Assert.Contains("https://", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -285,6 +349,55 @@ public sealed class CdnInfrastructureTests
         Name = "site",
         BaseUrl = "https://cdn.example"
     };
+
+    private static X509Certificate2 CreateServerCertificate(
+        DateTimeOffset notBefore,
+        DateTimeOffset notAfter)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=localhost",
+            key,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        var names = new SubjectAlternativeNameBuilder();
+        names.AddDnsName("localhost");
+        request.CertificateExtensions.Add(names.Build());
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        using var generated = request.CreateSelfSigned(notBefore, notAfter);
+        return X509CertificateLoader.LoadPkcs12(
+            generated.Export(X509ContentType.Pfx),
+            password: null);
+    }
+
+    private static async Task<CdnCertificateCheckResult> InspectLoopbackCertificateAsync(
+        X509Certificate2 certificate,
+        DateTimeOffset checkedAt,
+        string host = "localhost")
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var server = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync(timeout.Token);
+            await using var tls = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
+            await tls.AuthenticateAsServerAsync(
+                new SslServerAuthenticationOptions
+                {
+                    ServerCertificate = certificate,
+                    EnabledSslProtocols = SslProtocols.None
+                },
+                timeout.Token);
+        }, timeout.Token);
+
+        var profile = Profile() with { BaseUrl = $"https://{host}:{port}" };
+        var result = await new TlsCdnCertificateInspector(() => checkedAt)
+            .InspectAsync(profile, timeout.Token);
+        await server.WaitAsync(timeout.Token);
+        return result;
+    }
 
     private static string TemporaryFile(string name)
     {

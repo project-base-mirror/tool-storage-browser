@@ -158,6 +158,34 @@ public sealed class CdnModelTests
         Assert.Contains(errors, value => value.Contains("备注", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(CdnCertificateProblems.None, 60, "正常")]
+    [InlineData(CdnCertificateProblems.None, 7, "即将到期")]
+    [InlineData(CdnCertificateProblems.Expired, -3, "已过期")]
+    [InlineData(CdnCertificateProblems.NameMismatch, 60, "域名不匹配")]
+    [InlineData(CdnCertificateProblems.UntrustedChain, 60, "证书链不受信任")]
+    public void CertificateResultSummarizesValidity(
+        CdnCertificateProblems problems,
+        int daysRemaining,
+        string expectedStatus)
+    {
+        var checkedAt = new DateTimeOffset(2026, 7, 28, 8, 0, 0, TimeSpan.Zero);
+        var result = new CdnCertificateCheckResult(
+            new Uri("https://cdn.example"),
+            checkedAt,
+            checkedAt.AddDays(-30),
+            checkedAt.AddDays(daysRemaining),
+            "CN=cdn.example",
+            "CN=issuer",
+            "ABC123",
+            "Tls13",
+            problems,
+            []);
+
+        Assert.Equal(daysRemaining, result.DaysRemaining);
+        Assert.Contains(expectedStatus, result.StatusText, StringComparison.Ordinal);
+    }
+
     private static CdnProfile Profile(string name, string url) => new()
     {
         Name = name,

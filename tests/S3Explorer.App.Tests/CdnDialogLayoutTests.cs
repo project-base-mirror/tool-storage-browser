@@ -43,7 +43,8 @@ public sealed class CdnDialogLayoutTests
                 new CdnConfiguration([profile], [binding]),
                 [credential],
                 storage,
-                "site");
+                "site",
+                new StubCertificateInspector());
             dialog.Font = largerFont;
             dialog.Size = dialog.MinimumSize;
             PerformLayout(dialog);
@@ -52,11 +53,80 @@ public sealed class CdnDialogLayoutTests
                 Assert.Single(dialog.Controls.Find("CdnConfigurationTabs", searchAllChildren: true)));
             Assert.Equal(3, tabs.TabPages.Count);
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnProfileButton"));
+            var certificate = FindButton(dialog, "CheckCdnCertificateButton");
+            AssertButtonIsReadable(dialog, certificate);
+            Assert.True(certificate.Enabled);
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnCredentialButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnBindingButton"));
             var save = FindButton(dialog, "SaveCdnConfigurationButton");
             AssertButtonIsReadable(dialog, save);
             Assert.Same(save, dialog.AcceptButton);
+        });
+    }
+
+    [Fact]
+    public void CertificateResultKeepsDetailsAndActionsReadableAtLargeText()
+    {
+        RunSta(() =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var result = new CdnCertificateCheckResult(
+                new Uri("https://cdn.example.com"),
+                now,
+                now.AddDays(-30),
+                now.AddDays(12),
+                "CN=cdn.example.com",
+                "CN=Example CA",
+                new string('A', 64),
+                "Tls13",
+                CdnCertificateProblems.None,
+                []);
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            using var dialog = new CdnCertificateResultDialog(result);
+            dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
+            PerformLayout(dialog);
+
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnCertificateResultButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CloseCdnCertificateResultButton"));
+            var details = Assert.IsType<TextBox>(Assert.Single(
+                dialog.Controls.Find("CdnCertificateResultDetails", searchAllChildren: true)));
+            Assert.Contains("到期时间", details.Text, StringComparison.Ordinal);
+            Assert.Contains("剩余天数：12", details.Text, StringComparison.Ordinal);
+            Assert.Contains("吊销状态：未检查", details.Text, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void CertificateCheckCanBeCancelledWithoutClosingConfiguration()
+    {
+        RunSta(() =>
+        {
+            var inspector = new BlockingCertificateInspector();
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com"
+            };
+            using var dialog = new CdnConfigurationDialog(
+                [],
+                new CdnConfiguration([profile], []),
+                [],
+                certificateInspector: inspector);
+            dialog.Show();
+
+            var check = FindButton(dialog, "CheckCdnCertificateButton");
+            check.PerformClick();
+            WaitUntil(() => inspector.Started && check.Text == "取消证书检测");
+            check.PerformClick();
+            var grid = Assert.IsType<DataGridView>(Assert.Single(
+                dialog.Controls.Find("CdnProfilesTabGrid", searchAllChildren: true)));
+            WaitUntil(() => grid.Rows[0].Cells["certificate"].Value?.ToString() == "检测已取消");
+
+            Assert.False(dialog.IsDisposed);
+            Assert.Equal("检测 HTTPS 证书", check.Text);
+            Assert.True(check.Enabled);
+            dialog.Close();
         });
     }
 
@@ -312,5 +382,40 @@ public sealed class CdnDialogLayoutTests
             Uri url,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class StubCertificateInspector : ICdnCertificateInspector
+    {
+        public Task<CdnCertificateCheckResult> InspectAsync(
+            CdnProfile profile,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new CdnCertificateCheckResult(
+                new Uri(profile.BaseUrl),
+                now,
+                now.AddDays(-30),
+                now.AddDays(60),
+                "CN=cdn.example.com",
+                "CN=Example CA",
+                new string('A', 64),
+                "Tls13",
+                CdnCertificateProblems.None,
+            []));
+        }
+    }
+
+    private sealed class BlockingCertificateInspector : ICdnCertificateInspector
+    {
+        public bool Started { get; private set; }
+
+        public async Task<CdnCertificateCheckResult> InspectAsync(
+            CdnProfile profile,
+            CancellationToken cancellationToken)
+        {
+            Started = true;
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The certificate check should finish through cancellation.");
+        }
     }
 }

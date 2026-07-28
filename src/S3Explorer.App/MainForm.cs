@@ -111,6 +111,7 @@ internal sealed partial class MainForm : Form
         ICdnConfigurationStore cdnConfigurationStore,
         ICdnCredentialStore cdnCredentialStore,
         ICdnDeliveryService cdnDeliveryService,
+        ICdnCertificateInspector cdnCertificateInspector,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -124,6 +125,7 @@ internal sealed partial class MainForm : Form
         _cdnConfigurationStore = cdnConfigurationStore;
         _cdnCredentialStore = cdnCredentialStore;
         _cdnDeliveryService = cdnDeliveryService;
+        _cdnCertificateInspector = cdnCertificateInspector;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 

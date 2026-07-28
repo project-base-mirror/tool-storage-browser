@@ -8,6 +8,7 @@ internal sealed partial class MainForm
     private readonly ICdnConfigurationStore _cdnConfigurationStore;
     private readonly ICdnCredentialStore _cdnCredentialStore;
     private readonly ICdnDeliveryService _cdnDeliveryService;
+    private readonly ICdnCertificateInspector _cdnCertificateInspector;
     private CdnConfiguration _cdnConfiguration = CdnConfiguration.Empty;
     private IReadOnlyList<CdnCredential> _cdnCredentials = [];
     private ToolStripMenuItem? _cdnObjectContextMenu;
@@ -142,7 +143,8 @@ internal sealed partial class MainForm
             _cdnConfiguration,
             _cdnCredentials,
             initialProfile ?? _currentProfile,
-            initialBucket ?? _currentBucket);
+            initialBucket ?? _currentBucket,
+            _cdnCertificateInspector);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 

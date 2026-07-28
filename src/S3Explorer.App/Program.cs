@@ -41,6 +41,7 @@ internal static class Program
                 new DpapiCdnCredentialProtector(),
                 options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
+            var cdnCertificateInspector = new TlsCdnCertificateInspector();
             using var updateChecker = new GitHubUpdateChecker(
                 cachePath: options.Enabled ? Path.Combine(dataRoot, "update-cache.json") : null);
             var transferRuntime = new TransferRuntimeConfiguration();
@@ -77,6 +78,7 @@ internal static class Program
                 cdnConfigurationStore,
                 cdnCredentialStore,
                 cdnDeliveryService,
+                cdnCertificateInspector,
                 automation);
             Application.Run(form);
             return Environment.ExitCode;

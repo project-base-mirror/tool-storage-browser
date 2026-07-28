@@ -111,6 +111,53 @@ public sealed record CdnOperationResult(
     string Message,
     string ResponseSnippet = "");
 
+[Flags]
+public enum CdnCertificateProblems
+{
+    None = 0,
+    NotYetValid = 1,
+    Expired = 2,
+    NameMismatch = 4,
+    UntrustedChain = 8
+}
+
+public sealed record CdnCertificateCheckResult(
+    Uri Endpoint,
+    DateTimeOffset CheckedAt,
+    DateTimeOffset NotBefore,
+    DateTimeOffset NotAfter,
+    string Subject,
+    string Issuer,
+    string Sha256Fingerprint,
+    string TlsProtocol,
+    CdnCertificateProblems Problems,
+    IReadOnlyList<string> ChainErrors)
+{
+    public long DaysRemaining => (long)Math.Floor((NotAfter - CheckedAt).TotalDays);
+    public bool IsCurrentlyValid =>
+        !Problems.HasFlag(CdnCertificateProblems.NotYetValid) &&
+        !Problems.HasFlag(CdnCertificateProblems.Expired);
+    public bool IsExpiringSoon => IsCurrentlyValid && DaysRemaining <= 30;
+
+    public string StatusText
+    {
+        get
+        {
+            if (Problems.HasFlag(CdnCertificateProblems.Expired))
+                return $"已过期 {Math.Abs(DaysRemaining)} 天";
+            if (Problems.HasFlag(CdnCertificateProblems.NotYetValid))
+                return "证书尚未生效";
+            if (Problems.HasFlag(CdnCertificateProblems.NameMismatch))
+                return "证书域名不匹配";
+            if (Problems.HasFlag(CdnCertificateProblems.UntrustedChain))
+                return "证书链不受信任";
+            return IsExpiringSoon
+                ? $"即将到期，剩余 {Math.Max(0, DaysRemaining)} 天"
+                : $"正常，剩余 {DaysRemaining} 天";
+        }
+    }
+}
+
 public interface ICdnConfigurationStore
 {
     Task<CdnConfiguration> LoadAsync(CancellationToken cancellationToken = default);
@@ -142,6 +189,13 @@ public interface ICdnDeliveryService
         CdnProfile profile,
         CdnCredential? credential,
         Uri url,
+        CancellationToken cancellationToken);
+}
+
+public interface ICdnCertificateInspector
+{
+    Task<CdnCertificateCheckResult> InspectAsync(
+        CdnProfile profile,
         CancellationToken cancellationToken);
 }
 

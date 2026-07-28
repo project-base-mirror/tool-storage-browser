@@ -10,12 +10,22 @@ internal sealed class CdnConfigurationDialog : Form
     }
 
     private readonly IReadOnlyList<ConnectionProfile> _storageProfiles;
+    private readonly ICdnCertificateInspector? _certificateInspector;
     private readonly List<CdnProfile> _profiles;
     private readonly List<CdnCredential> _credentials;
     private readonly List<CdnBinding> _bindings;
     private readonly DataGridView _profileGrid;
     private readonly DataGridView _credentialGrid;
     private readonly DataGridView _bindingGrid;
+    private readonly Dictionary<Guid, string> _certificateStatuses = [];
+    private readonly Button _checkCertificate = new()
+    {
+        Name = "CheckCdnCertificateButton",
+        Text = "检测 HTTPS 证书",
+        AutoSize = true,
+        MinimumSize = new Size(140, 34)
+    };
+    private CancellationTokenSource? _certificateCancellation;
     private readonly Button _save = new()
     {
         Name = "SaveCdnConfigurationButton",
@@ -40,9 +50,11 @@ internal sealed class CdnConfigurationDialog : Form
         CdnConfiguration configuration,
         IReadOnlyList<CdnCredential> credentials,
         ConnectionProfile? initialProfile = null,
-        string? initialBucket = null)
+        string? initialBucket = null,
+        ICdnCertificateInspector? certificateInspector = null)
     {
         _storageProfiles = storageProfiles;
+        _certificateInspector = certificateInspector;
         _profiles = [.. configuration.Profiles];
         _credentials = [.. credentials];
         _bindings = [.. configuration.Bindings];
@@ -73,6 +85,7 @@ internal sealed class CdnConfigurationDialog : Form
             EditProfile,
             DeleteProfile);
         _profileGrid = profileTab.Grid;
+        profileTab.Buttons.Controls.Add(_checkCertificate);
         tabs.TabPages.Add(profileTab.Page);
 
         var credentialTab = CreateTab(
@@ -134,12 +147,23 @@ internal sealed class CdnConfigurationDialog : Form
         Controls.Add(root);
 
         _save.Click += (_, _) => ValidateAndAccept();
+        _checkCertificate.Click += async (_, _) =>
+        {
+            if (_certificateCancellation is not null)
+            {
+                _certificateCancellation.Cancel();
+                return;
+            }
+            await CheckSelectedCertificateAsync();
+        };
+        _profileGrid.SelectionChanged += (_, _) => UpdateCertificateButton();
+        FormClosing += (_, _) => _certificateCancellation?.Cancel();
         AcceptButton = _save;
         CancelButton = _cancel;
         RefreshAll();
     }
 
-    private static (TabPage Page, DataGridView Grid) CreateTab(
+    private static (TabPage Page, DataGridView Grid, FlowLayoutPanel Buttons) CreateTab(
         string text,
         string pageName,
         string addName,
@@ -209,7 +233,7 @@ internal sealed class CdnConfigurationDialog : Form
         buttons.Controls.Add(deleteButton);
         page.Controls.Add(grid);
         page.Controls.Add(buttons);
-        return (page, grid);
+        return (page, grid, buttons);
     }
 
     private void RefreshAll()
@@ -224,6 +248,7 @@ internal sealed class CdnConfigurationDialog : Form
         _profileGrid.Columns.Clear();
         _profileGrid.Columns.Add("name", "名称");
         _profileGrid.Columns.Add("base", "基础 URL");
+        _profileGrid.Columns.Add("certificate", "HTTPS 证书");
         _profileGrid.Columns.Add("notes", "备注");
         _profileGrid.Columns.Add("warmup", "预热");
         _profileGrid.Columns.Add("purge", "刷新");
@@ -236,6 +261,7 @@ internal sealed class CdnConfigurationDialog : Form
             var index = _profileGrid.Rows.Add(
                 profile.Name,
                 profile.BaseUrl,
+                CertificateStatus(profile),
                 NotesPreview(profile.Notes),
                 WarmupText(profile),
                 profile.Capabilities.HasFlag(CdnCapabilities.Purge) ? profile.PurgeHttpMethod : "未配置",
@@ -245,6 +271,7 @@ internal sealed class CdnConfigurationDialog : Form
                 _profileGrid.Rows[index].Cells["notes"].ToolTipText = profile.Notes;
         }
         SelectFirst(_profileGrid);
+        UpdateCertificateButton();
     }
 
     private void RefreshCredentials()
@@ -308,6 +335,7 @@ internal sealed class CdnConfigurationDialog : Form
         using var dialog = new CdnProfileEditorDialog(profile, _credentials);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _profiles[_profiles.IndexOf(profile)] = dialog.Profile;
+        _certificateStatuses.Remove(profile.Id);
         RefreshAll();
     }
 
@@ -326,6 +354,7 @@ internal sealed class CdnConfigurationDialog : Form
                 MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
         _profiles.Remove(profile);
+        _certificateStatuses.Remove(profile.Id);
         _bindings.RemoveAll(value => value.CdnProfileId == profile.Id);
         RefreshAll();
     }
@@ -475,11 +504,227 @@ internal sealed class CdnConfigurationDialog : Form
         return value.Length <= 80 ? value : value[..77] + "...";
     }
 
+    private string CertificateStatus(CdnProfile profile)
+    {
+        if (_certificateStatuses.TryGetValue(profile.Id, out var status)) return status;
+        return Uri.TryCreate(profile.BaseUrl, UriKind.Absolute, out var endpoint) &&
+               string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            ? "尚未检测"
+            : "非 HTTPS";
+    }
+
+    private void UpdateCertificateButton()
+    {
+        if (_certificateCancellation is not null)
+        {
+            _checkCertificate.Text = "取消证书检测";
+            _checkCertificate.Enabled = true;
+            return;
+        }
+
+        _checkCertificate.Text = "检测 HTTPS 证书";
+        var id = SelectedId(_profileGrid);
+        var profile = id is Guid value ? _profiles.FirstOrDefault(item => item.Id == value) : null;
+        _checkCertificate.Enabled = _certificateInspector is not null &&
+            profile is not null &&
+            Uri.TryCreate(profile.BaseUrl, UriKind.Absolute, out var endpoint) &&
+            string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetCertificateStatus(Guid profileId, string status)
+    {
+        _certificateStatuses[profileId] = status;
+        foreach (DataGridViewRow row in _profileGrid.Rows)
+        {
+            if (row.Tag is Guid id && id == profileId)
+            {
+                row.Cells["certificate"].Value = status;
+                break;
+            }
+        }
+    }
+
+    private async Task CheckSelectedCertificateAsync()
+    {
+        if (_certificateInspector is null) return;
+        var id = SelectedId(_profileGrid);
+        var profile = id is Guid value ? _profiles.FirstOrDefault(item => item.Id == value) : null;
+        if (profile is null) return;
+
+        var timeoutSeconds = Math.Clamp(profile.TimeoutSeconds, 1, 30);
+        using var manualCancellation = new CancellationTokenSource();
+        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            manualCancellation.Token,
+            timeoutCancellation.Token);
+        _certificateCancellation = manualCancellation;
+        SetCertificateStatus(profile.Id, "检测中...");
+        UpdateCertificateButton();
+
+        try
+        {
+            var result = await _certificateInspector.InspectAsync(profile, linkedCancellation.Token);
+            if (IsDisposed || Disposing) return;
+            SetCertificateStatus(profile.Id, result.StatusText);
+            using var dialog = new CdnCertificateResultDialog(result);
+            dialog.ShowDialog(this);
+        }
+        catch (OperationCanceledException) when (timeoutCancellation.IsCancellationRequested)
+        {
+            if (!IsDisposed && !Disposing)
+                SetCertificateStatus(profile.Id, $"检测超时（{timeoutSeconds} 秒）");
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed && !Disposing)
+                SetCertificateStatus(profile.Id, "检测已取消");
+        }
+        catch (Exception exception)
+        {
+            if (IsDisposed || Disposing) return;
+            SetCertificateStatus(profile.Id, "检测失败");
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "HTTPS 证书检测失败",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            if (ReferenceEquals(_certificateCancellation, manualCancellation))
+                _certificateCancellation = null;
+            if (!IsDisposed && !Disposing)
+                UpdateCertificateButton();
+        }
+    }
+
     private static string AuthenticationText(CdnAuthenticationType type) => type switch
     {
         CdnAuthenticationType.BearerToken => "Bearer Token",
         CdnAuthenticationType.CustomHeader => "自定义 Header",
         _ => "无"
+    };
+}
+
+internal sealed class CdnCertificateResultDialog : Form
+{
+    public CdnCertificateResultDialog(CdnCertificateCheckResult result)
+    {
+        Name = "CdnCertificateResultDialog";
+        Text = "HTTPS 证书检测结果";
+        StartPosition = FormStartPosition.CenterParent;
+        ClientSize = new Size(720, 500);
+        MinimumSize = new Size(620, 420);
+        ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Font;
+        Icon = UiIcons.CreateApplicationIcon();
+
+        var status = new Label
+        {
+            Name = "CdnCertificateResultStatus",
+            Text = result.StatusText,
+            AutoSize = true,
+            Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold),
+            ForeColor = result.Problems == CdnCertificateProblems.None
+                ? result.IsExpiringSoon ? Color.DarkOrange : Color.DarkGreen
+                : Color.Firebrick,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        var details = new TextBox
+        {
+            Name = "CdnCertificateResultDetails",
+            Text = FormatDetails(result),
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            BackColor = SystemColors.Window
+        };
+        var copy = new Button
+        {
+            Name = "CopyCdnCertificateResultButton",
+            Text = "复制结果",
+            AutoSize = true,
+            MinimumSize = new Size(104, 36)
+        };
+        var close = new Button
+        {
+            Name = "CloseCdnCertificateResultButton",
+            Text = "关闭",
+            AutoSize = true,
+            MinimumSize = new Size(96, 36),
+            DialogResult = DialogResult.OK
+        };
+        copy.Click += (_, _) => Clipboard.SetText(details.Text);
+
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Padding = new Padding(0, 10, 0, 0)
+        };
+        actions.Controls.Add(close);
+        actions.Controls.Add(copy);
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(14),
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.Controls.Add(status, 0, 0);
+        root.Controls.Add(details, 0, 1);
+        root.Controls.Add(actions, 0, 2);
+        Controls.Add(root);
+        AcceptButton = close;
+        CancelButton = close;
+    }
+
+    private static string FormatDetails(CdnCertificateCheckResult result)
+    {
+        var problemText = result.Problems == CdnCertificateProblems.None
+            ? "无"
+            : string.Join("、", Enum.GetValues<CdnCertificateProblems>()
+                .Where(value => value != CdnCertificateProblems.None && result.Problems.HasFlag(value))
+                .Select(ProblemText));
+        var lines = new List<string>
+        {
+            $"检测端点：{result.Endpoint.Scheme}://{result.Endpoint.Authority}",
+            $"检测时间：{result.CheckedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}",
+            $"生效时间：{result.NotBefore.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}",
+            $"到期时间：{result.NotAfter.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}",
+            $"剩余天数：{result.DaysRemaining}",
+            $"TLS 协议：{result.TlsProtocol}",
+            $"主题：{result.Subject}",
+            $"颁发者：{result.Issuer}",
+            $"SHA-256 指纹：{result.Sha256Fingerprint}",
+            $"验证问题：{problemText}",
+            "吊销状态：未检查（避免证书检测被外部 CRL/OCSP 服务长时间阻塞）"
+        };
+        if (result.ChainErrors.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("证书链详情：");
+            lines.AddRange(result.ChainErrors.Select(value => "- " + value));
+        }
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string ProblemText(CdnCertificateProblems problem) => problem switch
+    {
+        CdnCertificateProblems.NotYetValid => "尚未生效",
+        CdnCertificateProblems.Expired => "已过期",
+        CdnCertificateProblems.NameMismatch => "域名不匹配",
+        CdnCertificateProblems.UntrustedChain => "证书链不受信任",
+        _ => problem.ToString()
     };
 }
 
