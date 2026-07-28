@@ -7,7 +7,8 @@ internal sealed class ConnectionExportOptionsDialog : Form
 {
     private readonly CheckBox _includeCredentials = new()
     {
-        Text = "包含 Access Key、Secret Key 和 Session Token",
+        Name = "IncludeStoredCredentialsCheckBox",
+        Text = "包含已保存的 Access Key、Secret Key 和 Session Token",
         AutoSize = true
     };
     private readonly TextBox _password = new() { UseSystemPasswordChar = true, Width = 310 };
@@ -53,9 +54,12 @@ internal sealed class ConnectionExportOptionsDialog : Form
             ForeColor = SystemColors.GrayText
         };
         _includeCredentials.Location = new Point(20, 92);
+        _includeCredentials.Enabled = profilesWithCredentials > 0;
         var credentialCount = new Label
         {
-            Text = $"其中 {profilesWithCredentials} 个连接具有可迁移的已保存凭据。勾选后整包会使用密码加密。",
+            Text = profilesWithCredentials > 0
+                ? $"其中 {profilesWithCredentials} 个连接具有可迁移的已保存凭据。勾选后整包会使用密码加密。"
+                : "所选连接没有可迁移的已保存密钥；AWS 外部来源只会导出非敏感引用。",
             AutoSize = true,
             MaximumSize = new Size(525, 0),
             Location = new Point(39, 120),
@@ -293,7 +297,9 @@ internal sealed class ConnectionImportPreviewDialog : Form
             };
             item.SubItems.Add(profile.ServiceType.ToString());
             item.SubItems.Add(profile.Endpoint);
-            item.SubItems.Add(profile.HasStoredCredentials ? "已包含" : "未包含");
+            item.SubItems.Add(profile.UsesExternalAwsCredentials
+                ? profile.CredentialSourceDisplayName
+                : profile.HasStoredCredentials ? "已包含" : "未包含");
             item.SubItems.Add(existingNames.Contains(profile.Name) ? "是" : "否");
             if (existingNames.Contains(profile.Name))
                 item.ForeColor = Color.DarkOrange;
@@ -303,8 +309,8 @@ internal sealed class ConnectionImportPreviewDialog : Form
         _importCredentials.Enabled = package.ContainsCredentials;
         _importCredentials.Checked = false;
         _importCredentials.Text = package.ContainsCredentials
-            ? "导入连接包中的凭据（导入后可直接使用）"
-            : "连接包不包含凭据；导入后需要编辑连接补充凭据";
+            ? "导入连接包中的已保存密钥（外部来源只导入非敏感引用）"
+            : "连接包不包含已保存密钥；外部来源引用仍会导入";
         _conflictStrategy.Items.AddRange([
             new ConflictOption("自动重命名", ConnectionImportConflictStrategy.Rename),
             new ConflictOption("覆盖同名连接", ConnectionImportConflictStrategy.Replace),

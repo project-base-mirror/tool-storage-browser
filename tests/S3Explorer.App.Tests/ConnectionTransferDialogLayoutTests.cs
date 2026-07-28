@@ -51,6 +51,21 @@ public sealed class ConnectionTransferDialogLayoutTests
         });
     }
 
+    [Fact]
+    public void ExportWithoutStoredKeysCannotRequestAnUnnecessaryPassword()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ConnectionExportOptionsDialog(profileCount: 2, profilesWithCredentials: 0);
+            var include = Assert.IsType<CheckBox>(Assert.Single(
+                dialog.Controls.Find("IncludeStoredCredentialsCheckBox", searchAllChildren: true)));
+
+            Assert.False(include.Enabled);
+            Assert.False(include.Checked);
+            Assert.Contains("已保存", include.Text, StringComparison.Ordinal);
+        });
+    }
+
     private static Button FindButton(Control root, string name) =>
         Assert.IsType<Button>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
 

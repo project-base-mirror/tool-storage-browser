@@ -69,7 +69,7 @@ public sealed record ConnectionProfile
         CredentialSourceKind.StoredKeys => UsesTemporarySessionCredentials
             ? "已保存密钥（Session Token）"
             : "已保存密钥",
-        CredentialSourceKind.AwsSharedProfile => $"AWS shared profile：{AwsProfileName.Trim()}",
+        CredentialSourceKind.AwsSharedProfile => $"AWS shared profile：{(AwsProfileName ?? string.Empty).Trim()}",
         CredentialSourceKind.AwsEnvironmentVariables => "AWS 环境变量",
         CredentialSourceKind.AwsContainerRole => "AWS 容器角色",
         CredentialSourceKind.AwsInstanceRole => "AWS EC2 实例角色",

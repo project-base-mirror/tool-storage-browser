@@ -763,9 +763,11 @@ internal sealed partial class MainForm : Form
         var lastSuccess = profile.LastConnectionSucceededAtUtc is null
             ? string.Empty
             : $"\n最近成功: {FormatLocalTime(profile.LastConnectionSucceededAtUtc)}";
-        var credentials = profile.HasStoredCredentials ? "已保存" : "待补充";
+        var credentials = profile.HasCredentialConfiguration
+            ? profile.CredentialSourceDisplayName
+            : "待补充";
         node.Text = profile.Name;
-        node.ForeColor = !profile.HasStoredCredentials
+        node.ForeColor = !profile.HasCredentialConfiguration
             ? Color.DarkOrange
             : profile.HealthStatus switch
             {
@@ -1161,10 +1163,13 @@ internal sealed partial class MainForm : Form
             AddSummaryItem("健康状态", HealthStatusText(profile.HealthStatus));
             AddSummaryItem("最近检查", FormatLocalTime(profile.LastConnectionCheckedAtUtc));
             AddSummaryItem("最近成功", FormatLocalTime(profile.LastConnectionSucceededAtUtc));
+            AddSummaryItem("凭据来源", profile.CredentialSourceDisplayName);
             AddSummaryItem("临时凭据", profile.UsesTemporarySessionCredentials
-                ? "已启用（Session Token）"
-                : "未启用");
-            AddSummaryItem("凭据存储", "SecretKey 与 SessionToken 使用 DPAPI CurrentUser 加密");
+                ? "已保存 Session Token"
+                : profile.UsesExternalAwsCredentials ? "由 AWS SDK 在运行时获取" : "未启用");
+            AddSummaryItem("凭据存储", profile.UsesExternalAwsCredentials
+                ? "不在 S3 Explorer 中保存凭据值"
+                : "SecretKey 与 SessionToken 使用 DPAPI CurrentUser 加密");
         }
         finally { _objects.EndUpdate(); }
         _objectStatus.Text = "连接摘要";

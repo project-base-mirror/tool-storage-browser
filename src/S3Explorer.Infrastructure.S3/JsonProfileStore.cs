@@ -111,7 +111,7 @@ public sealed class JsonProfileStore : IProfileStore
                 : string.Empty,
             CredentialSource = source.CredentialSource,
             AwsProfileName = source.CredentialSource == CredentialSourceKind.AwsSharedProfile
-                ? source.AwsProfileName.Trim()
+                ? (source.AwsProfileName ?? string.Empty).Trim()
                 : string.Empty,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
@@ -142,7 +142,7 @@ public sealed class JsonProfileStore : IProfileStore
             SecretKey = protector.Unprotect(ProtectedSecretKey),
             SessionToken = protector.Unprotect(ProtectedSessionToken),
             CredentialSource = CredentialSource,
-            AwsProfileName = AwsProfileName,
+            AwsProfileName = AwsProfileName ?? string.Empty,
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,

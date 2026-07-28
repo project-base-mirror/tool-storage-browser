@@ -10,6 +10,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 
 - Amazon S3 与兼容服务连接配置、连接测试和 Bucket 浏览。
 - Windows DPAPI CurrentUser 凭据保护。
+- Amazon S3 显式凭据来源：已保存密钥、AWS shared profile、环境变量、容器角色、EC2 实例角色和 AWS SDK 默认链。
 - Bucket 创建、空 Bucket 删除和对象分页浏览。
 - 文件/文件夹上传、下载、复制、移动、重命名和批量删除。
 - 大文件 multipart upload、传输队列、取消与失败状态。
@@ -82,11 +83,14 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有�
 
 CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新边界和后续厂商 Provider 计划见 [`docs/Cdn-Delivery-Integration.md`](docs/Cdn-Delivery-Integration.md)。
 
+AWS shared credentials/config、环境变量与角色凭据的选择、诊断、安全边界和 CLI 参数见 [`docs/Aws-Credential-Sources.md`](docs/Aws-Credential-Sources.md)。
+
 ## 对象存储命令行 API
 
 发布包同时包含 `S3Explorer.exe` 和 `s3explorer-cli.exe`。CLI 与桌面端共享 DPAPI 加密的连接配置和同步任务：
 
     s3explorer-cli profile list --json
+    s3explorer-cli profile add --name "aws-audit" --type amazon --credential-source profile --aws-profile readonly
     s3explorer-cli connection test "my-account" --json
     s3explorer-cli bucket list "my-account" --json
     s3explorer-cli object list "s3://my-account/my-bucket/path/" --recursive --json
@@ -100,7 +104,7 @@ CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新�
     s3explorer-cli sync analyze "site-backup" --json
     s3explorer-cli sync run "site-backup" --json
 
-如果同步任务启用了删除传播，`sync run` 还必须明确提供 `--yes`。创建连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。源码树中可用 `cli.bat help` 查看完整命令。
+如果同步任务启用了删除传播，`sync run` 还必须明确提供 `--yes`。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。源码树中可用 `cli.bat help` 查看完整命令。
 
 所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。
 
@@ -133,8 +137,8 @@ CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新�
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.5.5-win-x64.zip
-    artifacts/release/S3Explorer-v0.5.5-win-x64-self-contained.zip
+    artifacts/release/S3Explorer-v0.5.6-win-x64.zip
+    artifacts/release/S3Explorer-v0.5.6-win-x64-self-contained.zip
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -173,6 +177,7 @@ CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新�
 - CDN 独立凭据：`%APPDATA%\S3Explorer\cdn-credentials.json`
 - 日志目录：`%LOCALAPPDATA%\S3Explorer\logs`
 - SecretKey 和 SessionToken 使用 DPAPI CurrentUser 加密后保存。
+- AWS Profile 连接只保存非敏感 Profile 名称；环境、容器和实例角色凭据不写入 `profiles.json`、连接包或日志。
 - CDN Secret 使用独立 DPAPI entropy 加密，不复用 S3 SecretKey，也不写入普通 CDN 配置文件。
 - 导出配置默认不包含凭据。
 - 日志不得记录 SecretKey、SessionToken、Authorization Header 或完整预签名 URL。
@@ -195,6 +200,7 @@ CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新�
       MinIO-Testing.md
       GitHub-Delivery.md
       Cdn-Delivery-Integration.md
+      Aws-Credential-Sources.md
       Release-Plan-v0.2-v0.3.md
       Roadmap-v0.5-v0.8.md
       versions/

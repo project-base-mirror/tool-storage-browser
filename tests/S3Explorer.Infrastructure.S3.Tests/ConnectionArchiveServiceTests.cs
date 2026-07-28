@@ -138,6 +138,36 @@ public sealed class ConnectionArchiveServiceTests
         imported.Validate();
     }
 
+    [Fact]
+    public void ExternalOnlyExportNeverRequiresPasswordOrClaimsToContainCredentials()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Workload role",
+            CredentialSource = CredentialSourceKind.AwsContainerRole
+        };
+
+        var archive = _service.Export([profile], includeCredentials: true);
+        var inspection = _service.Inspect(archive);
+
+        Assert.False(inspection.ContainsCredentials);
+        Assert.False(inspection.RequiresPassword);
+        Assert.Equal(CredentialSourceKind.AwsContainerRole, Assert.Single(_service.Import(archive).Profiles).CredentialSource);
+    }
+
+    [Fact]
+    public void VersionOneCredentialFreeArchiveStillImportsAsStoredKeys()
+    {
+        var current = Encoding.UTF8.GetString(_service.Export([CreateProfile()]));
+        var versionOne = Encoding.UTF8.GetBytes(current.Replace("\"version\": 2", "\"version\": 1", StringComparison.Ordinal));
+
+        var imported = Assert.Single(_service.Import(versionOne).Profiles);
+
+        Assert.Equal(CredentialSourceKind.StoredKeys, imported.CredentialSource);
+        Assert.Empty(imported.AccessKey);
+        Assert.Equal("https://storage.example.test", imported.Endpoint);
+    }
+
     private static ConnectionProfile CreateProfile() => new()
     {
         Name = "Portable",

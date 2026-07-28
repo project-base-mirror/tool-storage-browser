@@ -112,13 +112,15 @@ internal static class Program
                 WriteSuccess(json, list, list.Length == 0
                     ? "没有已保存的连接。"
                     : string.Join(Environment.NewLine, profiles.Select(item =>
-                        $"{item.Name}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.Endpoint}\t{item.Id}")));
+                        $"{item.Name}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.CredentialSourceDisplayName}\t{item.Endpoint}\t{item.Id}")));
                 return 0;
 
             case "show":
                 var shown = ResolveProfile(profiles, RequirePositional(args, 2, "profile show <name-or-id>"));
                 WriteSuccess(json, ProfileView(shown),
-                    $"名称: {shown.Name}\n类型: {S3ProviderCatalog.Get(shown.ServiceType).DisplayName}\nEndpoint: {shown.Endpoint}\nRegion: {shown.EffectiveSignatureRegion}\nAccess Key: {Mask(shown.AccessKey)}\nID: {shown.Id}");
+                    $"名称: {shown.Name}\n类型: {S3ProviderCatalog.Get(shown.ServiceType).DisplayName}\nEndpoint: {shown.Endpoint}\nRegion: {shown.EffectiveSignatureRegion}\n凭据来源: {shown.CredentialSourceDisplayName}" +
+                    (shown.CredentialSource == CredentialSourceKind.StoredKeys ? $"\nAccess Key: {Mask(shown.AccessKey)}" : string.Empty) +
+                    $"\nID: {shown.Id}");
                 return 0;
 
             case "add":
@@ -128,9 +130,26 @@ internal static class Program
                 var serviceType = ParseServiceType(args.Require("type"));
                 var preset = ConnectionProfile.CreatePreset(serviceType);
                 var definition = S3ProviderCatalog.Get(serviceType);
-                var accessKey = args.Optional("access-key") ?? Environment.GetEnvironmentVariable("S3EXPLORER_ACCESS_KEY") ?? string.Empty;
-                var secretKey = ResolveSecret(args, "secret-key", "S3EXPLORER_SECRET_KEY");
-                var sessionToken = ResolveSecret(args, "session-token", "S3EXPLORER_SESSION_TOKEN", required: false);
+                var credentialSource = ParseCredentialSource(args.Optional("credential-source") ?? "stored");
+                if (credentialSource != CredentialSourceKind.StoredKeys && serviceType != S3ServiceType.AmazonS3)
+                    throw new CliUsageException("AWS 外部凭据来源仅适用于 --type amazon；S3-compatible 连接必须使用 stored。");
+                var awsProfileName = args.Optional("aws-profile")?.Trim() ?? string.Empty;
+                if (credentialSource == CredentialSourceKind.AwsSharedProfile && awsProfileName.Length == 0)
+                    throw new CliUsageException("--credential-source profile 需要 --aws-profile <name>。");
+                if (credentialSource != CredentialSourceKind.StoredKeys &&
+                    (args.Optional("access-key") is not null || args.Optional("secret-key") is not null ||
+                     args.Optional("secret-key-env") is not null || args.Optional("session-token") is not null ||
+                     args.Optional("session-token-env") is not null))
+                    throw new CliUsageException("外部凭据来源不能同时提供 Access Key、Secret Key 或 Session Token。");
+                var accessKey = credentialSource == CredentialSourceKind.StoredKeys
+                    ? args.Optional("access-key") ?? Environment.GetEnvironmentVariable("S3EXPLORER_ACCESS_KEY") ?? string.Empty
+                    : string.Empty;
+                var secretKey = credentialSource == CredentialSourceKind.StoredKeys
+                    ? ResolveSecret(args, "secret-key", "S3EXPLORER_SECRET_KEY")
+                    : string.Empty;
+                var sessionToken = credentialSource == CredentialSourceKind.StoredKeys
+                    ? ResolveSecret(args, "session-token", "S3EXPLORER_SESSION_TOKEN", required: false)
+                    : string.Empty;
                 var region = args.Optional("region")?.Trim();
                 if (string.IsNullOrWhiteSpace(region))
                     region = definition.DefaultRegion;
@@ -144,6 +163,8 @@ internal static class Program
                     AccessKey = accessKey,
                     SecretKey = secretKey,
                     SessionToken = sessionToken,
+                    CredentialSource = credentialSource,
+                    AwsProfileName = credentialSource == CredentialSourceKind.AwsSharedProfile ? awsProfileName : string.Empty,
                     DefaultBucket = args.Optional("default-bucket") ?? string.Empty,
                     AddressingStyle = args.Flag("path-style") ? AddressingStyle.PathStyle : preset.AddressingStyle,
                     IgnoreCertificateErrors = args.Flag("ignore-certificate-errors")
@@ -184,7 +205,7 @@ internal static class Program
             return OperationFailed;
         }
         WriteSuccess(json, result,
-            $"{result.Message}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms\nBucket: {result.BucketCount}\nHTTP: {result.HttpStatusCode?.ToString() ?? "-"}");
+            $"{result.Message}\n凭据来源: {result.CredentialSource ?? profile.CredentialSourceDisplayName}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms\nBucket: {result.BucketCount}\nHTTP: {result.HttpStatusCode?.ToString() ?? "-"}");
         return 0;
     }
 
@@ -551,6 +572,18 @@ internal static class Program
         _ => throw new CliUsageException($"不支持的连接类型：{value}")
     };
 
+    private static CredentialSourceKind ParseCredentialSource(string value) => value.Trim().ToLowerInvariant() switch
+    {
+        "stored" or "keys" or "saved" => CredentialSourceKind.StoredKeys,
+        "profile" or "shared-profile" or "aws-profile" => CredentialSourceKind.AwsSharedProfile,
+        "environment" or "env" => CredentialSourceKind.AwsEnvironmentVariables,
+        "container" or "container-role" or "ecs" => CredentialSourceKind.AwsContainerRole,
+        "instance" or "instance-role" or "ec2" => CredentialSourceKind.AwsInstanceRole,
+        "default" or "default-chain" or "chain" => CredentialSourceKind.AwsDefaultChain,
+        _ => throw new CliUsageException(
+            $"不支持的凭据来源：{value}。可选 stored|profile|environment|container|instance|default。")
+    };
+
     private static string ResolveSecret(CliArguments args, string option, string environmentName, bool required = true)
     {
         var value = args.Optional(option);
@@ -570,7 +603,9 @@ internal static class Program
         type = S3ProviderCatalog.Get(profile.ServiceType).DisplayName,
         profile.Endpoint,
         region = profile.EffectiveSignatureRegion,
-        accessKey = Mask(profile.AccessKey),
+        credentialSource = profile.CredentialSourceDisplayName,
+        awsProfile = profile.CredentialSource == CredentialSourceKind.AwsSharedProfile ? profile.AwsProfileName : null,
+        accessKey = profile.CredentialSource == CredentialSourceKind.StoredKeys ? Mask(profile.AccessKey) : null,
         hasSessionToken = profile.UsesTemporarySessionCredentials,
         profile.DefaultBucket
     };
@@ -648,7 +683,9 @@ internal static class Program
           s3explorer-cli profile list [--json]
           s3explorer-cli profile show <name-or-id> [--json]
           s3explorer-cli profile add --name <name> --type <amazon|compatible|google|minio|r2|b2|aliyun|tencent|supabase>
-              [--endpoint <url>] [--region <region>] --access-key <key> --secret-key-env <ENV_NAME>
+              [--endpoint <url>] [--region <region>]
+              [--credential-source <stored|profile|environment|container|instance|default>]
+              [--aws-profile <name>] [--access-key <key>] [--secret-key-env <ENV_NAME>]
           s3explorer-cli profile delete <name-or-id> --yes
           s3explorer-cli connection test <name-or-id> [--json]
           s3explorer-cli bucket list <name-or-id> [--json]
@@ -669,6 +706,7 @@ internal static class Program
 
         凭据建议:
           优先使用 --secret-key-env <变量名> 或 S3EXPLORER_SECRET_KEY，避免密钥进入命令历史。
+          AWS 外部来源只适用于 Amazon S3；profile 名称会保存，但环境和角色凭据不会写入连接文件。
         """);
 }
 

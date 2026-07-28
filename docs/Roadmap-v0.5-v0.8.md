@@ -95,7 +95,7 @@
 
 ## v0.5.6：AWS 外部凭据来源
 
-状态：计划。
+状态：已完成（2026-07-28）。
 
 - 将当前“已保存密钥”抽象为显式凭据来源，不以空 Access Key 代表外部来源。
 - 接入 AWS shared credentials/config 指定 profile、环境变量、容器角色和 EC2 实例角色。
@@ -104,6 +104,8 @@
 - GUI、CLI、连接测试和运行时 S3 client 使用同一解析器，并显示实际采用的来源，不显示密钥值。
 
 验收：来源切换可回滚；缺失 profile 或角色端点产生可诊断错误；环境/实例凭据不落盘；S3-compatible 连接不会意外读取 AWS 默认链。
+
+交付结果：核心模型以 `CredentialSourceKind` 明确区分来源；GUI、CLI、连接测试与所有 S3 操作共用解析器；profile schema 3 和连接包格式 2 只保存外部来源及非敏感 Profile 名称。SSO、AssumeRole 和 Web Identity 仍保留到 v0.6.3，解析到这些令牌类型时会明确拒绝而不是静默缓存。
 
 ## v0.6：日常管理闭环
 

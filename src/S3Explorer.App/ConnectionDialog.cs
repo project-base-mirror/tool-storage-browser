@@ -15,10 +15,16 @@ internal sealed class ConnectionDialog : Form
     private readonly ComboBox _provider = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _endpoint = new();
     private readonly ComboBox _region = new() { DropDownStyle = ComboBoxStyle.DropDown };
-    private readonly TextBox _accessKey = new();
-    private readonly TextBox _secretKey = new() { UseSystemPasswordChar = true };
-    private readonly CheckBox _useSessionToken = new() { Text = "使用临时 Session Token", AutoSize = true };
-    private readonly TextBox _sessionToken = new() { UseSystemPasswordChar = true };
+    private readonly ComboBox _credentialSource = new()
+    {
+        Name = "CredentialSourceComboBox",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
+    private readonly TextBox _awsProfileName = new() { Name = "AwsProfileNameTextBox" };
+    private readonly TextBox _accessKey = new() { Name = "AccessKeyTextBox" };
+    private readonly TextBox _secretKey = new() { Name = "SecretKeyTextBox", UseSystemPasswordChar = true };
+    private readonly CheckBox _useSessionToken = new() { Name = "UseSessionTokenCheckBox", Text = "使用临时 Session Token", AutoSize = true };
+    private readonly TextBox _sessionToken = new() { Name = "SessionTokenTextBox", UseSystemPasswordChar = true };
     private readonly RadioButton _auto = new() { Text = "自动", Checked = true, AutoSize = true };
     private readonly RadioButton _virtual = new() { Text = "Virtual Hosted", AutoSize = true };
     private readonly RadioButton _path = new() { Text = "Path Style", AutoSize = true };
@@ -49,6 +55,11 @@ internal sealed class ConnectionDialog : Form
     private readonly Label _regionLabel = FieldLabel("Region：");
     private readonly Label _regionHint = HintLabel("Amazon S3 使用区域；不需要 Region 的服务会自动采用正确的签名值并隐藏此项。");
     private readonly Label _sessionTokenLabel = FieldLabel("Session Token：");
+    private readonly Label _accessKeyLabel = FieldLabel("Access Key：");
+    private readonly Label _secretKeyLabel = FieldLabel("Secret Key：");
+    private readonly Label _awsProfileLabel = FieldLabel("AWS Profile：");
+    private readonly Label _credentialHint = HintLabel("选择凭据的实际来源；环境和角色凭据不会保存到连接文件。");
+    private readonly TableLayoutPanel _secretPanel = new() { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };
     private readonly Guid _id;
     private bool _loading;
 
@@ -75,12 +86,21 @@ internal sealed class ConnectionDialog : Form
             .ToArray());
         _storageClass.Items.AddRange(["STANDARD", "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE"]);
         _region.Items.AddRange(["auto", "us-east-1", "us-west-1", "us-west-2", "us-west-004", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1", "ap-guangzhou", "oss-cn-hangzhou"]);
+        _credentialSource.Items.AddRange([
+            new Choice<CredentialSourceKind>(CredentialSourceKind.StoredKeys, "已保存的 Access Key / Secret Key"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsSharedProfile, "AWS shared credentials/config Profile"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsEnvironmentVariables, "AWS 环境变量"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsContainerRole, "AWS 容器角色（ECS/EKS）"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsInstanceRole, "AWS EC2 实例角色"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsDefaultChain, "AWS SDK 默认凭据链")
+        ]);
 
         BuildLayout();
         LoadProfile(Profile);
 
         _accountType.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _provider.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
+        _credentialSource.SelectedIndexChanged += (_, _) => UpdateCredentialSourceVisibility();
         _useSessionToken.CheckedChanged += (_, _) => UpdateSessionTokenVisibility();
         _https.CheckedChanged += (_, _) => ApplyHttpsToEndpoint();
         _test.Click += async (_, _) => await TestConnectionAsync();
@@ -154,17 +174,19 @@ internal sealed class ConnectionDialog : Form
         AddField(basicTable, ref row, _endpointLabel, _endpoint);
         AddField(basicTable, ref row, _regionLabel, _region);
         AddHint(basicTable, ref row, _regionHint);
-        AddField(basicTable, ref row, FieldLabel("Access Key："), _accessKey);
+        AddField(basicTable, ref row, FieldLabel("凭据来源："), _credentialSource);
+        AddHint(basicTable, ref row, _credentialHint);
+        AddField(basicTable, ref row, _awsProfileLabel, _awsProfileName);
+        AddField(basicTable, ref row, _accessKeyLabel, _accessKey);
 
-        var secretPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };
-        secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _secretKey.Dock = DockStyle.Fill;
-        secretPanel.Controls.Add(_secretKey, 0, 0);
+        _secretPanel.Controls.Add(_secretKey, 0, 0);
         var show = new CheckBox { Text = "显示", AutoSize = true };
         show.CheckedChanged += (_, _) => _secretKey.UseSystemPasswordChar = !show.Checked;
-        secretPanel.Controls.Add(show, 1, 0);
-        AddField(basicTable, ref row, FieldLabel("Secret Key："), secretPanel);
+        _secretPanel.Controls.Add(show, 1, 0);
+        AddField(basicTable, ref row, _secretKeyLabel, _secretPanel);
         AddField(basicTable, ref row, new Label(), _useSessionToken);
         AddField(basicTable, ref row, _sessionTokenLabel, _sessionToken);
         basic.Controls.Add(basicTable);
@@ -289,6 +311,8 @@ internal sealed class ConnectionDialog : Form
             _accessKey.Text = profile.AccessKey;
             _secretKey.Text = profile.SecretKey;
             _sessionToken.Text = profile.SessionToken;
+            SelectChoice(_credentialSource, profile.CredentialSource);
+            _awsProfileName.Text = profile.AwsProfileName;
             _useSessionToken.Checked = profile.UsesTemporarySessionCredentials;
             _defaultBucket.Text = profile.DefaultBucket;
             _externalBuckets.Lines = profile.ExternalBuckets.ToArray();
@@ -311,6 +335,7 @@ internal sealed class ConnectionDialog : Form
             _loading = false;
         }
         ApplyAccountSelection(applyPreset: false);
+        UpdateCredentialSourceVisibility();
         UpdateSessionTokenVisibility();
     }
 
@@ -348,6 +373,11 @@ internal sealed class ConnectionDialog : Form
             _ => "Region 同时用于服务区域与 SigV4 签名。"
         };
 
+        if (serviceType != S3ServiceType.AmazonS3)
+            SelectChoice(_credentialSource, CredentialSourceKind.StoredKeys);
+        _credentialSource.Enabled = serviceType == S3ServiceType.AmazonS3;
+        UpdateCredentialSourceVisibility();
+
         if (!applyPreset) return;
         var preset = ConnectionProfile.CreatePreset(serviceType);
         _endpoint.Text = preset.Endpoint;
@@ -361,9 +391,37 @@ internal sealed class ConnectionDialog : Form
 
     private void UpdateSessionTokenVisibility()
     {
-        var visible = _useSessionToken.Checked;
+        var storedKeysVisible = _useSessionToken.Visible;
+        var visible = storedKeysVisible && _useSessionToken.Checked;
         _sessionTokenLabel.Visible = _sessionToken.Visible = visible;
-        if (!visible) _sessionToken.Text = string.Empty;
+        if (storedKeysVisible && !visible) _sessionToken.Text = string.Empty;
+    }
+
+    private void UpdateCredentialSourceVisibility()
+    {
+        var serviceType = SelectedServiceType();
+        var source = serviceType == S3ServiceType.AmazonS3
+            ? SelectedValue(_credentialSource, CredentialSourceKind.StoredKeys)
+            : CredentialSourceKind.StoredKeys;
+        var storedKeys = source == CredentialSourceKind.StoredKeys;
+        var sharedProfile = source == CredentialSourceKind.AwsSharedProfile;
+
+        _awsProfileLabel.Visible = _awsProfileName.Visible = sharedProfile;
+        _accessKeyLabel.Visible = _accessKey.Visible = storedKeys;
+        _secretKeyLabel.Visible = _secretPanel.Visible = storedKeys;
+        _useSessionToken.Visible = storedKeys;
+
+        _credentialHint.Text = source switch
+        {
+            CredentialSourceKind.StoredKeys => "Secret Key 与 Session Token 使用 Windows DPAPI CurrentUser 加密保存。",
+            CredentialSourceKind.AwsSharedProfile => "只保存 Profile 名称；凭据从 ~/.aws/credentials 与 ~/.aws/config 读取。",
+            CredentialSourceKind.AwsEnvironmentVariables => "读取 AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY 和可选 AWS_SESSION_TOKEN，不写入磁盘。",
+            CredentialSourceKind.AwsContainerRole => "锁定容器凭据端点；缺少 AWS_CONTAINER_CREDENTIALS_* 时会直接报错，不回退到其他身份。",
+            CredentialSourceKind.AwsInstanceRole => "锁定 EC2 Instance Metadata 角色；不会回退到本机 Profile。",
+            CredentialSourceKind.AwsDefaultChain => "按 AWS SDK 顺序解析并在连接测试中显示实际来源；需要固定身份时请选择上面的明确来源。",
+            _ => string.Empty
+        };
+        UpdateSessionTokenVisibility();
     }
 
     private void ApplyHttpsToEndpoint()
@@ -396,6 +454,10 @@ internal sealed class ConnectionDialog : Form
             .Where(bucket => bucket.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        var credentialSource = serviceType == S3ServiceType.AmazonS3
+            ? SelectedValue(_credentialSource, CredentialSourceKind.StoredKeys)
+            : CredentialSourceKind.StoredKeys;
+        var storedKeys = credentialSource == CredentialSourceKind.StoredKeys;
 
         return new ConnectionProfile
         {
@@ -405,9 +467,11 @@ internal sealed class ConnectionDialog : Form
             Endpoint = endpoint,
             Region = region,
             SignatureRegion = signingRegion,
-            AccessKey = _accessKey.Text.Trim(),
-            SecretKey = _secretKey.Text,
-            SessionToken = _useSessionToken.Checked ? _sessionToken.Text : string.Empty,
+            AccessKey = storedKeys ? _accessKey.Text.Trim() : string.Empty,
+            SecretKey = storedKeys ? _secretKey.Text : string.Empty,
+            SessionToken = storedKeys && _useSessionToken.Checked ? _sessionToken.Text : string.Empty,
+            CredentialSource = credentialSource,
+            AwsProfileName = credentialSource == CredentialSourceKind.AwsSharedProfile ? _awsProfileName.Text.Trim() : string.Empty,
             DefaultBucket = _defaultBucket.Text.Trim(),
             ExternalBuckets = externalBuckets,
             AddressingStyle = _path.Checked ? AddressingStyle.PathStyle : _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto,
@@ -456,7 +520,7 @@ internal sealed class ConnectionDialog : Form
             var result = await _storage.TestConnectionAsync(profile, CancellationToken.None);
             _result.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
             _result.Text = result.Success
-                ? $"{result.Message} 耗时 {result.Elapsed.TotalMilliseconds:N0} ms"
+                ? $"{result.Message} 凭据：{result.CredentialSource ?? profile.CredentialSourceDisplayName}；耗时 {result.Elapsed.TotalMilliseconds:N0} ms"
                 : $"连接失败：{result.ErrorCode ?? result.Message}（HTTP {result.HttpStatusCode?.ToString() ?? "—"}，RequestId {result.RequestId ?? "—"}）";
         }
         catch (Exception exception)
@@ -496,4 +560,12 @@ internal sealed class ConnectionDialog : Form
 
     private static T SelectedValue<T>(ComboBox comboBox, T fallback) where T : struct, Enum =>
         comboBox.SelectedItem is Choice<T> choice ? choice.Value : fallback;
+
+    private S3ServiceType SelectedServiceType()
+    {
+        var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
+        return category == S3AccountCategory.S3Compatible
+            ? SelectedValue(_provider, S3ServiceType.Custom)
+            : S3ProviderCatalog.DefaultServiceType(category);
+    }
 }

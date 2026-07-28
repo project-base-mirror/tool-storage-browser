@@ -65,16 +65,17 @@ public sealed class ConnectionArchiveService
         foreach (var profile in profiles)
             profile.ValidateConfiguration();
 
-        if (includeCredentials && (password?.Length ?? 0) < PasswordMinimumLength)
+        var containsStoredCredentials = includeCredentials && profiles.Any(profile => profile.HasStoredCredentials);
+        if (containsStoredCredentials && (password?.Length ?? 0) < PasswordMinimumLength)
             throw new ArgumentException($"迁移密码至少需要 {PasswordMinimumLength} 个字符。", nameof(password));
 
         var exportedAt = DateTimeOffset.UtcNow;
         var portableProfiles = profiles
-            .Select(profile => PortableProfile.FromRuntime(profile, includeCredentials))
+            .Select(profile => PortableProfile.FromRuntime(profile, containsStoredCredentials))
             .ToList();
         ArchiveEnvelope envelope;
 
-        if (!includeCredentials)
+        if (!containsStoredCredentials)
         {
             envelope = new ArchiveEnvelope
             {
@@ -396,7 +397,7 @@ public sealed class ConnectionArchiveService
                 : null,
             CredentialSource = source.CredentialSource,
             AwsProfileName = source.CredentialSource == CredentialSourceKind.AwsSharedProfile
-                ? source.AwsProfileName.Trim()
+                ? (source.AwsProfileName ?? string.Empty).Trim()
                 : string.Empty,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
@@ -424,7 +425,7 @@ public sealed class ConnectionArchiveService
             SecretKey = SecretKey ?? string.Empty,
             SessionToken = SessionToken ?? string.Empty,
             CredentialSource = CredentialSource,
-            AwsProfileName = AwsProfileName,
+            AwsProfileName = AwsProfileName ?? string.Empty,
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,
