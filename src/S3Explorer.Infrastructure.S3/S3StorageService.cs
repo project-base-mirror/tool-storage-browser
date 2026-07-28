@@ -161,26 +161,15 @@ public sealed class S3StorageService : IS3StorageService
         var objectOwnership = capabilities.ObjectOwnership.Supported
             ? await GetBucketObjectOwnershipAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
             : null;
-        var versioning = "未查询";
-        if (capabilities.Versioning.Supported)
-        {
-            try
-            {
-                using var client = _factory.Create(profile);
-                var response = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest
-                {
-                    BucketName = bucket
-                }, cancellationToken).ConfigureAwait(false);
-                versioning = response.VersioningConfig?.Status?.Value ?? "未启用";
-            }
-            catch (AmazonS3Exception exception) when (IsUnsupportedBucketFeature(exception))
-            {
-                versioning = "服务端不支持";
-            }
-        }
+        var versioning = capabilities.Versioning.Supported
+            ? (await GetBucketVersioningAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).ToString()
+            : capabilities.Versioning.Reason;
+        var encryption = capabilities.Encryption.Supported
+            ? (await GetBucketEncryptionAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).Summary
+            : capabilities.Encryption.Reason;
         return new BucketPropertiesSnapshot(
             bucket, profile.Endpoint, profile.ServiceType, profile.EffectiveSignatureRegion,
-            versioning, capabilities.Encryption.Supported ? "服务端配置" : capabilities.Encryption.Reason,
+            versioning, encryption,
             policy is not null, acl, publicAccessBlock, objectOwnership, capabilities);
     }
 
@@ -380,6 +369,243 @@ public sealed class S3StorageService : IS3StorageService
                 ]
             }
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BucketCorsConfiguration> GetBucketCorsAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetCORSConfigurationAsync(new GetCORSConfigurationRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+            return BucketCorsDocument.Validate(new BucketCorsConfiguration(
+                (response.Configuration?.Rules ?? []).Select(rule => new BucketCorsRule(
+                    rule.Id, rule.AllowedOrigins.ToArray(), rule.AllowedMethods.ToArray(),
+                    rule.AllowedHeaders.ToArray(), rule.ExposeHeaders.ToArray(),
+                    rule.MaxAgeSeconds > 0 ? rule.MaxAgeSeconds : null)).ToArray()));
+        }
+        catch (AmazonS3Exception exception) when (IsMissingCors(exception))
+        {
+            return new BucketCorsConfiguration([]);
+        }
+    }
+
+    public async Task PutBucketCorsAsync(
+        ConnectionProfile profile, string bucket, BucketCorsConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        var normalized = BucketCorsDocument.Validate(configuration);
+        if (normalized.Rules.Count == 0)
+            throw new ArgumentException("CORS 规则为空时请使用删除配置。", nameof(configuration));
+        using var client = _factory.Create(profile);
+        await client.PutCORSConfigurationAsync(new PutCORSConfigurationRequest
+        {
+            BucketName = bucket,
+            Configuration = new CORSConfiguration
+            {
+                Rules = normalized.Rules.Select(rule => new CORSRule
+                {
+                    Id = rule.Id,
+                    AllowedOrigins = rule.AllowedOrigins.ToList(),
+                    AllowedMethods = rule.AllowedMethods.ToList(),
+                    AllowedHeaders = rule.AllowedHeaders.ToList(),
+                    ExposeHeaders = rule.ExposeHeaders.ToList(),
+                    MaxAgeSeconds = rule.MaxAgeSeconds ?? 0
+                }).ToList()
+            }
+        }, cancellationToken).ConfigureAwait(false);
+        var readBack = await GetBucketCorsAsync(profile, bucket, cancellationToken).ConfigureAwait(false);
+        if (!BucketCorsDocument.AreSemanticallyEquivalent(normalized, readBack))
+            throw new InvalidOperationException("Bucket CORS 保存后回读内容不一致。");
+    }
+
+    public async Task DeleteBucketCorsAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.DeleteCORSConfigurationAsync(new DeleteCORSConfigurationRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingCors(exception)) { }
+    }
+
+    public async Task<BucketVersioningState> GetBucketVersioningAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "Bucket Versioning");
+        using var client = _factory.Create(profile);
+        var response = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest
+        {
+            BucketName = bucket
+        }, cancellationToken).ConfigureAwait(false);
+        return response.VersioningConfig?.Status?.Value switch
+        {
+            "Enabled" => BucketVersioningState.Enabled,
+            "Suspended" => BucketVersioningState.Suspended,
+            _ => BucketVersioningState.Disabled
+        };
+    }
+
+    public async Task PutBucketVersioningAsync(
+        ConnectionProfile profile, string bucket, BucketVersioningState state,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "Bucket Versioning");
+        if (state == BucketVersioningState.Disabled)
+            throw new ArgumentException("版本控制启用后不能恢复到从未启用状态，只能暂停。", nameof(state));
+        using var client = _factory.Create(profile);
+        await client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucket,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = state == BucketVersioningState.Enabled
+                    ? VersionStatus.Enabled
+                    : VersionStatus.Suspended
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BucketEncryptionConfiguration> GetBucketEncryptionAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Encryption, "Bucket 默认加密");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetBucketEncryptionAsync(new GetBucketEncryptionRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+            var value = response.ServerSideEncryptionConfiguration?.ServerSideEncryptionRules?
+                .FirstOrDefault()?.ServerSideEncryptionByDefault;
+            return value?.ServerSideEncryptionAlgorithm?.Value switch
+            {
+                "aws:kms" or "aws:kms:dsse" => new BucketEncryptionConfiguration(
+                    BucketEncryptionMode.SseKms,
+                    value.ServerSideEncryptionKeyManagementServiceKeyId),
+                "AES256" => new BucketEncryptionConfiguration(BucketEncryptionMode.SseS3),
+                _ => new BucketEncryptionConfiguration(BucketEncryptionMode.None)
+            };
+        }
+        catch (AmazonS3Exception exception) when (IsMissingEncryption(exception))
+        {
+            return new BucketEncryptionConfiguration(BucketEncryptionMode.None);
+        }
+    }
+
+    public async Task PutBucketEncryptionAsync(
+        ConnectionProfile profile, string bucket, BucketEncryptionConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        EnsureBucketFeature(capabilities.Encryption, "Bucket 默认加密");
+        configuration.Validate(capabilities.KmsEncryption.Supported);
+        if (configuration.Mode == BucketEncryptionMode.None)
+            throw new ArgumentException("未配置加密时请使用删除配置。", nameof(configuration));
+        using var client = _factory.Create(profile);
+        await client.PutBucketEncryptionAsync(new PutBucketEncryptionRequest
+        {
+            BucketName = bucket,
+            ServerSideEncryptionConfiguration = new ServerSideEncryptionConfiguration
+            {
+                ServerSideEncryptionRules =
+                [
+                    new ServerSideEncryptionRule
+                    {
+                        ServerSideEncryptionByDefault = new ServerSideEncryptionByDefault
+                        {
+                            ServerSideEncryptionAlgorithm = configuration.Mode == BucketEncryptionMode.SseS3
+                                ? ServerSideEncryptionMethod.AES256
+                                : ServerSideEncryptionMethod.AWSKMS,
+                            ServerSideEncryptionKeyManagementServiceKeyId = configuration.Mode == BucketEncryptionMode.SseKms
+                                ? configuration.KmsKeyId
+                                : null
+                        }
+                    }
+                ]
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteBucketEncryptionAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Encryption, "Bucket 默认加密");
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.DeleteBucketEncryptionAsync(new DeleteBucketEncryptionRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingEncryption(exception)) { }
+    }
+
+    public async Task<IReadOnlyList<BucketTag>> GetBucketTagsAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetBucketTaggingAsync(new GetBucketTaggingRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+            return BucketTagValidator.Validate(response.TagSet.Select(tag =>
+                new BucketTag(tag.Key, tag.Value)));
+        }
+        catch (AmazonS3Exception exception) when (IsMissingTagSet(exception))
+        {
+            return [];
+        }
+    }
+
+    public async Task PutBucketTagsAsync(
+        ConnectionProfile profile, string bucket, IReadOnlyCollection<BucketTag> tags,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        var normalized = BucketTagValidator.Validate(tags);
+        if (normalized.Count == 0)
+            throw new ArgumentException("Tag 为空时请使用删除配置。", nameof(tags));
+        using var client = _factory.Create(profile);
+        await client.PutBucketTaggingAsync(new PutBucketTaggingRequest
+        {
+            BucketName = bucket,
+            TagSet = normalized.Select(tag => new Amazon.S3.Model.Tag
+            {
+                Key = tag.Key,
+                Value = tag.Value
+            }).ToList()
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteBucketTagsAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.DeleteBucketTaggingAsync(new DeleteBucketTaggingRequest
+            {
+                BucketName = bucket
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingTagSet(exception)) { }
     }
 
     public async Task<BucketEmptySummary> ScanBucketAsync(
@@ -1172,6 +1398,18 @@ public sealed class S3StorageService : IS3StorageService
         exception.StatusCode == HttpStatusCode.NotFound ||
         string.Equals(exception.ErrorCode, "OwnershipControlsNotFoundError", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(exception.ErrorCode, "NoSuchOwnershipControls", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingCors(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchCORSConfiguration", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingEncryption(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "ServerSideEncryptionConfigurationNotFoundError", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingTagSet(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchTagSet", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsUnsupportedBucketFeature(AmazonS3Exception exception) =>
         exception.StatusCode is HttpStatusCode.NotImplemented or HttpStatusCode.MethodNotAllowed ||

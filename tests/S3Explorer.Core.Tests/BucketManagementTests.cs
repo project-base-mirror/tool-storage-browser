@@ -70,8 +70,64 @@ public sealed class BucketManagementTests
         Assert.True(capabilities.Policy.Supported);
         Assert.True(capabilities.Acl.Supported);
         Assert.True(capabilities.EmptyBucket.Supported);
+        Assert.True(capabilities.Cors.Supported);
+        Assert.True(capabilities.Versioning.Supported);
+        Assert.True(capabilities.Encryption.Supported);
+        Assert.True(capabilities.KmsEncryption.Supported);
+        Assert.True(capabilities.Tagging.Supported);
         Assert.False(capabilities.PublicAccessBlock.Supported);
         Assert.False(capabilities.ObjectOwnership.Supported);
+    }
+
+    [Fact]
+    public void CorsDocumentNormalizesMethodsAndCommaSeparatedValues()
+    {
+        var configuration = BucketCorsDocument.Validate(new BucketCorsConfiguration([
+            new BucketCorsRule(" web ", ["https://example.com"], ["get", "HEAD"],
+                ["Content-Type, X-Request-Id"], [], 600)
+        ]));
+
+        Assert.Equal(["GET", "HEAD"], configuration.Rules[0].AllowedMethods);
+        Assert.Equal(["Content-Type", "X-Request-Id"], configuration.Rules[0].AllowedHeaders);
+        Assert.Equal("web", configuration.Rules[0].Id);
+        Assert.True(BucketCorsDocument.AreSemanticallyEquivalent(
+            configuration, BucketCorsDocument.Parse(BucketCorsDocument.Serialize(configuration))));
+    }
+
+    [Theory]
+    [InlineData("PATCH")]
+    [InlineData("")]
+    public void CorsDocumentRejectsInvalidMethods(string method)
+    {
+        Assert.Throws<ArgumentException>(() => BucketCorsDocument.Validate(
+            new BucketCorsConfiguration([new BucketCorsRule(null, ["*"], [method], [], [], null)])));
+    }
+
+    [Fact]
+    public void CorsDocumentTreatsZeroMaxAgeAsOmitted()
+    {
+        var configuration = BucketCorsDocument.Validate(new BucketCorsConfiguration([
+            new BucketCorsRule(null, ["*"], ["GET"], [], [], 0)
+        ]));
+
+        Assert.Null(configuration.Rules[0].MaxAgeSeconds);
+    }
+
+    [Fact]
+    public void TagValidatorRejectsDuplicateKeys()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => BucketTagValidator.Validate([
+            new BucketTag("team", "a"), new BucketTag("team", "b")
+        ]));
+
+        Assert.Contains("重复", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void KmsEncryptionRequiresKeyId()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new BucketEncryptionConfiguration(BucketEncryptionMode.SseKms).Validate(true));
     }
 
     [Fact]

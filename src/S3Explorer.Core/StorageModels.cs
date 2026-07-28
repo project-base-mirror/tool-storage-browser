@@ -77,6 +77,17 @@ public interface IS3StorageService
     Task PutBucketPublicAccessBlockAsync(ConnectionProfile profile, string bucket, BucketPublicAccessBlockSnapshot configuration, CancellationToken cancellationToken);
     Task<BucketObjectOwnershipMode?> GetBucketObjectOwnershipAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task PutBucketObjectOwnershipAsync(ConnectionProfile profile, string bucket, BucketObjectOwnershipMode mode, CancellationToken cancellationToken);
+    Task<BucketCorsConfiguration> GetBucketCorsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketCorsAsync(ConnectionProfile profile, string bucket, BucketCorsConfiguration configuration, CancellationToken cancellationToken);
+    Task DeleteBucketCorsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketVersioningState> GetBucketVersioningAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketVersioningAsync(ConnectionProfile profile, string bucket, BucketVersioningState state, CancellationToken cancellationToken);
+    Task<BucketEncryptionConfiguration> GetBucketEncryptionAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketEncryptionAsync(ConnectionProfile profile, string bucket, BucketEncryptionConfiguration configuration, CancellationToken cancellationToken);
+    Task DeleteBucketEncryptionAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<IReadOnlyList<BucketTag>> GetBucketTagsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketTagsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<BucketTag> tags, CancellationToken cancellationToken);
+    Task DeleteBucketTagsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptySummary> ScanBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptyResult> EmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);

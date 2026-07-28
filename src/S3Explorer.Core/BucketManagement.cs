@@ -13,8 +13,11 @@ public sealed record BucketCapabilities(
     BucketFeatureSupport Acl,
     BucketFeatureSupport PublicAccessBlock,
     BucketFeatureSupport ObjectOwnership,
+    BucketFeatureSupport Cors,
     BucketFeatureSupport Versioning,
     BucketFeatureSupport Encryption,
+    BucketFeatureSupport KmsEncryption,
+    BucketFeatureSupport Tagging,
     BucketFeatureSupport EmptyBucket);
 
 public static class BucketCapabilityMatrix
@@ -25,22 +28,30 @@ public static class BucketCapabilityMatrix
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
+            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
+            BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes()),
         S3ServiceType.MinIO => new(
             BucketFeatureSupport.Yes("MinIO 支持 Bucket Policy"),
             BucketFeatureSupport.Yes("MinIO 支持 S3 ACL；服务端策略可能限制公开 ACL"),
             BucketFeatureSupport.No("MinIO 不提供 AWS Public Access Block API"),
             BucketFeatureSupport.No("MinIO 不提供 AWS Object Ownership API"),
+            BucketFeatureSupport.Yes("MinIO 支持 S3 Bucket CORS API"),
             BucketFeatureSupport.Yes("MinIO 支持 S3 Versioning API"),
-            BucketFeatureSupport.No("MinIO 加密由服务端 KMS/配置管理，本窗口不发送 AWS 加密配置请求"),
+            BucketFeatureSupport.Yes("MinIO 支持 Bucket 默认加密；服务端必须已配置密钥管理"),
+            BucketFeatureSupport.Yes("MinIO 支持 SSE-KMS；保存前请确认服务端 KMS 与 Key 已就绪"),
+            BucketFeatureSupport.Yes("MinIO 支持 S3 Bucket Tagging API"),
             BucketFeatureSupport.Yes()),
         _ => new(
             BucketFeatureSupport.No("该兼容服务的 Bucket Policy API 尚未验证"),
             BucketFeatureSupport.No("该兼容服务的 ACL API 尚未验证"),
             BucketFeatureSupport.No("仅 AWS S3 支持此控制项"),
             BucketFeatureSupport.No("仅 AWS S3 支持此控制项"),
+            BucketFeatureSupport.No("该兼容服务的 CORS API 尚未验证"),
             BucketFeatureSupport.No("该兼容服务的版本 API 尚未验证"),
             BucketFeatureSupport.No("该兼容服务的加密配置 API 尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的 SSE-KMS 配置 API 尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的 Tagging API 尚未验证"),
             BucketFeatureSupport.Yes("普通对象与未完成分片可安全清理；版本能力需扫描确认"))
     };
 }
