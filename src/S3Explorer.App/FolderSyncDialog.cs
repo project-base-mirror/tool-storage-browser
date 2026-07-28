@@ -17,6 +17,7 @@ internal sealed class FolderSyncDialog : Form
     private readonly int _retryDelaySeconds;
     private readonly ListView _jobList = new()
     {
+        Name = "SyncJobList",
         Dock = DockStyle.Fill,
         View = View.Details,
         FullRowSelect = true,
@@ -24,6 +25,8 @@ internal sealed class FolderSyncDialog : Form
         HideSelection = false,
         HeaderStyle = ColumnHeaderStyle.Nonclickable
     };
+    private readonly ColumnHeader _jobNameColumn = new() { Text = "名称" };
+    private readonly ColumnHeader _jobDirectionColumn = new() { Text = "方向" };
     private readonly Label _sourceCaption = PathCaption("本地源");
     private readonly Label _destinationCaption = PathCaption("S3 目标");
     private readonly Label _source = PathValue();
@@ -38,11 +41,13 @@ internal sealed class FolderSyncDialog : Form
     };
     private readonly ListView _results = new()
     {
+        Name = "SyncResultsList",
         Dock = DockStyle.Fill,
         View = View.Details,
         FullRowSelect = true,
         GridLines = false,
-        HideSelection = false
+        HideSelection = false,
+        BorderStyle = BorderStyle.None
     };
     private readonly ToolStrip _actions = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Bottom, ImageScalingSize = new Size(18, 18) };
     private readonly ToolStripButton _analyze = new("分析", UiIcons.Create(UiIconKind.Analyze, 18));
@@ -60,7 +65,14 @@ internal sealed class FolderSyncDialog : Form
         TextAlign = ContentAlignment.MiddleCenter,
         ForeColor = SystemColors.GrayText
     };
-    private readonly Panel _body = new() { Dock = DockStyle.Fill };
+    private readonly Panel _body = new()
+    {
+        Name = "SyncResultsFrame",
+        Dock = DockStyle.Fill,
+        Margin = new Padding(14, 0, 14, 10),
+        BackColor = SystemColors.Window,
+        BorderStyle = BorderStyle.FixedSingle
+    };
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private List<FolderSyncJob> _jobs = [];
     private FolderSyncPlan? _plan;
@@ -135,13 +147,21 @@ internal sealed class FolderSyncDialog : Form
         });
         header.Controls.Add(heading, 1, 0);
 
-        var route = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12, 8, 12, 8), ColumnCount = 3 };
+        var route = new TableLayoutPanel
+        {
+            Name = "SyncRouteSummary",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(14, 10, 14, 10),
+            ColumnCount = 3,
+            RowCount = 1
+        };
         route.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         route.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
         route.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        route.Controls.Add(CreatePathCard(_sourceCaption, _source, UiIconKind.Folder), 0, 0);
+        route.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        route.Controls.Add(CreatePathCard("SyncSourcePathCard", _sourceCaption, _source, UiIconKind.Folder), 0, 0);
         route.Controls.Add(_arrow, 1, 0);
-        route.Controls.Add(CreatePathCard(_destinationCaption, _destination, UiIconKind.Bucket), 2, 0);
+        route.Controls.Add(CreatePathCard("SyncDestinationPathCard", _destinationCaption, _destination, UiIconKind.Bucket), 2, 0);
 
         _results.Columns.Add("文件", 300);
         _results.Columns.Add("状态", 80);
@@ -152,9 +172,14 @@ internal sealed class FolderSyncDialog : Form
         _body.Controls.Add(_empty);
         _body.Controls.Add(_results);
 
-        _jobList.Columns.Add("名称", 132);
-        _jobList.Columns.Add("方向", 82);
-        var navigation = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 8, 8, 10) };
+        _jobList.Columns.AddRange([_jobNameColumn, _jobDirectionColumn]);
+        var navigation = new Panel
+        {
+            Name = "SyncTaskNavigation",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12, 8, 10, 10),
+            BackColor = SystemColors.Control
+        };
         navigation.Controls.Add(_jobList);
         navigation.Controls.Add(new Label
         {
@@ -167,22 +192,25 @@ internal sealed class FolderSyncDialog : Form
 
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 94));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.Controls.Add(route, 0, 0);
         content.Controls.Add(_body, 0, 1);
 
-        var workspace = new TableLayoutPanel
+        var workspace = new SplitContainer
         {
+            Name = "SyncWorkspace",
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1
+            Orientation = Orientation.Vertical,
+            FixedPanel = FixedPanel.Panel1,
+            SplitterWidth = 5
         };
-        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
-        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        workspace.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        workspace.Controls.Add(navigation, 0, 0);
-        workspace.Controls.Add(content, 1, 0);
+        workspace.Size = new Size(ClientSize.Width, Math.Max(1, ClientSize.Height - header.Height - _actions.Height));
+        workspace.Panel1MinSize = 220;
+        workspace.Panel2MinSize = 500;
+        workspace.SplitterDistance = 250;
+        workspace.Panel1.Controls.Add(navigation);
+        workspace.Panel2.Controls.Add(content);
 
         _filter.Items.AddRange(["全部", "待执行", "新增", "已更改", "已删除", "已排除"]);
         _filter.SelectedIndex = 0;
@@ -200,11 +228,14 @@ internal sealed class FolderSyncDialog : Form
         Controls.Add(workspace);
         Controls.Add(header);
         _results.Visible = false;
+        ResizeJobColumns();
     }
 
     private void WireEvents()
     {
         _jobList.SelectedIndexChanged += (_, _) => SelectCurrentJob();
+        _jobList.Resize += (_, _) => ResizeJobColumns();
+        _jobList.FontChanged += (_, _) => ResizeJobColumns();
         _filter.SelectedIndexChanged += (_, _) => PopulateResults();
         _add.Click += async (_, _) => await AddJobAsync();
         _edit.Click += async (_, _) => await EditJobAsync();
@@ -497,24 +528,36 @@ internal sealed class FolderSyncDialog : Form
         return _jobs.FirstOrDefault(job => job.Id == id);
     }
 
-    private static Control CreatePathCard(Label caption, Label value, UiIconKind icon)
+    private void ResizeJobColumns()
+    {
+        var available = Math.Max(160, _jobList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+        var direction = Math.Min(
+            Math.Max(76, TextRenderer.MeasureText("本地 → S3", _jobList.Font).Width + 14),
+            available / 2);
+        _jobDirectionColumn.Width = direction;
+        _jobNameColumn.Width = Math.Max(80, available - direction);
+    }
+
+    private static Control CreatePathCard(string name, Label caption, Label value, UiIconKind icon)
     {
         var card = new TableLayoutPanel
         {
+            Name = name,
             Dock = DockStyle.Fill,
             BackColor = SystemColors.Window,
             BorderStyle = BorderStyle.FixedSingle,
             ColumnCount = 2,
             RowCount = 2,
-            Margin = new Padding(0)
+            Margin = new Padding(0),
+            Padding = new Padding(8, 5, 8, 5)
         };
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
         card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var image = new PictureBox
         {
-            Image = UiIcons.Create(icon, 22),
+            Image = UiIcons.Create(icon, 20),
             SizeMode = PictureBoxSizeMode.CenterImage,
             Dock = DockStyle.Fill
         };
@@ -530,14 +573,16 @@ internal sealed class FolderSyncDialog : Form
         Text = text,
         Dock = DockStyle.Fill,
         ForeColor = SystemColors.GrayText,
-        Padding = new Padding(7, 4, 4, 0)
+        AutoEllipsis = true,
+        Padding = new Padding(4, 1, 4, 0)
     };
 
     private static Label PathValue() => new()
     {
         Dock = DockStyle.Fill,
         AutoEllipsis = true,
-        Padding = new Padding(7, 1, 5, 3),
+        TextAlign = ContentAlignment.MiddleLeft,
+        Padding = new Padding(4, 0, 4, 1),
         Font = new Font(SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont, FontStyle.Bold)
     };
 
