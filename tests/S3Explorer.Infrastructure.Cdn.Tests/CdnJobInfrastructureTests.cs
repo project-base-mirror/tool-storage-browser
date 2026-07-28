@@ -36,7 +36,9 @@ public sealed class CdnJobInfrastructureTests
             var loaded = await store.LoadAsync();
 
             Assert.Contains("\"purgeThenWarmup\"", text, StringComparison.Ordinal);
-            Assert.Equal(job, Assert.Single(loaded.Jobs));
+            var loadedJob = Assert.Single(loaded.Jobs);
+            Assert.Equal(job with { Urls = loadedJob.Urls }, loadedJob);
+            Assert.Equal(job.Urls, loadedJob.Urls);
         }
         finally
         {

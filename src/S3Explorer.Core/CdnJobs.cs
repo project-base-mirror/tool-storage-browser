@@ -492,7 +492,9 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             return job with
             {
                 State = CdnJobState.Completed,
-                ProviderTaskId = result.ProviderTaskId,
+                ProviderTaskId = string.IsNullOrWhiteSpace(result.ProviderTaskId)
+                    ? job.ProviderTaskId
+                    : result.ProviderTaskId,
                 LastMessage = message,
                 LastError = string.Empty,
                 LastStatusCode = result.StatusCode,
