@@ -77,16 +77,96 @@ public sealed class CdnDialogLayoutTests
             PerformLayout(dialog);
 
             var run = FindButton(dialog, "RunCdnDownloadTestButton");
+            var cancel = FindButton(dialog, "CancelCdnDownloadTestButton");
             var close = FindButton(dialog, "CloseCdnDownloadTestButton");
             AssertButtonIsReadable(dialog, run);
+            AssertButtonIsReadable(dialog, cancel);
             AssertButtonIsReadable(dialog, close);
+            var timeout = Assert.IsType<NumericUpDown>(Assert.Single(
+                dialog.Controls.Find("CdnDownloadTimeoutSeconds", searchAllChildren: true)));
+            var status = Assert.IsType<Label>(Assert.Single(
+                dialog.Controls.Find("CdnDownloadTestStatus", searchAllChildren: true)));
+            Assert.Equal(profile.TimeoutSeconds, timeout.Value);
+            var footer = Assert.IsType<TableLayoutPanel>(status.Parent);
+            var actions = Assert.IsType<FlowLayoutPanel>(run.Parent);
+            Assert.Equal(0, footer.GetColumn(status));
+            Assert.Equal(1, footer.GetColumn(actions));
             Assert.Same(run, dialog.AcceptButton);
             Assert.Same(close, dialog.CancelButton);
         });
     }
 
+    [Fact]
+    public void DownloadTestCanBeCancelledWithoutClosingDialog()
+    {
+        RunSta(() =>
+        {
+            var service = new BlockingDeliveryService();
+            var profile = new CdnProfile { Name = "site-cdn", BaseUrl = "https://cdn.example.com" };
+            using var dialog = new CdnDownloadTestDialog(
+                service,
+                profile,
+                null,
+                new Uri("https://cdn.example.com/assets/app.js"));
+            dialog.Show();
+
+            WaitUntil(() => service.Started && FindButton(dialog, "CancelCdnDownloadTestButton").Enabled);
+            FindButton(dialog, "CancelCdnDownloadTestButton").PerformClick();
+            WaitUntil(() => FindLabel(dialog, "CdnDownloadTestStatus").Text == "测试已取消");
+
+            Assert.True(FindButton(dialog, "RunCdnDownloadTestButton").Enabled);
+            Assert.False(FindButton(dialog, "CancelCdnDownloadTestButton").Enabled);
+            Assert.False(dialog.IsDisposed);
+            dialog.Close();
+        });
+    }
+
+    [Fact]
+    public void DownloadTestReportsConfiguredTimeout()
+    {
+        RunSta(() =>
+        {
+            var service = new BlockingDeliveryService();
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com",
+                TimeoutSeconds = 1
+            };
+            using var dialog = new CdnDownloadTestDialog(
+                service,
+                profile,
+                null,
+                new Uri("https://cdn.example.com/assets/app.js"));
+            dialog.Show();
+
+            WaitUntil(
+                () => FindLabel(dialog, "CdnDownloadTestStatus").Text == "测试超时（1 秒）",
+                TimeSpan.FromSeconds(5));
+
+            Assert.True(FindButton(dialog, "RunCdnDownloadTestButton").Enabled);
+            Assert.False(FindButton(dialog, "CancelCdnDownloadTestButton").Enabled);
+            dialog.Close();
+        });
+    }
+
     private static Button FindButton(Control root, string name) =>
         Assert.IsType<Button>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
+
+    private static Label FindLabel(Control root, string name) =>
+        Assert.IsType<Label>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
+
+    private static void WaitUntil(Func<bool> condition, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(3));
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("The expected dialog state was not reached.");
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+    }
 
     private static void AssertButtonIsReadable(Form dialog, Button button)
     {
@@ -174,5 +254,36 @@ public sealed class CdnDialogLayoutTests
             Uri url,
             CancellationToken cancellationToken) =>
             Task.FromResult(new CdnOperationResult(true, 200, TimeSpan.Zero, 0, "ok"));
+    }
+
+    private sealed class BlockingDeliveryService : ICdnDeliveryService
+    {
+        public bool Started { get; private set; }
+
+        public async Task<CdnProbeResult> ProbeAsync(
+            CdnProfile profile,
+            CdnCredential? credential,
+            Uri url,
+            long sampleBytes,
+            CancellationToken cancellationToken)
+        {
+            Started = true;
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The blocking probe should only finish through cancellation.");
+        }
+
+        public Task<CdnOperationResult> WarmupAsync(
+            CdnProfile profile,
+            CdnCredential? credential,
+            Uri url,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<CdnOperationResult> PurgeAsync(
+            CdnProfile profile,
+            CdnCredential? credential,
+            Uri url,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

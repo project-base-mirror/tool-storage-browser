@@ -22,6 +22,14 @@ internal sealed class CdnDownloadTestDialog : Form
         Value = 4,
         Width = 100
     };
+    private readonly NumericUpDown _timeoutSeconds = new()
+    {
+        Name = "CdnDownloadTimeoutSeconds",
+        Minimum = 1,
+        Maximum = 3600,
+        Value = 100,
+        Width = 90
+    };
     private readonly Label _status = new()
     {
         Name = "CdnDownloadTestStatus",
@@ -50,6 +58,14 @@ internal sealed class CdnDownloadTestDialog : Form
         Text = "开始测试",
         AutoSize = true,
         MinimumSize = new Size(108, 36)
+    };
+    private readonly Button _cancel = new()
+    {
+        Name = "CancelCdnDownloadTestButton",
+        Text = "取消测试",
+        AutoSize = true,
+        MinimumSize = new Size(104, 36),
+        Enabled = false
     };
     private readonly Button _close = new()
     {
@@ -85,7 +101,12 @@ internal sealed class CdnDownloadTestDialog : Form
 
         BuildLayout();
         _urlBox.Text = url.AbsoluteUri;
+        _timeoutSeconds.Value = Math.Clamp(
+            profile.TimeoutSeconds,
+            decimal.ToInt32(_timeoutSeconds.Minimum),
+            decimal.ToInt32(_timeoutSeconds.Maximum));
         _test.Click += async (_, _) => await RunTestAsync();
+        _cancel.Click += (_, _) => CancelTest();
         Shown += async (_, _) =>
         {
             if (_shownOnce) return;
@@ -93,7 +114,6 @@ internal sealed class CdnDownloadTestDialog : Form
             await RunTestAsync();
         };
         FormClosing += (_, _) => _testCancellation?.Cancel();
-        FormClosed += (_, _) => _testCancellation?.Dispose();
         AcceptButton = _test;
         CancelButton = _close;
     }
@@ -126,26 +146,62 @@ internal sealed class CdnDownloadTestDialog : Form
         urlRow.Controls.Add(new Label { Text = "最终请求 URL：", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         urlRow.Controls.Add(_urlBox, 1, 0);
 
-        var optionRow = new FlowLayoutPanel
+        var optionRow = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            WrapContents = false,
+            ColumnCount = 7,
+            RowCount = 2,
             Margin = new Padding(0, 0, 0, 10)
         };
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        optionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        optionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        optionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         optionRow.Controls.Add(new Label
         {
             Text = "Range GET 样本：",
             AutoSize = true,
-            Margin = new Padding(0, 8, 3, 0)
-        });
-        optionRow.Controls.Add(_sampleMiB);
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 7, 3, 0)
+        }, 0, 0);
+        optionRow.Controls.Add(_sampleMiB, 1, 0);
         optionRow.Controls.Add(new Label
         {
-            Text = "MiB。服务端忽略 Range 时最多只读取设定样本大小。",
+            Text = "MiB",
             AutoSize = true,
-            Margin = new Padding(3, 8, 0, 0)
-        });
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 7, 0, 0)
+        }, 2, 0);
+        optionRow.Controls.Add(new Label
+        {
+            Text = "测试超时：",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 7, 3, 0)
+        }, 4, 0);
+        optionRow.Controls.Add(_timeoutSeconds, 5, 0);
+        optionRow.Controls.Add(new Label
+        {
+            Text = "秒",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 7, 0, 0)
+        }, 6, 0);
+        var optionHelp = new Label
+        {
+            Text = "服务端忽略 Range 时最多只读取设定样本大小；到达测试超时后会主动取消请求。",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(0, 5, 0, 0)
+        };
+        optionRow.Controls.Add(optionHelp, 0, 1);
+        optionRow.SetColumnSpan(optionHelp, 7);
 
         _results.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         _results.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -191,17 +247,30 @@ internal sealed class CdnDownloadTestDialog : Form
         };
         headersGroup.Controls.Add(_headers);
 
-        var actions = new FlowLayoutPanel
+        var footer = new TableLayoutPanel
         {
             Dock = DockStyle.Bottom,
             AutoSize = true,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
+            ColumnCount = 2,
             Padding = new Padding(0, 10, 0, 0)
         };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _status.Anchor = AnchorStyles.Left;
+        _status.Margin = new Padding(0, 10, 12, 0);
+        footer.Controls.Add(_status, 0, 0);
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
         actions.Controls.Add(_close);
+        actions.Controls.Add(_cancel);
         actions.Controls.Add(_test);
-        actions.Controls.Add(_status);
+        footer.Controls.Add(actions, 1, 0);
 
         root.Controls.Add(urlRow, 0, 0);
         root.Controls.Add(optionRow, 0, 1);
@@ -214,30 +283,37 @@ internal sealed class CdnDownloadTestDialog : Form
         }, 0, 2);
         root.Controls.Add(_results, 0, 3);
         root.Controls.Add(headersGroup, 0, 4);
-        root.Controls.Add(actions, 0, 5);
+        root.Controls.Add(footer, 0, 5);
         Controls.Add(root);
     }
 
     private async Task RunTestAsync()
     {
-        _testCancellation?.Cancel();
-        _testCancellation?.Dispose();
-        _testCancellation = new CancellationTokenSource();
-        var cancellationToken = _testCancellation.Token;
-        _test.Enabled = false;
-        _sampleMiB.Enabled = false;
-        _status.Text = "正在测试...";
+        if (_testCancellation is not null) return;
+
+        var operationCancellation = new CancellationTokenSource();
+        _testCancellation = operationCancellation;
+        var timeoutSeconds = decimal.ToInt32(_timeoutSeconds.Value);
+        using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            operationCancellation.Token);
+        requestCancellation.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        SetTesting(true);
+        _status.Text = $"正在测试（最多 {timeoutSeconds} 秒）…";
+        _status.ForeColor = SystemColors.ControlText;
         _headers.Clear();
+        foreach (var key in _valueLabels.Keys)
+            SetValue(key, "-");
 
         try
         {
             var sampleBytes = decimal.ToInt64(_sampleMiB.Value) * 1024L * 1024L;
             var result = await _deliveryService.ProbeAsync(
-                _profile,
+                _profile with { TimeoutSeconds = timeoutSeconds },
                 _credential,
                 _url,
                 sampleBytes,
-                cancellationToken);
+                requestCancellation.Token);
 
             SetValue("status", $"{result.StatusCode} {result.ReasonPhrase}");
             SetValue("final", result.FinalUrl.AbsoluteUri);
@@ -255,25 +331,56 @@ internal sealed class CdnDownloadTestDialog : Form
             _status.Text = result.Success ? "测试完成" : "请求已完成，但状态码表示失败";
             _status.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
         }
-        catch (OperationCanceledException)
-        {
-            _status.Text = "测试已取消";
-            _status.ForeColor = SystemColors.ControlText;
-        }
-        catch (Exception exception)
-        {
-            _status.Text = "测试失败";
-            _status.ForeColor = Color.DarkRed;
-            ErrorDialog.ShowException(this, "CDN 下载测试失败", _profile.Name, exception);
-        }
-        finally
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
         {
             if (!IsDisposed)
             {
-                _test.Enabled = true;
-                _sampleMiB.Enabled = true;
+                _status.Text = "测试已取消";
+                _status.ForeColor = SystemColors.ControlText;
             }
         }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed)
+            {
+                _status.Text = $"测试超时（{timeoutSeconds} 秒）";
+                _status.ForeColor = Color.DarkRed;
+            }
+        }
+        catch (Exception exception)
+        {
+            if (!IsDisposed)
+            {
+                _status.Text = "测试失败";
+                _status.ForeColor = Color.DarkRed;
+                ErrorDialog.ShowException(this, "CDN 下载测试失败", _profile.Name, exception);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_testCancellation, operationCancellation))
+                _testCancellation = null;
+            operationCancellation.Dispose();
+            if (!IsDisposed)
+                SetTesting(false);
+        }
+    }
+
+    private void CancelTest()
+    {
+        if (_testCancellation is null || _testCancellation.IsCancellationRequested) return;
+        _status.Text = "正在取消测试…";
+        _status.ForeColor = SystemColors.ControlText;
+        _cancel.Enabled = false;
+        _testCancellation.Cancel();
+    }
+
+    private void SetTesting(bool testing)
+    {
+        _test.Enabled = !testing;
+        _cancel.Enabled = testing;
+        _sampleMiB.Enabled = !testing;
+        _timeoutSeconds.Enabled = !testing;
     }
 
     private void SetValue(string key, string value) => _valueLabels[key].Text = value;
