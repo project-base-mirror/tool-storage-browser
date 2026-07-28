@@ -20,6 +20,7 @@ public sealed class ConnectionTransferDialogLayoutTests
             using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
             using var dialog = new ConnectionImportPreviewDialog(package, []);
             dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
             PerformLayout(dialog);
 
             var selectAll = FindButton(dialog, "SelectAllConnectionsButton");
@@ -157,6 +158,87 @@ public sealed class ConnectionTransferDialogLayoutTests
             Assert.Contains("1 个关联", summary.Text, StringComparison.Ordinal);
             Assert.True(importCredentials.Enabled);
             Assert.False(importCredentials.Checked);
+        });
+    }
+
+    [Fact]
+    public void ImportPreviewSeparatesStorageAndCdnSelections()
+    {
+        RunSta(() =>
+        {
+            var storage = new ConnectionProfile
+            {
+                Name = "example",
+                Endpoint = "https://s3.amazonaws.com"
+            };
+            var cdn = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com"
+            };
+            var package = new ConnectionArchivePackage(
+                [storage],
+                ContainsCredentials: false,
+                ExportedAtUtc: DateTimeOffset.UtcNow,
+                new CdnConfiguration(
+                    [cdn],
+                    [new CdnBinding
+                    {
+                        StorageProfileId = storage.Id,
+                        Bucket = "assets",
+                        CdnProfileId = cdn.Id
+                    }]));
+
+            using var dialog = new ConnectionImportPreviewDialog(package, []);
+            var tabs = Assert.IsType<TabControl>(Assert.Single(
+                dialog.Controls.Find("ConnectionImportTabs", searchAllChildren: true)));
+            var storageList = Assert.IsType<ListView>(Assert.Single(
+                dialog.Controls.Find("StorageImportPreviewList", searchAllChildren: true)));
+            var cdnList = Assert.IsType<ListView>(Assert.Single(
+                dialog.Controls.Find("CdnImportPreviewList", searchAllChildren: true)));
+
+            Assert.Equal(2, tabs.TabPages.Count);
+            Assert.Equal("对象存储连接", tabs.TabPages[0].Text);
+            Assert.Equal("CDN 配置", tabs.TabPages[1].Text);
+            Assert.Single(dialog.SelectedProfiles);
+            Assert.Single(dialog.SelectedCdnProfiles);
+
+            storageList.Items[0].Checked = false;
+
+            Assert.Empty(dialog.SelectedProfiles);
+            Assert.Single(dialog.SelectedCdnProfiles);
+            Assert.True(cdnList.Items[0].Checked);
+        });
+    }
+
+    [Fact]
+    public void ImportPreviewShowsEquivalentConfigurationAsReusable()
+    {
+        RunSta(() =>
+        {
+            var imported = new ConnectionProfile
+            {
+                Name = "from-package",
+                Endpoint = "https://s3.example.com",
+                Region = "auto",
+                DefaultBucket = "assets"
+            };
+            var existing = imported with
+            {
+                Id = Guid.NewGuid(),
+                Name = "already-local",
+                LastConnectionSucceededAtUtc = DateTimeOffset.UtcNow
+            };
+            var package = new ConnectionArchivePackage(
+                [imported],
+                ContainsCredentials: false,
+                ExportedAtUtc: DateTimeOffset.UtcNow);
+
+            using var dialog = new ConnectionImportPreviewDialog(package, [existing]);
+            var storageList = Assert.IsType<ListView>(Assert.Single(
+                dialog.Controls.Find("StorageImportPreviewList", searchAllChildren: true)));
+
+            Assert.Contains("复用：already-local", storageList.Items[0].SubItems[4].Text, StringComparison.Ordinal);
         });
     }
 

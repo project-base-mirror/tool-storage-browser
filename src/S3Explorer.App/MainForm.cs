@@ -1006,9 +1006,15 @@ internal sealed partial class MainForm : Form
                 }
             }
 
-            using var preview = new ConnectionImportPreviewDialog(package, _profiles);
+            using var preview = new ConnectionImportPreviewDialog(
+                package,
+                _profiles,
+                _cdnConfiguration,
+                _cdnCredentials,
+                _connectionArchive);
             if (preview.ShowDialog(this) != DialogResult.OK) return;
-            var selected = preview.SelectedProfiles;
+            var selectedStorage = preview.SelectedProfiles;
+            var selectedCdn = preview.SelectedCdnProfiles;
             var previousProfiles = _profiles;
             var previousCdnConfiguration = _cdnConfiguration;
             var previousCdnCredentials = _cdnCredentials;
@@ -1017,8 +1023,11 @@ internal sealed partial class MainForm : Form
                 _cdnConfiguration,
                 _cdnCredentials,
                 package,
-                selected.Select(profile => profile.Id).ToArray(),
-                preview.ImportCredentials,
+                new ConnectionArchiveImportSelection(
+                    selectedStorage.Select(profile => profile.Id).ToArray(),
+                    selectedCdn.Select(profile => profile.Id).ToArray()),
+                preview.ImportStorageCredentials,
+                preview.ImportCdnCredentials,
                 preview.ConflictStrategy);
 
             try
@@ -1067,16 +1076,19 @@ internal sealed partial class MainForm : Form
                 _cdnCredentials,
                 credential => credential.Id);
             _logger.Info(
-                $"Connections imported selected={selected.Count} changed={changedCount} " +
+                $"Connections imported selectedStorage={selectedStorage.Count} changedStorage={changedCount} " +
+                $"selectedCdn={selectedCdn.Count} " +
                 $"cdnProfiles={changedCdnProfiles} cdnBindings={changedCdnBindings} " +
-                $"cdnCredentials={changedCdnCredentials} credentials={preview.ImportCredentials} " +
+                $"cdnCredentials={changedCdnCredentials} " +
+                $"storageCredentials={preview.ImportStorageCredentials} " +
+                $"importCdnCredentials={preview.ImportCdnCredentials} " +
                 $"strategy={preview.ConflictStrategy} file={openDialog.FileName}");
             MessageBox.Show(this,
-                $"导入处理完成：选择 {selected.Count} 个对象存储连接，实际新增或更新 {changedCount} 个。\n" +
-                $"CDN：配置 {changedCdnProfiles} 个、关联 {changedCdnBindings} 个、凭据 {changedCdnCredentials} 个发生变化。\n\n" +
-                (preview.ImportCredentials
-                    ? "已将所选 S3/CDN 凭据重新写入当前用户各自的 DPAPI 加密配置。"
-                    : "未导入秘密值；S3 已保存密钥需补充，受保护的 CDN 配置需重新关联凭据。"),
+                $"导入处理完成：选择 {selectedStorage.Count} 个对象存储连接，实际新增或更新 {changedCount} 个。\n" +
+                $"选择 {selectedCdn.Count} 个 CDN 配置；配置 {changedCdnProfiles} 个、关联 {changedCdnBindings} 个、" +
+                $"凭据 {changedCdnCredentials} 个发生变化。\n\n" +
+                $"对象存储凭据：{(preview.ImportStorageCredentials ? "已导入" : "未导入")}；" +
+                $"CDN 凭据：{(preview.ImportCdnCredentials ? "已导入" : "未导入")}。",
                 "导入完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)

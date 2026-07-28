@@ -287,6 +287,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
 {
     private readonly ListView _profiles = new()
     {
+        Name = "StorageImportPreviewList",
         Dock = DockStyle.Fill,
         CheckBoxes = true,
         FullRowSelect = true,
@@ -294,9 +295,31 @@ internal sealed class ConnectionImportPreviewDialog : Form
         View = View.Details,
         HideSelection = false
     };
-    private readonly CheckBox _importCredentials = new()
+    private readonly ListView _cdnProfiles = new()
     {
-        Text = "导入连接包中的凭据（导入后可直接使用）",
+        Name = "CdnImportPreviewList",
+        Dock = DockStyle.Fill,
+        CheckBoxes = true,
+        FullRowSelect = true,
+        GridLines = true,
+        View = View.Details,
+        HideSelection = false
+    };
+    private readonly TabControl _tabs = new()
+    {
+        Name = "ConnectionImportTabs",
+        Dock = DockStyle.Fill
+    };
+    private readonly CheckBox _importStorageCredentials = new()
+    {
+        Name = "ImportStorageCredentialsCheckBox",
+        Text = "导入对象存储凭据",
+        AutoSize = true
+    };
+    private readonly CheckBox _importCdnCredentials = new()
+    {
+        Name = "ImportCdnCredentialsCheckBox",
+        Text = "导入 CDN Token/Header 凭据",
         AutoSize = true
     };
     private readonly ComboBox _conflictStrategy = new()
@@ -305,6 +328,12 @@ internal sealed class ConnectionImportPreviewDialog : Form
         Width = 180
     };
     private readonly Label _selectionSummary = new() { AutoSize = true };
+    private readonly Label _dependencySummary = new()
+    {
+        Name = "ConnectionImportDependencySummary",
+        AutoSize = true,
+        ForeColor = SystemColors.GrayText
+    };
     private readonly Button _import = new()
     {
         Name = "ImportConnectionsButton",
@@ -321,35 +350,61 @@ internal sealed class ConnectionImportPreviewDialog : Form
         .Select(item => (ConnectionProfile)item.Tag!)
         .ToArray();
 
-    public bool ImportCredentials => _importCredentials.Enabled && _importCredentials.Checked;
+    public IReadOnlyList<CdnProfile> SelectedCdnProfiles => _cdnProfiles.CheckedItems
+        .Cast<ListViewItem>()
+        .Select(item => (CdnProfile)item.Tag!)
+        .ToArray();
+
+    public bool ImportStorageCredentials =>
+        _importStorageCredentials.Enabled && _importStorageCredentials.Checked;
+
+    public bool ImportCdnCredentials =>
+        _importCdnCredentials.Enabled && _importCdnCredentials.Checked;
 
     public ConnectionImportConflictStrategy ConflictStrategy =>
         ((ConflictOption)_conflictStrategy.SelectedItem!).Strategy;
 
+    private readonly ConnectionArchivePackage _package;
+    private readonly IReadOnlyCollection<ConnectionProfile> _existingProfiles;
+    private readonly CdnConfiguration _existingCdnConfiguration;
+    private readonly IReadOnlyCollection<CdnCredential> _existingCdnCredentials;
+    private readonly ConnectionArchiveService _archiveService;
+    private ConnectionArchiveImportPreview _preview;
+
     public ConnectionImportPreviewDialog(
         ConnectionArchivePackage package,
-        IReadOnlyCollection<ConnectionProfile> existingProfiles)
+        IReadOnlyCollection<ConnectionProfile> existingProfiles,
+        CdnConfiguration? existingCdnConfiguration = null,
+        IReadOnlyCollection<CdnCredential>? existingCdnCredentials = null,
+        ConnectionArchiveService? archiveService = null)
     {
+        _package = package;
+        _existingProfiles = existingProfiles;
+        _existingCdnConfiguration = existingCdnConfiguration ?? CdnConfiguration.Empty;
+        _existingCdnCredentials = existingCdnCredentials ?? [];
+        _archiveService = archiveService ?? new ConnectionArchiveService();
+        _preview = _archiveService.PreviewPackage(
+            _existingProfiles,
+            _existingCdnConfiguration,
+            _existingCdnCredentials,
+            _package);
         Name = nameof(ConnectionImportPreviewDialog);
         Text = "预览导入连接";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(850, 525);
-        MinimumSize = new Size(720, 450);
+        ClientSize = new Size(930, 650);
+        MinimumSize = new Size(780, 560);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         MinimizeBox = false;
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
+        AutoScaleMode = AutoScaleMode.Font;
 
         _profiles.Columns.Add("连接名称", 175);
         _profiles.Columns.Add("类型", 125);
-        _profiles.Columns.Add("Endpoint", 295);
-        _profiles.Columns.Add("凭据", 85);
-        _profiles.Columns.Add("名称冲突", 100);
-
-        var existingNames = existingProfiles
-            .Select(profile => profile.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _profiles.Columns.Add("Endpoint", 285);
+        _profiles.Columns.Add("凭据", 105);
+        _profiles.Columns.Add("预计处理", 170);
         foreach (var profile in package.Profiles)
         {
             var item = new ListViewItem(profile.Name)
@@ -362,18 +417,45 @@ internal sealed class ConnectionImportPreviewDialog : Form
             item.SubItems.Add(profile.UsesExternalAwsCredentials
                 ? profile.CredentialSourceDisplayName
                 : profile.HasStoredCredentials ? "已包含" : "未包含");
-            item.SubItems.Add(existingNames.Contains(profile.Name) ? "是" : "否");
-            if (existingNames.Contains(profile.Name))
-                item.ForeColor = Color.DarkOrange;
+            item.SubItems.Add(string.Empty);
             _profiles.Items.Add(item);
         }
 
-        _importCredentials.Enabled = package.ContainsCredentials;
-        _importCredentials.Checked = false;
-        _importCredentials.Text = package.ContainsCredentials
-            ? $"导入包内凭据：S3 已保存密钥及 {package.ImportedCdnCredentials.Count} 个 CDN Token/Header 密钥"
-            : "连接包不包含秘密值；AWS 外部来源引用仍会导入，CDN 认证需重新关联";
-        _importCredentials.MaximumSize = new Size(760, 0);
+        _cdnProfiles.Columns.Add("CDN 配置", 170);
+        _cdnProfiles.Columns.Add("基础 URL", 300);
+        _cdnProfiles.Columns.Add("关联", 70);
+        _cdnProfiles.Columns.Add("依赖", 115);
+        _cdnProfiles.Columns.Add("预计处理", 170);
+        foreach (var profile in package.ImportedCdnConfiguration.Profiles)
+        {
+            var bindings = package.ImportedCdnConfiguration.Bindings
+                .Where(binding => binding.CdnProfileId == profile.Id)
+                .ToArray();
+            var item = new ListViewItem(profile.Name)
+            {
+                Checked = true,
+                Tag = profile
+            };
+            item.SubItems.Add(profile.BaseUrl);
+            item.SubItems.Add(bindings.Length.ToString());
+            item.SubItems.Add($"{bindings.Select(binding => binding.StorageProfileId).Distinct().Count()} 个连接");
+            item.SubItems.Add(string.Empty);
+            _cdnProfiles.Items.Add(item);
+        }
+
+        var storageCredentialCount = package.Profiles.Count(profile => profile.HasStoredCredentials);
+        _importStorageCredentials.Enabled = package.ContainsCredentials && storageCredentialCount > 0;
+        _importStorageCredentials.Checked = false;
+        _importStorageCredentials.Text = _importStorageCredentials.Enabled
+            ? $"导入对象存储凭据（{storageCredentialCount} 个连接）"
+            : "对象存储：没有可迁移的已保存密钥";
+        _importStorageCredentials.MaximumSize = new Size(760, 0);
+        _importCdnCredentials.Enabled = package.ContainsCredentials && package.ImportedCdnCredentials.Count > 0;
+        _importCdnCredentials.Checked = false;
+        _importCdnCredentials.Text = _importCdnCredentials.Enabled
+            ? $"导入 CDN Token/Header 凭据（{package.ImportedCdnCredentials.Count} 个）"
+            : "CDN：没有可迁移的 Token/Header 凭据";
+        _importCdnCredentials.MaximumSize = new Size(760, 0);
         _conflictStrategy.Items.AddRange([
             new ConflictOption("自动重命名", ConnectionImportConflictStrategy.Rename),
             new ConflictOption("覆盖同名连接", ConnectionImportConflictStrategy.Replace),
@@ -397,7 +479,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
             Name = "ConnectionImportSummary",
             Text = $"连接包包含 {package.Profiles.Count} 个对象存储连接、" +
                    $"{cdnConfiguration.Profiles.Count} 个 CDN 配置和 {cdnConfiguration.Bindings.Count} 个关联。" +
-                   "勾选连接后，相关 CDN 项会一并导入。",
+                   "请分别在两个标签页中选择；默认不导入任何秘密值。",
             AutoSize = true,
             Dock = DockStyle.Fill,
             Margin = new Padding(0)
@@ -418,28 +500,30 @@ internal sealed class ConnectionImportPreviewDialog : Form
         var selectAll = new Button
         {
             Name = "SelectAllConnectionsButton",
-            Text = "全选",
+            Text = "本页全选",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            MinimumSize = new Size(84, 34),
+            MinimumSize = new Size(105, 36),
             Padding = new Padding(10, 2, 10, 2),
             Margin = new Padding(0)
         };
         var selectNone = new Button
         {
             Name = "SelectNoConnectionsButton",
-            Text = "全不选",
+            Text = "本页全不选",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            MinimumSize = new Size(92, 34),
+            MinimumSize = new Size(115, 36),
             Padding = new Padding(10, 2, 10, 2),
             Margin = new Padding(8, 0, 0, 0)
         };
         _selectionSummary.Margin = new Padding(12, 8, 0, 0);
-        _importCredentials.Margin = new Padding(0, 12, 0, 0);
+        _importStorageCredentials.Margin = new Padding(0, 0, 18, 0);
+        _importCdnCredentials.Margin = new Padding(0);
+        _dependencySummary.Margin = new Padding(0, 6, 0, 0);
         var conflictLabel = new Label
         {
-            Text = "同名连接：",
+            Text = "同名项目：",
             AutoSize = true,
             Margin = new Padding(0, 8, 0, 0)
         };
@@ -490,23 +574,43 @@ internal sealed class ConnectionImportPreviewDialog : Form
         importActions.Controls.Add(cancel);
         importActions.Controls.Add(_import);
 
+        var credentialOptions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        credentialOptions.Controls.Add(_importStorageCredentials);
+        credentialOptions.Controls.Add(_importCdnCredentials);
+
+        var storageTab = new TabPage("对象存储连接") { Name = "StorageImportTab" };
+        storageTab.Controls.Add(_profiles);
+        var cdnTab = new TabPage("CDN 配置") { Name = "CdnImportTab" };
+        cdnTab.Controls.Add(_cdnProfiles);
+        _tabs.TabPages.Add(storageTab);
+        _tabs.TabPages.Add(cdnTab);
+
         var footer = new TableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(14, 8, 14, 10),
             Margin = new Padding(0)
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var row = 0; row < 4; row++)
+        for (var row = 0; row < 5; row++)
             footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         footer.Controls.Add(selectionActions, 0, 0);
         footer.Controls.Add(conflictOptions, 0, 1);
-        footer.Controls.Add(_importCredentials, 0, 2);
-        footer.Controls.Add(importActions, 0, 3);
+        footer.Controls.Add(credentialOptions, 0, 2);
+        footer.Controls.Add(_dependencySummary, 0, 3);
+        footer.Controls.Add(importActions, 0, 4);
 
         var layout = new TableLayoutPanel
         {
@@ -521,7 +625,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(header, 0, 0);
-        layout.Controls.Add(_profiles, 0, 1);
+        layout.Controls.Add(_tabs, 0, 1);
         layout.Controls.Add(footer, 0, 2);
         Controls.Add(layout);
         AcceptButton = _import;
@@ -530,28 +634,101 @@ internal sealed class ConnectionImportPreviewDialog : Form
         selectAll.Click += (_, _) => SetAllChecked(true);
         selectNone.Click += (_, _) => SetAllChecked(false);
         _profiles.ItemChecked += (_, _) => BeginInvoke(UpdateSelectionSummary);
+        _cdnProfiles.ItemChecked += (_, _) => BeginInvoke(UpdateSelectionSummary);
+        _tabs.SelectedIndexChanged += (_, _) => UpdateSelectionSummary();
+        _importStorageCredentials.CheckedChanged += (_, _) => RefreshPreviewStatuses();
+        _importCdnCredentials.CheckedChanged += (_, _) => RefreshPreviewStatuses();
         _import.Click += (_, _) =>
         {
-            if (SelectedProfiles.Count == 0) return;
+            if (SelectedProfiles.Count == 0 && SelectedCdnProfiles.Count == 0) return;
+            var missing = MissingDependencyCount();
+            if (missing > 0 && MessageBox.Show(
+                    this,
+                    $"有 {missing} 个 CDN 关联缺少已选择或本机等价的对象存储连接，这些关联将被跳过。是否继续？",
+                    "CDN 关联依赖不完整",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
             DialogResult = DialogResult.OK;
             Close();
         };
+        RefreshPreviewStatuses();
         UpdateSelectionSummary();
     }
 
     private void SetAllChecked(bool value)
     {
-        foreach (ListViewItem item in _profiles.Items)
+        var list = _tabs.SelectedTab?.Name == "CdnImportTab" ? _cdnProfiles : _profiles;
+        foreach (ListViewItem item in list.Items)
             item.Checked = value;
+    }
+
+    private void RefreshPreviewStatuses()
+    {
+        _preview = _archiveService.PreviewPackage(
+            _existingProfiles,
+            _existingCdnConfiguration,
+            _existingCdnCredentials,
+            _package,
+            ImportStorageCredentials,
+            ImportCdnCredentials);
+        foreach (ListViewItem item in _profiles.Items)
+        {
+            var profile = (ConnectionProfile)item.Tag!;
+            var preview = _preview.StorageProfiles.Single(value => value.ImportedId == profile.Id);
+            item.SubItems[4].Text = PreviewStatusText(preview.Status, preview.ExistingName);
+            item.ForeColor = PreviewStatusColor(preview.Status);
+        }
+        foreach (ListViewItem item in _cdnProfiles.Items)
+        {
+            var profile = (CdnProfile)item.Tag!;
+            var preview = _preview.CdnProfiles.Single(value => value.ImportedId == profile.Id);
+            item.SubItems[4].Text = PreviewStatusText(preview.Status, preview.ExistingName);
+            item.ForeColor = PreviewStatusColor(preview.Status);
+        }
+        UpdateSelectionSummary();
     }
 
     private void UpdateSelectionSummary()
     {
         if (IsDisposed) return;
-        var count = _profiles.CheckedItems.Count;
-        _selectionSummary.Text = $"已选择 {count} / {_profiles.Items.Count}";
-        _import.Enabled = count > 0;
+        var current = _tabs.SelectedTab?.Name == "CdnImportTab" ? _cdnProfiles : _profiles;
+        _selectionSummary.Text = $"本页已选择 {current.CheckedItems.Count} / {current.Items.Count}";
+        var storageCount = _profiles.CheckedItems.Count;
+        var cdnCount = _cdnProfiles.CheckedItems.Count;
+        var missing = MissingDependencyCount();
+        _dependencySummary.Text = missing == 0
+            ? $"最终选择：对象存储 {storageCount} 个，CDN {cdnCount} 个；关联依赖完整。"
+            : $"最终选择：对象存储 {storageCount} 个，CDN {cdnCount} 个；{missing} 个关联将因缺少对象存储依赖而跳过。";
+        _dependencySummary.ForeColor = missing == 0 ? SystemColors.GrayText : Color.DarkOrange;
+        _import.Enabled = storageCount + cdnCount > 0;
     }
+
+    private int MissingDependencyCount()
+    {
+        var selectedStorageIds = SelectedProfiles.Select(profile => profile.Id).ToHashSet();
+        var selectedCdnIds = SelectedCdnProfiles.Select(profile => profile.Id).ToHashSet();
+        return _preview.CdnProfiles
+            .Where(preview => selectedCdnIds.Contains(preview.ImportedId))
+            .SelectMany(preview => preview.MissingStorageProfileIds)
+            .Distinct()
+            .Count(storageId => !selectedStorageIds.Contains(storageId));
+    }
+
+    private static string PreviewStatusText(ConnectionArchiveImportStatus status, string existingName) => status switch
+    {
+        ConnectionArchiveImportStatus.ExistingEquivalent => $"复用：{existingName}",
+        ConnectionArchiveImportStatus.NameConflict => "同名但配置不同",
+        _ => "新增"
+    };
+
+    private static Color PreviewStatusColor(ConnectionArchiveImportStatus status) => status switch
+    {
+        ConnectionArchiveImportStatus.ExistingEquivalent => Color.DarkGreen,
+        ConnectionArchiveImportStatus.NameConflict => Color.DarkOrange,
+        _ => SystemColors.WindowText
+    };
 
     private sealed record ConflictOption(string Label, ConnectionImportConflictStrategy Strategy)
     {
