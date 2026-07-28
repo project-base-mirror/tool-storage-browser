@@ -8,6 +8,7 @@ internal sealed partial class MainForm
     private readonly ICdnConfigurationStore _cdnConfigurationStore;
     private readonly ICdnCredentialStore _cdnCredentialStore;
     private readonly ICdnDeliveryService _cdnDeliveryService;
+    private readonly PersistentCdnJobQueue _cdnJobQueue;
     private readonly ICdnCertificateInspector _cdnCertificateInspector;
     private CdnConfiguration _cdnConfiguration = CdnConfiguration.Empty;
     private IReadOnlyList<CdnCredential> _cdnCredentials = [];
@@ -17,7 +18,6 @@ internal sealed partial class MainForm
     private ToolStripMenuItem? _cdnObjectContextProbe;
     private ToolStripMenuItem? _cdnObjectContextWarmup;
     private ToolStripMenuItem? _cdnObjectContextPurge;
-    private CancellationTokenSource? _cdnOperationCancellation;
 
     private ToolStripMenuItem BuildCdnMenu()
     {
@@ -26,6 +26,10 @@ internal sealed partial class MainForm
             "cdn-configure",
             "CDN 配置中心...",
             async (_, _) => await ShowCdnConfigurationAsync()));
+        menu.DropDownItems.Add(Command(
+            "cdn-jobs",
+            "CDN 任务中心...",
+            (_, _) => ShowCdnJobs()));
         menu.DropDownItems.Add(new ToolStripSeparator());
         menu.DropDownItems.Add(Command("cdn-copy-url", "复制 CDN URL", (_, _) => CopySelectedCdnUrl()));
         menu.DropDownItems.Add(Command("cdn-open-url", "使用 CDN 打开", (_, _) => OpenSelectedCdnUrl()));
@@ -37,11 +41,11 @@ internal sealed partial class MainForm
         menu.DropDownItems.Add(Command(
             "cdn-warmup",
             "HTTP 预热",
-            async (_, _) => await RunSelectedCdnOperationAsync(purge: false)));
+            async (_, _) => await EnqueueSelectedCdnOperationAsync(CdnJobAction.Warmup)));
         menu.DropDownItems.Add(Command(
             "cdn-purge",
             "刷新 CDN 缓存",
-            async (_, _) => await RunSelectedCdnOperationAsync(purge: true)));
+            async (_, _) => await EnqueueSelectedCdnOperationAsync(CdnJobAction.PurgeUrl)));
         return menu;
     }
 
@@ -64,14 +68,18 @@ internal sealed partial class MainForm
             Name = "CdnObjectContextProbe"
         };
         _cdnObjectContextWarmup = new ToolStripMenuItem("HTTP 预热", null, async (_, _) =>
-            await RunSelectedCdnOperationAsync(purge: false))
+            await EnqueueSelectedCdnOperationAsync(CdnJobAction.Warmup))
         {
             Name = "CdnObjectContextWarmup"
         };
         _cdnObjectContextPurge = new ToolStripMenuItem("刷新缓存", null, async (_, _) =>
-            await RunSelectedCdnOperationAsync(purge: true))
+            await EnqueueSelectedCdnOperationAsync(CdnJobAction.PurgeUrl))
         {
             Name = "CdnObjectContextPurge"
+        };
+        var jobs = new ToolStripMenuItem("查看 CDN 任务...", null, (_, _) => ShowCdnJobs())
+        {
+            Name = "CdnObjectContextJobs"
         };
         var configure = new ToolStripMenuItem("管理 CDN 配置...", null, async (_, _) =>
             await ShowCdnConfigurationAsync())
@@ -87,6 +95,7 @@ internal sealed partial class MainForm
             _cdnObjectContextWarmup,
             _cdnObjectContextPurge,
             new ToolStripSeparator(),
+            jobs,
             configure
         ]);
         return _cdnObjectContextMenu;
@@ -168,6 +177,12 @@ internal sealed partial class MainForm
             _logger.Error("Failed to save CDN configuration", exception);
             ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和独立凭据", exception);
         }
+    }
+
+    private void ShowCdnJobs()
+    {
+        using var dialog = new CdnJobsDialog(_cdnJobQueue, _cdnConfiguration.Profiles);
+        dialog.ShowDialog(this);
     }
 
     private bool TryResolveSelectedCdnTarget(
@@ -261,22 +276,12 @@ internal sealed partial class MainForm
         dialog.ShowDialog(this);
     }
 
-    private async Task RunSelectedCdnOperationAsync(bool purge)
+    private async Task EnqueueSelectedCdnOperationAsync(CdnJobAction action)
     {
-        if (_cdnOperationCancellation is not null)
-        {
-            MessageBox.Show(
-                this,
-                "已有一个 CDN 操作正在执行，请等待其完成后再试。",
-                "CDN / 分发",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
-
-        if (!TryResolveSelectedCdnTarget(out var target, out var credential, showMessage: true) || target is null)
+        if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
             return;
 
+        var purge = action is CdnJobAction.PurgeUrl or CdnJobAction.PurgeThenWarmup;
         if (purge && !target.Profile.Capabilities.HasFlag(CdnCapabilities.Purge))
         {
             MessageBox.Show(
@@ -290,7 +295,7 @@ internal sealed partial class MainForm
 
         if (purge && MessageBox.Show(
                 this,
-                $"将请求 CDN 配置“{target.Profile.Name}”刷新以下 URL 的缓存：{Environment.NewLine}{Environment.NewLine}" +
+                $"将把以下 URL 的刷新请求加入 CDN 任务中心：{Environment.NewLine}{Environment.NewLine}" +
                 $"{target.Url.AbsoluteUri}{Environment.NewLine}{Environment.NewLine}是否继续？",
                 "确认刷新 CDN 缓存",
                 MessageBoxButtons.YesNo,
@@ -298,59 +303,34 @@ internal sealed partial class MainForm
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
 
-        var actionName = purge ? "刷新 CDN 缓存" : "HTTP 预热";
-        _cdnOperationCancellation = new CancellationTokenSource();
-        var cancellationToken = _cdnOperationCancellation.Token;
-        SetBusy($"{actionName}...");
-        UpdateCommandStates();
         try
         {
-            var result = purge
-                ? await _cdnDeliveryService.PurgeAsync(
-                    target.Profile,
-                    credential,
-                    target.Url,
-                    cancellationToken)
-                : await _cdnDeliveryService.WarmupAsync(
-                    target.Profile,
-                    credential,
-                    target.Url,
-                    cancellationToken);
-
+            var job = await _cdnJobQueue.EnqueueAsync(new CdnJobRecord
+            {
+                IdempotencyKey = $"manual:{Guid.NewGuid():N}",
+                CdnProfileId = target.Profile.Id,
+                BindingId = target.Binding.Id,
+                Action = action,
+                Urls = [target.Url.AbsoluteUri],
+                LastMessage = "由用户手动提交。"
+            });
+            var actionName = action == CdnJobAction.Warmup ? "HTTP 预热" : "刷新 CDN 缓存";
             _logger.Info(
-                $"CDN operation completed. Action={actionName}; Profile={target.Profile.Name}; " +
-                $"Status={result.StatusCode?.ToString() ?? "n/a"}; Success={result.Success}; " +
-                $"ElapsedMs={result.Elapsed.TotalMilliseconds:F0}; Bytes={result.BytesRead}");
-            var details = result.ResponseSnippet.Length == 0
-                ? string.Empty
-                : $"{Environment.NewLine}{Environment.NewLine}响应摘要：{Environment.NewLine}{result.ResponseSnippet}";
+                $"CDN job enqueued. Job={job.Id}; Action={action}; Profile={target.Profile.Name}; Url={target.Url}");
+            _requestStatus.Text = $"{actionName}已加入 CDN 任务中心";
             MessageBox.Show(
                 this,
-                $"{result.Message}{Environment.NewLine}" +
-                $"状态码：{result.StatusCode?.ToString() ?? "无"}{Environment.NewLine}" +
-                $"耗时：{result.Elapsed.TotalMilliseconds:F0} ms{Environment.NewLine}" +
-                $"读取：{FileSizeFormatter.Format(result.BytesRead)}{details}",
-                actionName,
+                $"{actionName}已加入 CDN 任务中心。{Environment.NewLine}" +
+                $"任务 ID：{job.Id}{Environment.NewLine}" +
+                "可在“CDN / 分发 → CDN 任务中心”中查看进度。",
+                "CDN 任务已创建",
                 MessageBoxButtons.OK,
-                result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.Info($"CDN operation cancelled. Action={actionName}; Profile={target.Profile.Name}");
-            if (!_closing)
-                _requestStatus.Text = $"{actionName}已取消";
+                MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
-            _logger.Error($"CDN operation failed. Action={actionName}; Profile={target.Profile.Name}", exception);
-            ErrorDialog.ShowException(this, $"{actionName}失败", target.Profile.Name, exception);
-        }
-        finally
-        {
-            _cdnOperationCancellation?.Dispose();
-            _cdnOperationCancellation = null;
-            SetIdle();
-            UpdateCommandStates();
+            _logger.Error($"Failed to enqueue CDN job. Action={action}; Profile={target.Profile.Name}", exception);
+            ErrorDialog.ShowException(this, "无法创建 CDN 任务", target.Profile.Name, exception);
         }
     }
 
@@ -363,12 +343,12 @@ internal sealed partial class MainForm
         var purge = resolved && target!.Profile.Capabilities.HasFlag(CdnCapabilities.Purge);
 
         SetEnabled("cdn-configure", true);
+        SetEnabled("cdn-jobs", true);
         SetEnabled("cdn-copy-url", resolved);
         SetEnabled("cdn-open-url", resolved);
         SetEnabled("cdn-download-test", resolved);
-        var idle = _cdnOperationCancellation is null;
-        SetEnabled("cdn-warmup", resolved && idle);
-        SetEnabled("cdn-purge", purge && idle);
+        SetEnabled("cdn-warmup", resolved);
+        SetEnabled("cdn-purge", purge);
     }
 
     private void UpdateCdnContextCommandStates()
@@ -380,10 +360,7 @@ internal sealed partial class MainForm
         if (_cdnObjectContextCopy is not null) _cdnObjectContextCopy.Enabled = resolved;
         if (_cdnObjectContextOpen is not null) _cdnObjectContextOpen.Enabled = resolved;
         if (_cdnObjectContextProbe is not null) _cdnObjectContextProbe.Enabled = resolved;
-        var idle = _cdnOperationCancellation is null;
-        if (_cdnObjectContextWarmup is not null) _cdnObjectContextWarmup.Enabled = resolved && idle;
-        if (_cdnObjectContextPurge is not null) _cdnObjectContextPurge.Enabled = purge && idle;
+        if (_cdnObjectContextWarmup is not null) _cdnObjectContextWarmup.Enabled = resolved;
+        if (_cdnObjectContextPurge is not null) _cdnObjectContextPurge.Enabled = purge;
     }
-
-    private void CancelCdnOperation() => _cdnOperationCancellation?.Cancel();
 }

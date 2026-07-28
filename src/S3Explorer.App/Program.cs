@@ -41,6 +41,13 @@ internal static class Program
                 new DpapiCdnCredentialProtector(),
                 options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
+            var cdnJobStore = new JsonCdnJobStore(
+                options.Enabled ? Path.Combine(dataRoot, "cdn-jobs.json") : null);
+            var cdnJobExecutor = new StoreBackedCdnJobExecutor(
+                cdnConfigurationStore,
+                cdnCredentialStore,
+                [new GenericHttpCdnProvider(cdnDeliveryService)]);
+            var cdnJobQueue = new PersistentCdnJobQueue(cdnJobStore, cdnJobExecutor);
             var cdnCertificateInspector = new TlsCdnCertificateInspector();
             using var updateChecker = new GitHubUpdateChecker(
                 cachePath: options.Enabled ? Path.Combine(dataRoot, "update-cache.json") : null);
@@ -78,6 +85,7 @@ internal static class Program
                 cdnConfigurationStore,
                 cdnCredentialStore,
                 cdnDeliveryService,
+                cdnJobQueue,
                 cdnCertificateInspector,
                 automation);
             Application.Run(form);
