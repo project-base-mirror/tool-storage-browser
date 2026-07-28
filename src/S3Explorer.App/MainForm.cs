@@ -2223,13 +2223,12 @@ internal sealed partial class MainForm : Form
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_logger.CurrentLogPath)!);
-            if (!File.Exists(_logger.CurrentLogPath)) File.WriteAllText(_logger.CurrentLogPath, string.Empty);
-            Process.Start(new ProcessStartInfo(_logger.CurrentLogPath) { UseShellExecute = true });
+            using var dialog = new LogViewerDialog(_logger);
+            dialog.ShowDialog(this);
         }
         catch (Exception exception)
         {
-            ErrorDialog.ShowException(this, "无法打开日志", "查看日志", exception, _logger.CurrentLogPath);
+            ErrorDialog.ShowException(this, "无法显示日志", "查看日志", exception, _logger.CurrentLogPath);
         }
     }
 
