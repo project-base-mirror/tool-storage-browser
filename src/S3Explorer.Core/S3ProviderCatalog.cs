@@ -57,7 +57,8 @@ public static class S3ProviderCatalog
                 RegionInputMode.Hidden, "us-east-1", "https://<project-ref>.supabase.co/storage/v1/s3", AddressingStyle.PathStyle),
             new S3ProviderDefinition(
                 S3ServiceType.Custom, S3AccountCategory.S3Compatible, "其他 S3 兼容存储",
-                RegionInputMode.Optional, "us-east-1", "https://s3.example.com", AddressingStyle.Auto),
+                RegionInputMode.Optional, "auto", "https://s3.example.com", AddressingStyle.Auto,
+                DefaultSigningRegion: "us-east-1"),
             new S3ProviderDefinition(
                 S3ServiceType.GoogleCloudStorage, S3AccountCategory.GoogleCloudStorage, "Google Cloud Storage",
                 RegionInputMode.Hidden, "auto", "https://storage.googleapis.com", AddressingStyle.PathStyle)
@@ -103,5 +104,28 @@ public static class S3ProviderCatalog
         if (value.Length == 0 || string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase))
             return definition.EffectiveDefaultSigningRegion;
         return value;
+    }
+
+    public static ConnectionProfile RepairLegacyServiceType(ConnectionProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        if (profile.ServiceType != S3ServiceType.AmazonS3 ||
+            profile.CredentialSource != CredentialSourceKind.StoredKeys ||
+            !Uri.TryCreate(profile.Endpoint?.Trim(), UriKind.Absolute, out var endpoint) ||
+            IsAmazonEndpoint(endpoint.Host))
+        {
+            return profile;
+        }
+
+        return profile with { ServiceType = S3ServiceType.Custom };
+    }
+
+    internal static bool IsAmazonEndpoint(string? host)
+    {
+        var value = host?.Trim().TrimEnd('.') ?? string.Empty;
+        return value.Equals("s3.amazonaws.com", StringComparison.OrdinalIgnoreCase) ||
+            value.EndsWith(".amazonaws.com", StringComparison.OrdinalIgnoreCase) ||
+            value.EndsWith(".amazonaws.com.cn", StringComparison.OrdinalIgnoreCase);
     }
 }

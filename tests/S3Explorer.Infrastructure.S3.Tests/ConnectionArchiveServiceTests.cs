@@ -176,6 +176,25 @@ public sealed class ConnectionArchiveServiceTests
     }
 
     [Fact]
+    public void ImportRepairsLegacyAmazonTypeWithoutReplacingCompatibleEndpoint()
+    {
+        var legacy = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "legacy-compatible",
+            Endpoint = "https://oss-cn-shenzhen.aliyuncs.com",
+            Region = "auto",
+            AccessKey = "access-value",
+            SecretKey = "secret-value"
+        };
+
+        var imported = Assert.Single(_service.Import(_service.Export([legacy])).Profiles);
+
+        Assert.Equal(S3ServiceType.Custom, imported.ServiceType);
+        Assert.Equal(legacy.Endpoint, imported.Endpoint);
+        Assert.Equal("auto", imported.Region);
+    }
+
+    [Fact]
     public void CredentialFreeExportKeepsCdnConfigurationButOmitsCdnSecretsAndReferences()
     {
         var storage = CreateProfile();

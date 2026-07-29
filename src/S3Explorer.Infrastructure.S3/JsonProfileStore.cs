@@ -35,7 +35,9 @@ public sealed class JsonProfileStore : IProfileStore
         if (document is null)
             return Array.Empty<ConnectionProfile>();
 
-        return document.Profiles.Select(profile => profile.ToRuntime(_protector)).ToArray();
+        return document.Profiles
+            .Select(profile => S3ProviderCatalog.RepairLegacyServiceType(profile.ToRuntime(_protector)))
+            .ToArray();
     }
 
     public async Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default)
@@ -46,7 +48,10 @@ public sealed class JsonProfileStore : IProfileStore
         var document = new ProfileDocument
         {
             Version = 3,
-            Profiles = profiles.Select(profile => PersistedProfile.FromRuntime(profile, _protector)).ToList()
+            Profiles = profiles
+                .Select(S3ProviderCatalog.RepairLegacyServiceType)
+                .Select(profile => PersistedProfile.FromRuntime(profile, _protector))
+                .ToList()
         };
 
         var temporaryPath = _path + ".tmp";

@@ -1008,32 +1008,33 @@ public sealed class ConnectionArchiveService
             ExternalBuckets = source.ExternalBuckets.ToList()
         };
 
-        public ConnectionProfile ToRuntime() => new()
-        {
-            Id = Id,
-            Name = Name,
-            ServiceType = ServiceType,
-            Endpoint = Endpoint,
-            Region = Region,
-            SignatureRegion = SignatureRegion,
-            AccessKey = AccessKey ?? string.Empty,
-            SecretKey = SecretKey ?? string.Empty,
-            SessionToken = SessionToken ?? string.Empty,
-            CredentialSource = CredentialSource,
-            AwsProfileName = AwsProfileName ?? string.Empty,
-            AddressingStyle = AddressingStyle,
-            UseHttps = UseHttps,
-            IgnoreCertificateErrors = IgnoreCertificateErrors,
-            CustomHostHeader = CustomHostHeader,
-            FollowTemporaryRedirects = FollowTemporaryRedirects,
-            EnableMultiObjectDelete = EnableMultiObjectDelete,
-            EnableMultipartCopy = EnableMultipartCopy,
-            DefaultStorageClass = DefaultStorageClass,
-            RequestTimeoutSeconds = RequestTimeoutSeconds,
-            ConnectionTimeoutSeconds = ConnectionTimeoutSeconds,
-            DefaultBucket = DefaultBucket,
-            ExternalBuckets = ExternalBuckets ?? []
-        };
+        public ConnectionProfile ToRuntime() =>
+            S3ProviderCatalog.RepairLegacyServiceType(new ConnectionProfile
+            {
+                Id = Id,
+                Name = Name,
+                ServiceType = ServiceType,
+                Endpoint = Endpoint,
+                Region = Region,
+                SignatureRegion = SignatureRegion,
+                AccessKey = AccessKey ?? string.Empty,
+                SecretKey = SecretKey ?? string.Empty,
+                SessionToken = SessionToken ?? string.Empty,
+                CredentialSource = CredentialSource,
+                AwsProfileName = AwsProfileName ?? string.Empty,
+                AddressingStyle = AddressingStyle,
+                UseHttps = UseHttps,
+                IgnoreCertificateErrors = IgnoreCertificateErrors,
+                CustomHostHeader = CustomHostHeader,
+                FollowTemporaryRedirects = FollowTemporaryRedirects,
+                EnableMultiObjectDelete = EnableMultiObjectDelete,
+                EnableMultipartCopy = EnableMultipartCopy,
+                DefaultStorageClass = DefaultStorageClass,
+                RequestTimeoutSeconds = RequestTimeoutSeconds,
+                ConnectionTimeoutSeconds = ConnectionTimeoutSeconds,
+                DefaultBucket = DefaultBucket,
+                ExternalBuckets = ExternalBuckets ?? []
+            });
     }
 }
 
