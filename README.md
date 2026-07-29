@@ -30,8 +30,9 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 
 推荐普通用户使用 MSI 安装包：
 
-- 安装到 Windows Program Files，并创建开始菜单入口。
-- 已包含 .NET 10 运行时，不需要另行安装依赖。
+- 默认安装到 `C:\Program Files\S3 Explorer\`，可修改路径并选择桌面快捷方式；开始菜单入口默认创建。
+- 推荐的 `setup.msi` 已包含 .NET 10 运行时；轻量的 `framework-dependent-setup.msi` 需要 .NET 10 Desktop Runtime x64。
+- 两个 MSI 都以普通多文件方式安装 GUI、CLI、DLL 与配置文件。
 
 需要免安装运行时可选择 portable ZIP：
 
@@ -39,7 +40,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - framework-dependent ZIP 需要 .NET 10 Desktop Runtime x64。
 - self-contained ZIP 自带所需运行时，体积更大。
 
-无论选择哪个包，桌面端和 CLI 都各自为单文件 EXE。
+两个便携 ZIP 中，桌面端和 CLI 都各自为单文件 EXE；安装包使用多文件布局。
 
 ## 从源码构建
 
@@ -156,15 +157,16 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.5-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.5-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.5.zip
-    artifacts/release/S3Explorer-v0.6.5-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.6-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.6-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.6.zip
+    artifacts/release/S3Explorer-v0.6.6-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.6-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
 
-发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent ZIP 仍需要 .NET 10 Desktop Runtime；self-contained ZIP 可直接解压运行；MSI 使用 self-contained 文件，提供安装完成页、路径选择、开始菜单入口和可选桌面快捷方式。安装失败时可在 `%TEMP%` 查找最新的 `MSI*.log`。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
+两个便携 ZIP 保持单文件形式：framework-dependent ZIP 需要 .NET 10 Desktop Runtime，self-contained ZIP 可直接解压运行。安装器使用独立的多文件发布目录，不再把 DLL 集成到入口 EXE：默认 `setup.msi` 自带运行时，`framework-dependent-setup.msi` 依赖系统中的 .NET 10 Desktop Runtime。两个 MSI 都默认安装到 `C:\Program Files\S3 Explorer\`，提供路径选择、开始菜单入口和桌面快捷方式选项。安装失败时可在 `%TEMP%` 查找最新的 `MSI*.log`。
 
 仅重新打包而跳过验证：
 
@@ -178,7 +180,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
     pwsh .\scripts\Publish.ps1 -MeasureRuntime
 
-`release-metrics.json` 会记录两个应用发布目录的压缩前大小、应用 ZIP、Unity Contracts SDK ZIP、MSI 的大小和 SHA-256，以及 .NET SDK 版本、签名配置状态和可选的启动时间与内存数据。
+`release-metrics.json` 会记录两个应用发布目录的压缩前大小、应用 ZIP、Unity Contracts SDK ZIP、两个 MSI 的大小和 SHA-256、安装器多文件负载统计，以及 .NET SDK 版本、签名配置状态和可选的启动时间与内存数据。
 
 推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；版本、更新清单、Release 与 Pages 的固定同步步骤见 [`docs/Release-Process.md`](docs/Release-Process.md)，GitHub 交付机制见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
 

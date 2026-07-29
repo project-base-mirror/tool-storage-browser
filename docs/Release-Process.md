@@ -55,11 +55,11 @@ pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
 
-检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、MSI 安装包和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，且程序集版本必须与发布版本一致。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
+检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI 和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；两个 MSI 必须使用多文件负载，且只有 self-contained MSI 包含 .NET 运行时；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，且程序集版本必须与发布版本一致。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
 
 ### 正式签名配置
 
-公开发布应使用同一个受信 Authenticode 发布者身份签名两个 ZIP 中的 GUI/CLI EXE 与 MSI。仓库不保存证书或密码；Release 工作流读取：
+公开发布应使用同一个受信 Authenticode 发布者身份签名两个 ZIP 中的 GUI/CLI EXE 与两个 MSI。仓库不保存证书或密码；Release 工作流读取：
 
 - Actions secret `CODE_SIGNING_PFX_BASE64`：受信代码签名 PFX 的 Base64 内容。
 - Actions secret `CODE_SIGNING_PFX_PASSWORD`：PFX 密码。
@@ -100,12 +100,13 @@ git tag -a $tag -m "S3 Explorer $tag"
 git push origin $tag
 ```
 
-`Publish GitHub Release` 工作流会再次校验和构建，并发布六个资产：
+`Publish GitHub Release` 工作流会再次校验和构建，并发布七个资产：
 
 - `S3Explorer-vX.Y.Z-win-x64.zip`
 - `S3Explorer-vX.Y.Z-win-x64-self-contained.zip`
 - `S3Explorer.Contracts-vX.Y.Z.zip`
 - `S3Explorer-vX.Y.Z-win-x64-setup.msi`
+- `S3Explorer-vX.Y.Z-win-x64-framework-dependent-setup.msi`
 - `release-metrics.json`
 - `SHA256SUMS.txt`
 
@@ -119,7 +120,7 @@ Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release
 pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z
 ```
 
-脚本下载 `SHA256SUMS.txt`、`release-metrics.json`、framework-dependent ZIP 和很小的 Contracts SDK ZIP，检查资产集合、状态、大小、GitHub 提供的 SHA-256 digest、ZIP 结构、CLI 版本、Contracts 程序集版本以及 Pages。大型 self-contained ZIP 和 MSI 默认不再重复下载；它们的 GitHub digest 必须与 `SHA256SUMS.txt` 一致，否则验收失败，不能静默跳过。
+脚本下载 `SHA256SUMS.txt`、`release-metrics.json`、framework-dependent ZIP、很小的 Contracts SDK ZIP 和轻量的 framework-dependent MSI，检查资产集合、状态、大小、GitHub 提供的 SHA-256 digest、ZIP 结构、CLI 版本、Contracts 程序集版本以及 Pages。大型 self-contained ZIP 和 self-contained MSI 默认不再重复下载；它们的 GitHub digest 必须与 `SHA256SUMS.txt` 一致，否则验收失败，不能静默跳过。
 
 安装器、签名、打包格式或发布工作流发生变化时，以及周期性审计时，执行完整下载：
 
@@ -131,8 +132,8 @@ pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z -FullDownload -RequireSignin
 随后逐项确认：
 
 - [Latest Release](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) 指向新版本。
-- 版本化的两个应用 ZIP、Contracts SDK ZIP 和 MSI 可下载，名称、大小和 Content-Type 正常。
-- 默认验收以 GitHub 资产 digest 校验大文件；完整验收下载三个 ZIP 和 MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致。要求签名的版本还需验证 GUI、CLI 与 MSI 的 Authenticode 签名。
+- 版本化的两个应用 ZIP、Contracts SDK ZIP 和两个 MSI 可下载，名称、大小和 Content-Type 正常。
+- 默认验收以 GitHub 资产 digest 校验大型 self-contained ZIP/MSI，并实际下载轻量 MSI；完整验收下载三个 ZIP 和两个 MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致。要求签名的版本还需验证 GUI、CLI 与两个 MSI 的 Authenticode 签名。
 - [项目主页](https://project-base-mirror.github.io/tool-storage-browser/) 显示新版本和正确下载地址。
 - [`update.json`](https://project-base-mirror.github.io/tool-storage-browser/update.json) 的版本、tag、Release 页面与下载 URL 一致，客户端检查更新可读取。
 - `robots.txt`、`sitemap.xml` 和 `assets/social-card.png` 均返回 HTTP 200。

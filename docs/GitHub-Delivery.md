@@ -54,10 +54,10 @@ Release 工作流会：
 
 1. 检出该 tag，并拒绝 tag、项目版本或版本记录不一致的发布。
 2. 在 `windows-latest` 和 .NET 10 SDK 上运行 `scripts/Publish.ps1 -NoOpen`。
-3. 生成带版本号的 framework-dependent、自包含、Unity Contracts SDK ZIP、MSI、`release-metrics.json` 和 `SHA256SUMS.txt`。
+3. 生成带版本号的 framework-dependent、自包含、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI、`release-metrics.json` 和 `SHA256SUMS.txt`。
 4. 保存 Actions artifact，并创建同名 GitHub Release；重新运行时覆盖同名资产，不创建重复 Release。
 
-发布后的默认验收使用 `scripts/Verify-RemoteRelease.ps1`：小文件和普通 ZIP 仍会实际下载并执行 CLI/SDK 检查，大型 self-contained ZIP 与 MSI 使用 GitHub 资产 SHA-256 digest 对照 `SHA256SUMS.txt`，避免每次重复下载约 150 MiB。安装器、签名或打包链发生变化时使用 `-FullDownload`；要求检查签名时同时使用 `-RequireSigning`。
+发布后的默认验收使用 `scripts/Verify-RemoteRelease.ps1`：小文件、普通 ZIP 与轻量 framework-dependent MSI 会实际下载并执行检查，大型 self-contained ZIP 与 self-contained MSI 使用 GitHub 资产 SHA-256 digest 对照 `SHA256SUMS.txt`。安装器、签名或打包链发生变化时使用 `-FullDownload`；要求检查签名时同时使用 `-RequireSigning`。
 
 也可以手工运行 **Publish GitHub Release**，但输入必须是已经存在的 tag。工作流不会替用户创建或移动 tag。
 
@@ -70,6 +70,8 @@ https://github.com/project-base-mirror/tool-storage-browser/releases/latest
 https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64.zip
 https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64-self-contained.zip
 https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer.Contracts-vX.Y.Z.zip
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64-setup.msi
+https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX.Y.Z/S3Explorer-vX.Y.Z-win-x64-framework-dependent-setup.msi
 ```
 
 发布脚本从项目版本自动生成资产名；Contracts SDK 的 DLL 与 CLI 必须使用同一版本。准备新版本时必须同步更新 Pages 的固定版本链接与 `update.json`。`scripts/Test-UpdateManifest.ps1` 会验证项目版本、tag、Release 页面和下载地址一致。客户端优先读取 Pages 清单，失败后回退 Latest Release API，并继续兼容 v0.5.2 及更早的无版本号文件名。

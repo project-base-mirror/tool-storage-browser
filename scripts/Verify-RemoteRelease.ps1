@@ -68,11 +68,13 @@ $frameworkName = "S3Explorer-$Tag-win-x64.zip"
 $selfContainedName = "S3Explorer-$Tag-win-x64-self-contained.zip"
 $contractsName = "S3Explorer.Contracts-$Tag.zip"
 $installerName = "S3Explorer-$Tag-win-x64-setup.msi"
+$frameworkInstallerName = "S3Explorer-$Tag-win-x64-framework-dependent-setup.msi"
 $expectedNames = @(
     $frameworkName,
     $selfContainedName,
     $contractsName,
     $installerName,
+    $frameworkInstallerName,
     "release-metrics.json",
     "SHA256SUMS.txt"
 ) | Sort-Object
@@ -103,7 +105,7 @@ try {
         if ($line -notmatch '^([0-9a-f]{64}) \*(.+)$') { throw "Invalid checksum line: $line" }
         $checksums[$Matches[2]] = $Matches[1]
     }
-    foreach ($packageName in @($frameworkName, $selfContainedName, $contractsName, $installerName)) {
+    foreach ($packageName in @($frameworkName, $selfContainedName, $contractsName, $installerName, $frameworkInstallerName)) {
         Assert-True -Condition $checksums.ContainsKey($packageName) -Message "Checksum is missing for $packageName."
         $asset = $release.assets | Where-Object { $_.name -ceq $packageName } | Select-Object -First 1
         $digest = [string]$asset.digest
@@ -117,8 +119,10 @@ try {
     $metricsPath = Download-Asset -Name "release-metrics.json" -Destination $temporaryRoot
     $frameworkPath = Download-Asset -Name $frameworkName -Destination $temporaryRoot
     $contractsPath = Download-Asset -Name $contractsName -Destination $temporaryRoot
+    $frameworkInstallerPath = Download-Asset -Name $frameworkInstallerName -Destination $temporaryRoot
     Assert-FileHash -Path $frameworkPath -Expected ([string]$checksums[$frameworkName])
     Assert-FileHash -Path $contractsPath -Expected ([string]$checksums[$contractsName])
+    Assert-FileHash -Path $frameworkInstallerPath -Expected ([string]$checksums[$frameworkInstallerName])
 
     $frameworkEntries = Get-ZipEntries -Path $frameworkPath
     $expectedApplicationEntries = @("S3Explorer.exe", "s3explorer-cli.exe") | Sort-Object
@@ -145,6 +149,8 @@ try {
     Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics.json package count is invalid."
     Assert-True -Condition ([string]$metrics.contracts.name -ceq $contractsName) -Message "Contracts metric name is invalid."
     Assert-True -Condition ([string]$metrics.installer.name -ceq $installerName) -Message "Installer metric name is invalid."
+    Assert-True -Condition ([string]$metrics.frameworkInstaller.name -ceq $frameworkInstallerName) -Message "Framework-dependent installer metric name is invalid."
+    Assert-True -Condition (-not [bool]$metrics.installerSingleFileEnabled) -Message "Installer payloads must be reported as multi-file."
 
     if ($FullDownload) {
         $selfContainedPath = Download-Asset -Name $selfContainedName -Destination $temporaryRoot
@@ -163,7 +169,8 @@ try {
                 (Join-Path $frameworkDirectory "s3explorer-cli.exe"),
                 (Join-Path $selfContainedDirectory "S3Explorer.exe"),
                 (Join-Path $selfContainedDirectory "s3explorer-cli.exe"),
-                $installerPath)) {
+                $installerPath,
+                $frameworkInstallerPath)) {
                 $signature = Get-AuthenticodeSignature -LiteralPath $signedPath
                 Assert-True -Condition ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) -Message (
                     "Authenticode signature is not valid: $(Split-Path -Leaf $signedPath) ($($signature.Status))")

@@ -98,6 +98,7 @@ jobs:
             artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-self-contained.zip
             artifacts/release/S3Explorer.Contracts-${{ env.RELEASE_TAG }}.zip
             artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-setup.msi
+            artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-framework-dependent-setup.msi
             artifacts/release/release-metrics.json
             artifacts/release/SHA256SUMS.txt
 
@@ -111,6 +112,7 @@ jobs:
             "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64-self-contained.zip",
             "./artifacts/release/S3Explorer.Contracts-$($env:RELEASE_TAG).zip",
             "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64-setup.msi",
+            "./artifacts/release/S3Explorer-$($env:RELEASE_TAG)-win-x64-framework-dependent-setup.msi",
             './artifacts/release/release-metrics.json',
             './artifacts/release/SHA256SUMS.txt'
           )

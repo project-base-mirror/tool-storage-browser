@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.5",
-  "version": "0.6.5",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.5",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.5/S3Explorer-v0.6.5-win-x64.zip",
-  "notes": "新增可选择安装路径和桌面快捷方式的安装向导与自动 MSI 日志；CLI 双击显示完整帮助并保留窗口，批量传输支持并发、限速、Multipart 参数和可选上传后验证；远端发布验收默认使用 SHA-256 digest 校验大型资产。",
-  "publishedAt": "2026-07-29T17:41:37+08:00"
+  "tagName": "v0.6.6",
+  "version": "0.6.6",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.6",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.6/S3Explorer-v0.6.6-win-x64.zip",
+  "notes": "修复 x64 安装器默认落入 Program Files (x86)、占位许可文本和程序图标缺失；MSI 改为多文件部署，并同时提供自带运行时与依赖 .NET 10 Desktop Runtime 两种安装包。",
+  "publishedAt": "2026-07-29T18:45:00+08:00"
 }
