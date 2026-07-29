@@ -931,8 +931,20 @@ internal sealed class CliArguments
     {
         "json", "yes", "recursive", "delete", "hash", "new-only", "changed-only",
         "path-style", "ignore-certificate-errors", "non-interactive", "warmup", "dry-run",
-        "full", "include-manifest"
+        "full", "include-manifest", "verify", "help"
     };
+    private static readonly HashSet<string> ValueOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "output", "data-dir", "timeout", "cancel-file", "log-file",
+        "profile", "bucket", "prefix", "name", "type", "endpoint", "region",
+        "credential-source", "aws-profile", "access-key", "secret-key", "secret-key-env",
+        "session-token", "session-token-env", "default-bucket", "direction", "local", "remote",
+        "exclude", "page-size", "key-marker", "version-id-marker", "version-id", "source",
+        "project", "product", "version", "manifest", "delete-mode", "cdn-profile", "path",
+        "transfers", "multipart-concurrency", "upload-limit", "download-limit",
+        "multipart-threshold", "part-size"
+    };
+    private static readonly HashSet<string> RepeatableOptions = new(StringComparer.OrdinalIgnoreCase) { "exclude" };
     private readonly Dictionary<string, List<string>> _options = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Positionals { get; } = [];
 
@@ -950,9 +962,19 @@ internal sealed class CliArguments
 
             var key = current[2..];
             if (key.Length == 0) throw new CliUsageException("选项名称不能为空。");
-            var value = "true";
-            if (!FlagOptions.Contains(key) && index + 1 < args.Count && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            if (!FlagOptions.Contains(key) && !ValueOptions.Contains(key))
+                throw new CliUsageException($"未知选项：--{key}。");
+            if (result._options.ContainsKey(key) && !RepeatableOptions.Contains(key))
+                throw new CliUsageException($"选项 --{key} 不能重复。");
+
+            string value;
+            if (FlagOptions.Contains(key)) value = "true";
+            else
+            {
+                if (index + 1 >= args.Count || args[index + 1].StartsWith("--", StringComparison.Ordinal))
+                    throw new CliUsageException($"选项 --{key} 缺少值。");
                 value = args[++index];
+            }
             if (!result._options.TryGetValue(key, out var values))
                 result._options[key] = values = [];
             values.Add(value);
