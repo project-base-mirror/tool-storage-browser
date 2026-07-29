@@ -108,10 +108,9 @@ if (-not $SkipPackageBuild) {
         $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $releaseRoot $zipName))
         try {
             $entryNames = @($archive.Entries | Select-Object -ExpandProperty FullName)
-            Assert-True -Condition ($entryNames -contains "S3Explorer.exe") -Message "$zipName does not contain S3Explorer.exe."
-            Assert-True -Condition ($entryNames -contains "s3explorer-cli.exe") -Message "$zipName does not contain s3explorer-cli.exe."
-            $dllEntries = @($entryNames | Where-Object { $_ -match '(?i)\.dll$' })
-            Assert-True -Condition ($dllEntries.Count -eq 0) -Message "$zipName still exposes DLL files: $($dllEntries -join ', ')."
+            $expectedEntries = @("S3Explorer.exe", "s3explorer-cli.exe") | Sort-Object
+            $actualEntries = @($entryNames | Sort-Object)
+            Assert-True -Condition (($actualEntries -join '|') -ceq ($expectedEntries -join '|')) -Message "$zipName must contain only the desktop and CLI single-file executables; found: $($actualEntries -join ', ')."
         }
         finally {
             $archive.Dispose()

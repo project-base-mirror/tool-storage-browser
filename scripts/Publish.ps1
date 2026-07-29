@@ -117,6 +117,7 @@ function Publish-Package {
         "-p:IncludeNativeLibrariesForSelfExtract=true",
         "-p:EnableCompressionInSingleFile=$selfContainedValue",
         "-p:PublishReadyToRun=false",
+        "-p:GenerateDocumentationFile=false",
         "-p:DebugType=None",
         "-p:DebugSymbols=false"
     )
@@ -132,6 +133,7 @@ function Publish-Package {
         "-p:IncludeNativeLibrariesForSelfExtract=true",
         "-p:EnableCompressionInSingleFile=$selfContainedValue",
         "-p:PublishReadyToRun=false",
+        "-p:GenerateDocumentationFile=false",
         "-p:DebugType=None",
         "-p:DebugSymbols=false"
     )
