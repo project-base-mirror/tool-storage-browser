@@ -13,6 +13,7 @@ $releaseRoot = Join-Path $repositoryRoot "artifacts\release"
 $version = [string]$props.Project.PropertyGroup.Version
 $frameworkName = "S3Explorer-v$version-win-x64"
 $selfContainedName = "S3Explorer-v$version-win-x64-self-contained"
+$contractsName = "S3Explorer.Contracts-v$version"
 $installerName = "S3Explorer-v$version-win-x64-setup.msi"
 
 & (Join-Path $PSScriptRoot "Test-UpdateManifest.ps1")
@@ -67,6 +68,8 @@ $expectedPaths = @(
     $selfContainedName,
     "$frameworkName.zip",
     "$selfContainedName.zip",
+    $contractsName,
+    "$contractsName.zip",
     $installerName,
     "release-metrics.json"
 )
@@ -116,6 +119,25 @@ if (-not $SkipPackageBuild) {
             $archive.Dispose()
         }
     }
+
+    $contractsZipName = "$contractsName.zip"
+    $contractsArchive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $releaseRoot $contractsZipName))
+    try {
+        $actualEntries = @($contractsArchive.Entries | Select-Object -ExpandProperty FullName | Sort-Object)
+        $expectedEntries = @("README.md", "S3Explorer.Contracts.dll", "S3Explorer.Contracts.xml") | Sort-Object
+        Assert-True -Condition (($actualEntries -join '|') -ceq ($expectedEntries -join '|')) -Message "$contractsZipName contains unexpected entries: $($actualEntries -join ', ')."
+    }
+    finally {
+        $contractsArchive.Dispose()
+    }
+}
+
+$contractsDirectory = Join-Path $releaseRoot $contractsName
+$contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $contractsDirectory "S3Explorer.Contracts.dll"))
+Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "$version.0") -Message "Contracts assembly version $($contractsAssembly.Version) does not match $version.0."
+foreach ($contractsFile in @("S3Explorer.Contracts.dll", "S3Explorer.Contracts.xml", "README.md")) {
+    $item = Get-Item -LiteralPath (Join-Path $contractsDirectory $contractsFile)
+    Assert-True -Condition ($item.Length -gt 0) -Message "Unity contracts package file is empty: $contractsFile"
 }
 
 $metrics = Get-Content -LiteralPath (Join-Path $releaseRoot "release-metrics.json") -Raw | ConvertFrom-Json
@@ -123,6 +145,7 @@ Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics
 Assert-True -Condition ([bool]$metrics.singleFileEnabled) -Message "release-metrics.json must report single-file publishing."
 Assert-True -Condition ($metrics.packages.name -contains $frameworkName) -Message "Framework-dependent package metric is missing."
 Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Message "Self-contained package metric is missing."
+Assert-True -Condition ($metrics.contracts.name -ceq "$contractsName.zip") -Message "Unity contracts package metric is missing."
 Assert-True -Condition ($metrics.installer.name -ceq $installerName) -Message "Installer metric is missing."
 
 Write-Host "Publish script tests passed."

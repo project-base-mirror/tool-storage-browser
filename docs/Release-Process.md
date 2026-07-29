@@ -55,7 +55,7 @@ pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
 
-检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、MSI 安装包和 `release-metrics.json`。两个 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe` 等非 DLL 内容，托管依赖和本机运行库必须已打入对应单文件。确认版本化文件名、入口程序、CLI、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
+检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、MSI 安装包和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，且程序集版本必须与发布版本一致。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
 
 ### 正式签名配置
 
@@ -100,10 +100,11 @@ git tag -a $tag -m "S3 Explorer $tag"
 git push origin $tag
 ```
 
-`Publish GitHub Release` 工作流会再次校验和构建，并发布五个资产：
+`Publish GitHub Release` 工作流会再次校验和构建，并发布六个资产：
 
 - `S3Explorer-vX.Y.Z-win-x64.zip`
 - `S3Explorer-vX.Y.Z-win-x64-self-contained.zip`
+- `S3Explorer.Contracts-vX.Y.Z.zip`
 - `S3Explorer-vX.Y.Z-win-x64-setup.msi`
 - `release-metrics.json`
 - `SHA256SUMS.txt`
@@ -115,8 +116,8 @@ Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release
 推送 `main` 后，`Deploy project homepage` 会校验并部署 `docs/site/`。等待 Release 与 Pages 两个工作流都成功，再逐项检查：
 
 - [Latest Release](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) 指向新版本。
-- 版本化的两个 ZIP 和 MSI 可下载，名称、大小和 Content-Type 正常。
-- 下载 ZIP/MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致；要求签名的版本还需验证 GUI、CLI 与 MSI 的 Authenticode 签名。
+- 版本化的两个应用 ZIP、Contracts SDK ZIP 和 MSI 可下载，名称、大小和 Content-Type 正常。
+- 下载三个 ZIP 和 MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致；要求签名的版本还需验证 GUI、CLI 与 MSI 的 Authenticode 签名。
 - [项目主页](https://project-base-mirror.github.io/tool-storage-browser/) 显示新版本和正确下载地址。
 - [`update.json`](https://project-base-mirror.github.io/tool-storage-browser/update.json) 的版本、tag、Release 页面与下载 URL 一致，客户端检查更新可读取。
 - `robots.txt`、`sitemap.xml` 和 `assets/social-card.png` 均返回 HTTP 200。

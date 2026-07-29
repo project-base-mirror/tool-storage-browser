@@ -16,6 +16,8 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
 $cliProject = Join-Path $repositoryRoot "src\S3Explorer.Cli\S3Explorer.Cli.csproj"
+$contractsProject = Join-Path $repositoryRoot "src\S3Explorer.Contracts\S3Explorer.Contracts.csproj"
+$contractsGuide = Join-Path $repositoryRoot "docs\Unity-Publish-Integration.md"
 $installerProject = Join-Path $repositoryRoot "installer\S3Explorer.Installer.wixproj"
 $signingScript = Join-Path $PSScriptRoot "Sign-Artifacts.ps1"
 $propsPath = Join-Path $repositoryRoot "Directory.Build.props"
@@ -33,6 +35,9 @@ $frameworkDirectory = Join-Path $outputRoot $frameworkName
 $selfContainedDirectory = Join-Path $outputRoot $selfContainedName
 $frameworkZip = Join-Path $outputRoot "$frameworkName.zip"
 $selfContainedZip = Join-Path $outputRoot "$selfContainedName.zip"
+$contractsName = "S3Explorer.Contracts-$releaseTag"
+$contractsDirectory = Join-Path $outputRoot $contractsName
+$contractsZip = Join-Path $outputRoot "$contractsName.zip"
 $installerName = "S3Explorer-$releaseTag-$Runtime-setup.msi"
 $installerPath = Join-Path $outputRoot $installerName
 $metricsPath = Join-Path $outputRoot "release-metrics.json"
@@ -230,6 +235,21 @@ if (-not $SkipValidation) {
 
 Publish-Package -Destination $frameworkDirectory -SelfContained $false
 Publish-Package -Destination $selfContainedDirectory -SelfContained $true
+Invoke-DotNet -Arguments @("build", $contractsProject, "-c", $Configuration)
+
+$contractsOutput = Join-Path $repositoryRoot "src\S3Explorer.Contracts\bin\$Configuration\netstandard2.1"
+$contractsDll = Join-Path $contractsOutput "S3Explorer.Contracts.dll"
+$contractsXml = Join-Path $contractsOutput "S3Explorer.Contracts.xml"
+foreach ($requiredPath in @($contractsDll, $contractsXml, $contractsGuide)) {
+    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+        throw "Unity contracts package input was not produced: $requiredPath"
+    }
+}
+
+New-Item -ItemType Directory -Path $contractsDirectory -Force | Out-Null
+Copy-Item -LiteralPath $contractsDll -Destination (Join-Path $contractsDirectory "S3Explorer.Contracts.dll")
+Copy-Item -LiteralPath $contractsXml -Destination (Join-Path $contractsDirectory "S3Explorer.Contracts.xml")
+Copy-Item -LiteralPath $contractsGuide -Destination (Join-Path $contractsDirectory "README.md")
 Invoke-CodeSigning -ArtifactPaths @(
     (Join-Path $frameworkDirectory "S3Explorer.exe"),
     (Join-Path $frameworkDirectory "s3explorer-cli.exe"),
@@ -238,6 +258,7 @@ Invoke-CodeSigning -ArtifactPaths @(
 )
 New-ZipArchive -SourceDirectory $frameworkDirectory -DestinationPath $frameworkZip
 New-ZipArchive -SourceDirectory $selfContainedDirectory -DestinationPath $selfContainedZip
+New-ZipArchive -SourceDirectory $contractsDirectory -DestinationPath $contractsZip
 Invoke-DotNet -Arguments @(
     "build",
     $installerProject,
@@ -270,6 +291,7 @@ $metrics = [ordered]@{
         (New-PackageMetric -Name $frameworkName -Directory $frameworkDirectory -ZipPath $frameworkZip -SelfContained $false),
         (New-PackageMetric -Name $selfContainedName -Directory $selfContainedDirectory -ZipPath $selfContainedZip -SelfContained $true)
     )
+    contracts = New-ArtifactMetric -Name "$contractsName.zip" -Path $contractsZip
     installer = New-ArtifactMetric -Name $installerName -Path $installerPath
     runtimeMeasurement = $runtimeMetric
 }
@@ -280,6 +302,7 @@ Write-Host ""
 $resolvedOutputRoot = (Resolve-Path -LiteralPath $outputRoot).Path
 Write-Host "Release artifacts: $resolvedOutputRoot"
 $metrics.packages | Format-Table name, directoryMiB, zipMiB, zipSha256 -AutoSize
+$metrics.contracts | Format-Table name, sizeMiB, sha256 -AutoSize
 $metrics.installer | Format-Table name, sizeMiB, sha256 -AutoSize
 if ($null -ne $runtimeMetric) {
     $runtimeMetric | Format-List
