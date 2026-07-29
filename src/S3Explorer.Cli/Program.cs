@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -56,6 +57,7 @@ internal static class Program
             if (parsed.Positionals.Count == 0 || parsed.Positionals[0] is "help" or "--help" or "-h")
             {
                 WriteHelp();
+                ConsoleLaunchBehavior.PauseAfterHelpWhenDirectlyLaunched(args.Length);
                 return 0;
             }
             if (parsed.Positionals[0] == "version")
@@ -978,3 +980,47 @@ internal sealed class CliArguments
 
 internal sealed class CliUsageException(string message) : Exception(message);
 internal sealed class CliNotFoundException(string message) : Exception(message);
+
+internal static class ConsoleLaunchBehavior
+{
+    public static void PauseAfterHelpWhenDirectlyLaunched(int argumentCount)
+    {
+        if (!ShouldPause(
+                argumentCount,
+                OperatingSystem.IsWindows(),
+                Environment.UserInteractive,
+                Console.IsInputRedirected,
+                Console.IsOutputRedirected,
+                GetAttachedConsoleProcessCount()))
+            return;
+
+        Console.WriteLine();
+        Console.Write("按任意键退出...");
+        _ = Console.ReadKey(intercept: true);
+        Console.WriteLine();
+    }
+
+    internal static bool ShouldPause(
+        int argumentCount,
+        bool isWindows,
+        bool isUserInteractive,
+        bool isInputRedirected,
+        bool isOutputRedirected,
+        int attachedConsoleProcessCount) =>
+        argumentCount == 0 &&
+        isWindows &&
+        isUserInteractive &&
+        !isInputRedirected &&
+        !isOutputRedirected &&
+        attachedConsoleProcessCount == 1;
+
+    private static int GetAttachedConsoleProcessCount()
+    {
+        if (!OperatingSystem.IsWindows()) return 0;
+        var processIds = new uint[2];
+        return checked((int)GetConsoleProcessList(processIds, (uint)processIds.Length));
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetConsoleProcessList(uint[] processIds, uint processCount);
+}
