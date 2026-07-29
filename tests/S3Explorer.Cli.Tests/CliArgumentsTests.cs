@@ -40,4 +40,15 @@ public sealed class CliArgumentsTests
 
         Assert.Equal(["*.tmp", "cache/**"], parsed.Values("exclude"));
     }
+
+    [Fact]
+    public void KnownOptionOnWrongCommandIsRejected()
+    {
+        var parsed = CliArguments.Parse(["version", "--bucket", "assets"]);
+
+        var exception = Assert.Throws<CliUsageException>(() =>
+            parsed.EnsureOnly(["output", "json"]));
+
+        Assert.Contains("当前命令不支持", exception.Message, StringComparison.Ordinal);
+    }
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using S3Explorer.Contracts;
@@ -51,6 +52,7 @@ internal static class AutomationCommands
         IS3StorageService storage,
         CancellationToken cancellationToken)
     {
+        var transfer = CliTransferRuntime.Create(args);
         var profile = ResolveProfile(
             await profileStore.LoadAsync(cancellationToken),
             args.Require("profile"));
@@ -59,18 +61,31 @@ internal static class AutomationCommands
         var prefix = NormalizePrefix(args.Optional("prefix"));
         var files = EnumerateSourceFiles(source);
         long bytes = 0;
-        foreach (var file in files)
+        var verify = args.Flag("verify");
+        await transfer.ForEachAsync(files, async (file, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var relative = File.Exists(source)
                 ? Path.GetFileName(source)
                 : PublishManifestUtility.NormalizeRelativePath(Path.GetRelativePath(source, file));
             var key = CombineKey(prefix, relative);
+            PublishManifestFile? expected = null;
+            if (verify)
+            {
+                expected = new PublishManifestFile
+                {
+                    Path = relative,
+                    Size = new FileInfo(file).Length,
+                    Sha256 = await PublishManifestUtility.ComputeSha256Async(file, token)
+                };
+            }
             await storage.UploadFileAsync(
                 profile, bucket, key, file, string.Empty,
-                NewTransferContext(), cancellationToken);
-            bytes += new FileInfo(file).Length;
-        }
+                transfer.CreateContext(), token);
+            if (expected is not null)
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, key, expected.Size, expected.Sha256, transfer, token);
+            Interlocked.Add(ref bytes, new FileInfo(file).Length);
+        }, cancellationToken);
 
         var data = new
         {
@@ -80,6 +95,8 @@ internal static class AutomationCommands
             prefix,
             uploadedFiles = files.Count,
             uploadedBytes = bytes,
+            verified = verify,
+            transfer = transfer.Settings,
             remoteUri = BuildRemoteUri(profile, bucket, prefix)
         };
         return new AutomationCommandResult(
@@ -98,6 +115,7 @@ internal static class AutomationCommands
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var transfer = CliTransferRuntime.Create(args);
         var profile = ResolveProfile(
             await profileStore.LoadAsync(cancellationToken),
             args.Require("profile"));
@@ -125,7 +143,7 @@ internal static class AutomationCommands
         var remoteManifest = args.Flag("full")
             ? null
             : await TryDownloadManifestAsync(
-                storage, profile, bucket, CombineKey(prefix, DefaultManifestName), cancellationToken);
+                storage, profile, bucket, CombineKey(prefix, DefaultManifestName), transfer, cancellationToken);
         var plan = PublishManifestUtility.CreatePlan(
             localFiles.Select(value => value.Entry).ToArray(), remoteManifest);
 
@@ -148,24 +166,26 @@ internal static class AutomationCommands
 
         ConfirmPublish(args, jsonOutput, plan, bucket, prefix);
 
-        var failures = new List<OperationFailure>();
+        var failures = new ConcurrentBag<OperationFailure>();
         var uploadedFiles = 0;
         long uploadedBytes = 0;
         var changed = plan.Items
             .Where(value => value.Change != PublishChangeKind.Unchanged)
             .ToDictionary(value => value.Path, StringComparer.Ordinal);
-        foreach (var file in localFiles.Where(value => changed.ContainsKey(value.Entry.Path)))
+        await transfer.ForEachAsync(
+            localFiles.Where(value => changed.ContainsKey(value.Entry.Path)),
+            async (file, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var key = CombineKey(prefix, file.Entry.Path);
                 await storage.UploadFileAsync(
                     profile, bucket, key, file.FullPath, string.Empty,
-                    NewTransferContext(), cancellationToken);
-                await VerifyRemoteFileAsync(storage, profile, bucket, key, file.Entry, cancellationToken);
-                uploadedFiles++;
-                uploadedBytes += file.Entry.Size;
+                    transfer.CreateContext(), token);
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, key, file.Entry.Size, file.Entry.Sha256, transfer, token);
+                Interlocked.Increment(ref uploadedFiles);
+                Interlocked.Add(ref uploadedBytes, file.Entry.Size);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception exception)
@@ -176,7 +196,7 @@ internal static class AutomationCommands
                     Message = SensitiveDataRedactor.Redact(exception.Message)
                 });
             }
-        }
+        }, cancellationToken);
 
         var manifest = new PublishManifest
         {
@@ -200,15 +220,16 @@ internal static class AutomationCommands
                 var manifestKey = CombineKey(prefix, DefaultManifestName);
                 await storage.UploadFileAsync(
                     profile, bucket, manifestKey, manifestPath, string.Empty,
-                    NewTransferContext(), cancellationToken);
+                    transfer.CreateContext(), cancellationToken);
                 var manifestEntry = new PublishManifestFile
                 {
                     Path = DefaultManifestName,
                     Size = new FileInfo(manifestPath).Length,
                     Sha256 = await PublishManifestUtility.ComputeSha256Async(manifestPath, cancellationToken)
                 };
-                await VerifyRemoteFileAsync(
-                    storage, profile, bucket, manifestKey, manifestEntry, cancellationToken);
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, manifestKey, manifestEntry.Size, manifestEntry.Sha256,
+                    transfer, cancellationToken);
                 manifestPublished = true;
             }
             catch (OperationCanceledException) { throw; }
@@ -255,7 +276,7 @@ internal static class AutomationCommands
             CdnUrl = cdnUrl,
             ManifestPath = manifestPath,
             ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
-            Failures = failures
+            Failures = failures.OrderBy(value => value.Path, StringComparer.Ordinal).ToList()
         };
         var text = result.Success
             ? $"发布成功：上传 {result.UploadedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
@@ -276,6 +297,7 @@ internal static class AutomationCommands
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var transfer = CliTransferRuntime.Create(args);
         var manifestPath = Path.GetFullPath(args.Require("manifest"));
         var manifest = await ReadManifestAsync(manifestPath, cancellationToken);
         var profileName = args.Optional("profile") ?? manifest.Profile;
@@ -284,18 +306,18 @@ internal static class AutomationCommands
         var profile = ResolveProfile(await profileStore.LoadAsync(cancellationToken), profileName);
         var bucket = ResolveBucket(profile, args.Optional("bucket") ?? manifest.Bucket);
         var prefix = NormalizePrefix(args.Optional("prefix") ?? manifest.Prefix);
-        var failures = new List<OperationFailure>();
+        var failures = new ConcurrentBag<OperationFailure>();
         var verifiedFiles = 0;
         long verifiedBytes = 0;
-        foreach (var file in manifest.Files)
+        await transfer.ForEachAsync(manifest.Files, async (file, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await VerifyRemoteFileAsync(
-                    storage, profile, bucket, CombineKey(prefix, file.Path), file, cancellationToken);
-                verifiedFiles++;
-                verifiedBytes += file.Size;
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, CombineKey(prefix, file.Path), file.Size, file.Sha256,
+                    transfer, token);
+                Interlocked.Increment(ref verifiedFiles);
+                Interlocked.Add(ref verifiedBytes, file.Size);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception exception)
@@ -306,7 +328,7 @@ internal static class AutomationCommands
                     Message = SensitiveDataRedactor.Redact(exception.Message)
                 });
             }
-        }
+        }, cancellationToken);
 
         stopwatch.Stop();
         var result = new VerifyResult
@@ -319,7 +341,7 @@ internal static class AutomationCommands
             FailedFiles = failures.Count,
             VerifiedBytes = verifiedBytes,
             ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
-            Failures = failures
+            Failures = failures.OrderBy(value => value.Path, StringComparer.Ordinal).ToList()
         };
         return new AutomationCommandResult(
             result.Success ? 0 : OperationFailed,
@@ -465,6 +487,7 @@ internal static class AutomationCommands
         ConnectionProfile profile,
         string bucket,
         string key,
+        CliTransferRuntime transfer,
         CancellationToken cancellationToken)
     {
         if (!await storage.ObjectExistsAsync(profile, bucket, key, cancellationToken))
@@ -473,7 +496,7 @@ internal static class AutomationCommands
         try
         {
             await storage.DownloadFileAsync(
-                profile, bucket, key, temporaryPath, NewTransferContext(), cancellationToken);
+                profile, bucket, key, temporaryPath, transfer.CreateContext(), cancellationToken);
             return await ReadManifestAsync(temporaryPath, cancellationToken);
         }
         finally
@@ -507,34 +530,6 @@ internal static class AutomationCommands
             await JsonSerializer.SerializeAsync(
                 stream, manifest, ManifestJsonOptions, cancellationToken);
         File.Move(temporaryPath, path, true);
-    }
-
-    private static async Task VerifyRemoteFileAsync(
-        IS3StorageService storage,
-        ConnectionProfile profile,
-        string bucket,
-        string key,
-        PublishManifestFile expected,
-        CancellationToken cancellationToken)
-    {
-        var temporaryPath = Path.Combine(Path.GetTempPath(), $"s3explorer-verify-{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await storage.DownloadFileAsync(
-                profile, bucket, key, temporaryPath, NewTransferContext(), cancellationToken);
-            var info = new FileInfo(temporaryPath);
-            if (info.Length != expected.Size)
-                throw new InvalidDataException(
-                    $"远程大小不匹配：预期 {expected.Size}，实际 {info.Length}。");
-            var hash = await PublishManifestUtility.ComputeSha256Async(temporaryPath, cancellationToken);
-            if (!string.Equals(hash, expected.Sha256, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException(
-                    $"远程 SHA-256 不匹配：预期 {expected.Sha256}，实际 {hash}。");
-        }
-        finally
-        {
-            TryDelete(temporaryPath);
-        }
     }
 
     private static IReadOnlyList<string> EnumerateSourceFiles(string source)
@@ -614,15 +609,6 @@ internal static class AutomationCommands
         prefix.Length == 0
             ? $"s3://{profile.Name}/{bucket}/"
             : $"s3://{profile.Name}/{bucket}/{prefix}/";
-
-    private static TransferOperationContext NewTransferContext()
-    {
-        var limiter = new SharedTransferBandwidthLimiter();
-        limiter.Configure(0, 0);
-        return new TransferOperationContext(
-            new TransferExecutionOptions(), limiter, null, null, _ => { },
-            (_, _, _, _) => Task.CompletedTask);
-    }
 
     private static void TryDelete(string path)
     {

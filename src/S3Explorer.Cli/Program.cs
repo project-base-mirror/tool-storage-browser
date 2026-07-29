@@ -62,6 +62,7 @@ internal static class Program
             }
             if (parsed.Positionals[0] == "version")
             {
+                parsed.EnsureOnly(GlobalOptions);
                 WriteSuccess(json, new { version = Version }, $"s3explorer-cli {Version}");
                 return 0;
             }
@@ -81,6 +82,7 @@ internal static class Program
             var storage = new S3StorageService(new S3ClientFactory());
             var command = parsed.Positionals[0].ToLowerInvariant();
             var verb = parsed.Positionals.Count > 1 ? parsed.Positionals[1].ToLowerInvariant() : string.Empty;
+            ValidateCommandOptions(command, verb, parsed);
 
             var exitCode = command switch
             {
@@ -150,6 +152,57 @@ internal static class Program
         else
             WriteOperationFailure(json, result.Text, result.ExitCode, result.Data);
         return result.ExitCode;
+    }
+
+    private static readonly string[] GlobalOptions =
+    [
+        "json", "output", "data-dir", "non-interactive", "timeout", "cancel-file", "log-file"
+    ];
+
+    private static readonly string[] TransferOptions =
+    [
+        "transfers", "multipart-concurrency", "upload-limit", "download-limit",
+        "multipart-threshold", "part-size"
+    ];
+
+    internal static void ValidateCommandOptions(string command, string verb, CliArguments args)
+    {
+        string[]? commandOptions = (command, verb) switch
+        {
+            ("profile" or "profiles", "list" or "show") => [],
+            ("profile" or "profiles", "add") =>
+            [
+                "name", "type", "endpoint", "region", "credential-source", "aws-profile",
+                "access-key", "secret-key", "secret-key-env", "session-token", "session-token-env",
+                "default-bucket", "path-style", "ignore-certificate-errors"
+            ],
+            ("profile" or "profiles", "delete") => ["yes"],
+            ("connection", "test") => ["profile"],
+            ("bucket" or "buckets", "list") => ["profile"],
+            ("object" or "objects", "list") => ["profile", "bucket", "prefix", "recursive"],
+            ("object" or "objects", "versions") => ["page-size", "key-marker", "version-id-marker"],
+            ("object" or "objects", "upload") => ["verify", .. TransferOptions],
+            ("object" or "objects", "download") => ["recursive", "version-id", .. TransferOptions],
+            ("object" or "objects", "delete") => ["recursive", "yes"],
+            ("object" or "objects", "restore-version" or "delete-version") => ["version-id", "yes"],
+            ("object" or "objects", "clean-delete-markers") => ["yes"],
+            ("sync", "list" or "analyze") => [],
+            ("sync", "add") =>
+            ["name", "local", "remote", "direction", "exclude", "new-only", "changed-only", "delete", "hash"],
+            ("sync", "run") => ["yes", .. TransferOptions],
+            ("sync", "delete") => ["yes"],
+            ("upload", _) => ["profile", "source", "bucket", "prefix", "verify", .. TransferOptions],
+            ("publish", _) =>
+            [
+                "profile", "source", "bucket", "prefix", "project", "product", "version", "manifest",
+                "delete-mode", "full", "dry-run", "cdn-profile", "warmup", "yes", .. TransferOptions
+            ],
+            ("verify", _) => ["manifest", "profile", "bucket", "prefix", .. TransferOptions],
+            ("cdn", "test" or "warmup") => ["profile", "path", "manifest", "prefix", "include-manifest"],
+            _ => null
+        };
+        if (commandOptions is not null)
+            args.EnsureOnly(GlobalOptions.Concat(commandOptions));
     }
 
     private static async Task<int> RunProfileAsync(
@@ -362,14 +415,20 @@ internal static class Program
             }
             case "upload":
             {
+                var transfer = CliTransferRuntime.Create(args);
                 var localPath = RequireAbsolutePath(RequirePositional(args, 2, "object upload <local-path> <s3-uri>"), "local-path");
                 var (profile, location) = ResolveLocation(profiles, RequirePositional(args, 3, "object upload <local-path> <s3-uri>"));
-                var uploaded = await UploadPathAsync(storage, profile, localPath, location.Bucket!, location.Prefix, cancellationToken);
-                WriteSuccess(json, new { uploaded }, $"上传完成：{uploaded:N0} 个文件");
+                var uploaded = await UploadPathAsync(
+                    storage, profile, localPath, location.Bucket!, location.Prefix,
+                    args.Flag("verify"), transfer, cancellationToken);
+                WriteSuccess(
+                    json, new { uploaded, verified = args.Flag("verify"), transfer = transfer.Settings },
+                    $"上传完成：{uploaded:N0} 个文件" + (args.Flag("verify") ? "，远程回读验证通过" : string.Empty));
                 return 0;
             }
             case "download":
             {
+                var transfer = CliTransferRuntime.Create(args);
                 var (profile, location) = ResolveLocation(profiles, RequirePositional(args, 2, "object download <s3-uri> <local-path>"));
                 var target = RequireAbsolutePath(RequirePositional(args, 3, "object download <s3-uri> <local-path>"), "local-path");
                 var versionId = args.Optional("version-id")?.Trim();
@@ -381,13 +440,14 @@ internal static class Program
                         throw new CliUsageException("指定版本下载必须包含对象 Key。");
                     await storage.DownloadObjectVersionAsync(
                         profile, location.Bucket!, location.Prefix, versionId, target,
-                        NewTransferContext(), cancellationToken);
+                        transfer.CreateContext(), cancellationToken);
                     WriteSuccess(json, new { downloaded = 1, versionId },
                         $"已下载指定版本：{location.Prefix} ({versionId})");
                     return 0;
                 }
-                var downloaded = await DownloadPathAsync(storage, profile, location, target, args.Flag("recursive"), cancellationToken);
-                WriteSuccess(json, new { downloaded }, $"下载完成：{downloaded:N0} 个文件");
+                var downloaded = await DownloadPathAsync(
+                    storage, profile, location, target, args.Flag("recursive"), transfer, cancellationToken);
+                WriteSuccess(json, new { downloaded, transfer = transfer.Settings }, $"下载完成：{downloaded:N0} 个文件");
                 return 0;
             }
             case "delete":
@@ -560,7 +620,8 @@ internal static class Program
                 }
                 if (plan.Items.Any(item => item.Action is FolderSyncAction.DeleteLocal or FolderSyncAction.DeleteRemote))
                     RequireConfirmation(args, "同步计划包含删除操作，运行时必须提供 --yes。");
-                var executed = await ExecuteSyncPlanAsync(job, profile, plan, storage, cancellationToken);
+                var transfer = CliTransferRuntime.Create(args);
+                var executed = await ExecuteSyncPlanAsync(job, profile, plan, storage, transfer, cancellationToken);
                 var index = jobs.FindIndex(item => item.Id == job.Id);
                 jobs[index] = job with { LastRunAt = DateTimeOffset.UtcNow };
                 await jobStore.SaveAsync(jobs, cancellationToken);
@@ -577,32 +638,35 @@ internal static class Program
         ConnectionProfile profile,
         FolderSyncPlan plan,
         IS3StorageService storage,
+        CliTransferRuntime transfer,
         CancellationToken cancellationToken)
     {
         var executed = 0;
-        foreach (var item in plan.Items.Where(item => item.Action != FolderSyncAction.None))
+        await transfer.ForEachAsync(
+            plan.Items.Where(item => item.Action != FolderSyncAction.None),
+            async (item, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var remoteKey = S3Path.Combine(job.Prefix, item.RelativePath);
             var localPath = LocalObjectPath.MapRelativeKey(job.LocalDirectory, item.RelativePath);
             switch (item.Action)
             {
                 case FolderSyncAction.Upload:
                     await storage.UploadFileAsync(profile, job.Bucket, remoteKey, localPath, profile.DefaultStorageClass,
-                        NewTransferContext(), cancellationToken);
+                        transfer.CreateContext(), token);
                     break;
                 case FolderSyncAction.Download:
-                    await storage.DownloadFileAsync(profile, job.Bucket, remoteKey, localPath, NewTransferContext(), cancellationToken);
+                    await storage.DownloadFileAsync(
+                        profile, job.Bucket, remoteKey, localPath, transfer.CreateContext(), token);
                     break;
                 case FolderSyncAction.DeleteRemote:
-                    await storage.DeleteObjectsAsync(profile, job.Bucket, [remoteKey], cancellationToken);
+                    await storage.DeleteObjectsAsync(profile, job.Bucket, [remoteKey], token);
                     break;
                 case FolderSyncAction.DeleteLocal:
                     if (File.Exists(localPath)) File.Delete(localPath);
                     break;
             }
-            executed++;
-        }
+            Interlocked.Increment(ref executed);
+        }, cancellationToken);
         return executed;
     }
 
@@ -634,6 +698,8 @@ internal static class Program
         string localPath,
         string bucket,
         string destination,
+        bool verify,
+        CliTransferRuntime transfer,
         CancellationToken cancellationToken)
     {
         if (File.Exists(localPath))
@@ -641,12 +707,19 @@ internal static class Program
             var key = destination.EndsWith('/') || destination.Length == 0
                 ? S3Path.Combine(destination, Path.GetFileName(localPath))
                 : destination;
-            await storage.UploadFileAsync(profile, bucket, key, localPath, profile.DefaultStorageClass, NewTransferContext(), cancellationToken);
+            var expectedSize = new FileInfo(localPath).Length;
+            var expectedHash = verify
+                ? await PublishManifestUtility.ComputeSha256Async(localPath, cancellationToken)
+                : string.Empty;
+            await storage.UploadFileAsync(
+                profile, bucket, key, localPath, profile.DefaultStorageClass, transfer.CreateContext(), cancellationToken);
+            if (verify)
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, key, expectedSize, expectedHash, transfer, cancellationToken);
             return 1;
         }
         if (!Directory.Exists(localPath)) throw new FileNotFoundException("本地路径不存在。", localPath);
         var rootName = new DirectoryInfo(localPath).Name;
-        var count = 0;
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -654,14 +727,22 @@ internal static class Program
             AttributesToSkip = FileAttributes.ReparsePoint,
             ReturnSpecialDirectories = false
         };
-        foreach (var file in Directory.EnumerateFiles(localPath, "*", options))
+        var files = Directory.EnumerateFiles(localPath, "*", options).ToArray();
+        await transfer.ForEachAsync(files, async (file, token) =>
         {
             var relative = Path.GetRelativePath(localPath, file).Replace('\\', '/');
             var key = S3Path.Combine(destination, $"{rootName}/{relative}");
-            await storage.UploadFileAsync(profile, bucket, key, file, profile.DefaultStorageClass, NewTransferContext(), cancellationToken);
-            count++;
-        }
-        return count;
+            var expectedSize = new FileInfo(file).Length;
+            var expectedHash = verify
+                ? await PublishManifestUtility.ComputeSha256Async(file, token)
+                : string.Empty;
+            await storage.UploadFileAsync(
+                profile, bucket, key, file, profile.DefaultStorageClass, transfer.CreateContext(), token);
+            if (verify)
+                await CliRemoteVerifier.VerifyAsync(
+                    storage, profile, bucket, key, expectedSize, expectedHash, transfer, token);
+        }, cancellationToken);
+        return files.Length;
     }
 
     private static async Task<int> DownloadPathAsync(
@@ -670,6 +751,7 @@ internal static class Program
         S3Location location,
         string target,
         bool recursive,
+        CliTransferRuntime transfer,
         CancellationToken cancellationToken)
     {
         if (recursive || location.Prefix.EndsWith('/'))
@@ -679,28 +761,20 @@ internal static class Program
                 location.Prefix, 1000, ObjectListingLimits.DefaultCacheLimit,
                 (prefix, token, ct) => storage.ListObjectsAsync(profile, location.Bucket!, prefix, token, 1000, ct),
                 cancellationToken);
-            foreach (var item in items)
+            await transfer.ForEachAsync(items, async (item, token) =>
             {
                 var relative = item.Key[location.Prefix.Length..].TrimStart('/');
                 await storage.DownloadFileAsync(profile, location.Bucket!, item.Key,
-                    LocalObjectPath.MapRelativeKey(target, relative), NewTransferContext(), cancellationToken);
-            }
+                    LocalObjectPath.MapRelativeKey(target, relative), transfer.CreateContext(), token);
+            }, cancellationToken);
             return items.Count;
         }
 
         if (string.IsNullOrEmpty(location.Prefix)) throw new CliUsageException("下载单个对象时 URI 必须包含对象 Key。");
         if (Directory.Exists(target)) target = Path.Combine(target, S3Path.DisplayName(location.Prefix, false));
-        await storage.DownloadFileAsync(profile, location.Bucket!, location.Prefix, target, NewTransferContext(), cancellationToken);
+        await storage.DownloadFileAsync(
+            profile, location.Bucket!, location.Prefix, target, transfer.CreateContext(), cancellationToken);
         return 1;
-    }
-
-    private static TransferOperationContext NewTransferContext()
-    {
-        var limiter = new SharedTransferBandwidthLimiter();
-        limiter.Configure(0, 0);
-        return new TransferOperationContext(
-            new TransferExecutionOptions(), limiter, null, null, _ => { },
-            (_, _, _, _) => Task.CompletedTask);
     }
 
     private static (ConnectionProfile Profile, S3Location Location) ResolveLocation(
@@ -886,7 +960,7 @@ internal static class Program
           s3explorer-cli object list <s3://profile/bucket/prefix> [--recursive] [--output json]
           s3explorer-cli object versions <s3://profile/bucket/prefix> [--page-size <1-1000>]
               [--key-marker <key>] [--version-id-marker <id>] [--output json]
-          s3explorer-cli object upload <absolute-local-path> <s3://profile/bucket/key>
+          s3explorer-cli object upload <absolute-local-path> <s3://profile/bucket/key> [--verify]
           s3explorer-cli object download <s3://profile/bucket/key> <absolute-local-path> [--recursive|--version-id <id>]
           s3explorer-cli object delete <s3://profile/bucket/key> [--recursive] --yes
           s3explorer-cli object restore-version <s3://profile/bucket/key> --version-id <id> --yes
@@ -894,7 +968,7 @@ internal static class Program
           s3explorer-cli object clean-delete-markers <s3://profile/bucket/prefix> --yes
 
         发布自动化:
-          s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>]
+          s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>] [--verify]
           s3explorer-cli publish --profile <name> --source <folder> --bucket <bucket> --prefix <version-prefix>
               [--project <name> --product <platform> --version <version>] [--manifest <path>]
               [--delete-mode none] [--full] [--dry-run] [--cdn-profile <name> --warmup]
@@ -918,6 +992,15 @@ internal static class Program
           --cancel-file <path>        文件出现时取消当前操作
           --log-file <path>           追加脱敏操作日志
           --yes                       确认破坏性操作；发布可交互确认
+
+        传输选项:
+          --transfers <1-32>                文件级并发数，默认 4
+          --multipart-concurrency <1-32>    单个分片上传并发数，默认 4
+          --multipart-threshold <MiB>       启用分片上传的阈值，默认 64
+          --part-size <MiB>                 分片大小，默认 16
+          --upload-limit <KiB/s>            总上传限速，0 表示不限速
+          --download-limit <KiB/s>          总下载限速，0 表示不限速
+          --verify                         upload/object upload 后回读并校验大小与 SHA-256；publish 始终验证
 
         凭据建议:
           优先使用 --secret-key-env <变量名> 或 S3EXPLORER_SECRET_KEY，避免密钥进入命令历史。
@@ -998,6 +1081,15 @@ internal sealed class CliArguments
         _options.TryGetValue(name, out var values)
             ? values.Where(value => value != "true").ToArray()
             : Array.Empty<string>();
+
+    public void EnsureOnly(IEnumerable<string> allowedOptions)
+    {
+        var allowed = new HashSet<string>(allowedOptions, StringComparer.OrdinalIgnoreCase);
+        var unsupported = _options.Keys.Where(key => !allowed.Contains(key)).OrderBy(key => key).ToArray();
+        if (unsupported.Length > 0)
+            throw new CliUsageException(
+                $"当前命令不支持选项：{string.Join(", ", unsupported.Select(key => $"--{key}"))}。");
+    }
 }
 
 internal sealed class CliUsageException(string message) : Exception(message);
