@@ -71,6 +71,55 @@ public sealed class FolderSyncTests
     }
 
     [Fact]
+    public void Plan_expires_and_rejects_changed_job_identity()
+    {
+        var now = DateTimeOffset.Parse("2026-07-29T10:00:00Z");
+        var job = Job();
+        var plan = FolderSyncPlanner.Analyze(
+            job,
+            [File("new.txt", 1, now)],
+            [],
+            now,
+            TimeSpan.FromMinutes(10));
+
+        Assert.True(plan.IsValidFor(job, now.AddMinutes(9), out _));
+        Assert.False(plan.IsValidFor(job, now.AddMinutes(10), out var expiredReason));
+        Assert.Contains("过期", expiredReason, StringComparison.Ordinal);
+        Assert.False(plan.IsValidFor(job with { Prefix = "other/" }, now.AddMinutes(1), out var changedReason));
+        Assert.Contains("已变化", changedReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Plan_fingerprint_treats_exclusion_order_as_equivalent()
+    {
+        var job = Job() with { ExclusionPatterns = ["*.tmp", "bin/**"] };
+        var reordered = job with { ExclusionPatterns = ["BIN/**", "*.TMP"] };
+
+        Assert.Equal(
+            FolderSyncPlanIdentity.CreateFingerprint(job),
+            FolderSyncPlanIdentity.CreateFingerprint(reordered));
+    }
+
+    [Fact]
+    public void Selection_only_returns_checked_actionable_items()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var plan = FolderSyncPlanner.Analyze(
+            Job(),
+            [File("new.txt", 1, now), File("same.txt", 2, now)],
+            [File("same.txt", 2, now.AddMinutes(1))],
+            now);
+        var selection = FolderSyncPlanSelection.SelectAllActions(plan);
+
+        Assert.Equal("new.txt", Assert.Single(selection.SelectedItems(plan)).RelativePath);
+        selection.Set(Item(plan, "new.txt"), false);
+        selection.Set(Item(plan, "same.txt"), true);
+        Assert.Empty(selection.SelectedItems(plan));
+        selection.Invert(plan.Items);
+        Assert.Equal("new.txt", Assert.Single(selection.SelectedItems(plan)).RelativePath);
+    }
+
+    [Fact]
     public async Task Store_round_trips_jobs()
     {
         var directory = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));

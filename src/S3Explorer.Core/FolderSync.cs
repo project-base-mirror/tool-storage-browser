@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace S3Explorer.Core;
@@ -91,6 +92,8 @@ public sealed record FolderSyncPlan(
     DateTimeOffset AnalyzedAt,
     IReadOnlyList<FolderSyncPlanItem> Items)
 {
+    public string JobFingerprint { get; init; } = string.Empty;
+    public DateTimeOffset ExpiresAt { get; init; }
     public int ActionCount => Items.Count(item => item.Action != FolderSyncAction.None);
     public int NewCount => Items.Count(item => item.Change == FolderSyncChange.New);
     public int ChangedCount => Items.Count(item => item.Change == FolderSyncChange.Changed);
@@ -101,6 +104,101 @@ public sealed record FolderSyncPlan(
         .Sum(item => item.SourceSize(item.Action == FolderSyncAction.Upload
             ? FolderSyncDirection.Upload
             : FolderSyncDirection.Download));
+
+    public bool IsValidFor(FolderSyncJob job, DateTimeOffset now, out string reason)
+    {
+        if (job.Id != JobId)
+        {
+            reason = "分析结果属于其他同步任务。";
+            return false;
+        }
+        if (!string.Equals(JobFingerprint, FolderSyncPlanIdentity.CreateFingerprint(job), StringComparison.Ordinal))
+        {
+            reason = "连接、Bucket、路径、方向或同步规则已变化。";
+            return false;
+        }
+        if (ExpiresAt == default || now >= ExpiresAt)
+        {
+            reason = "分析结果已过期。";
+            return false;
+        }
+        reason = string.Empty;
+        return true;
+    }
+}
+
+public static class FolderSyncPlanIdentity
+{
+    public static readonly TimeSpan DefaultLifetime = TimeSpan.FromMinutes(15);
+
+    public static string CreateFingerprint(FolderSyncJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var builder = new StringBuilder();
+        Append(builder, job.Id.ToString("N"));
+        Append(builder, Path.GetFullPath(job.LocalDirectory).Replace('\\', '/').TrimEnd('/').ToUpperInvariant());
+        Append(builder, job.ProfileId.ToString("N"));
+        Append(builder, job.Bucket);
+        Append(builder, S3Path.NormalizePrefix(job.Prefix));
+        Append(builder, job.Direction.ToString());
+        Append(builder, job.IncludeNewFiles ? "1" : "0");
+        Append(builder, job.IncludeChangedFiles ? "1" : "0");
+        Append(builder, job.PropagateDeletions ? "1" : "0");
+        Append(builder, job.CompareHashesWhenAvailable ? "1" : "0");
+        foreach (var pattern in (job.ExclusionPatterns ?? Array.Empty<string>())
+                     .Select(value => value.Trim())
+                     .Where(value => value.Length > 0)
+                     .Order(StringComparer.OrdinalIgnoreCase))
+            Append(builder, pattern.ToUpperInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+    }
+
+    private static void Append(StringBuilder builder, string value) =>
+        builder.Append(value.Length).Append(':').Append(value).Append('|');
+}
+
+public sealed class FolderSyncPlanSelection
+{
+    private readonly HashSet<string> _selectedPaths = new(StringComparer.Ordinal);
+
+    public static FolderSyncPlanSelection SelectAllActions(FolderSyncPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var selection = new FolderSyncPlanSelection();
+        selection.Set(plan.Items, selected: true);
+        return selection;
+    }
+
+    public bool IsSelected(FolderSyncPlanItem item) =>
+        item.Action != FolderSyncAction.None && _selectedPaths.Contains(item.RelativePath);
+
+    public void Set(FolderSyncPlanItem item, bool selected)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (item.Action == FolderSyncAction.None || !selected)
+            _selectedPaths.Remove(item.RelativePath);
+        else
+            _selectedPaths.Add(item.RelativePath);
+    }
+
+    public void Set(IEnumerable<FolderSyncPlanItem> items, bool selected)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        foreach (var item in items) Set(item, selected);
+    }
+
+    public void Invert(IEnumerable<FolderSyncPlanItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        foreach (var item in items.Where(value => value.Action != FolderSyncAction.None))
+            Set(item, !IsSelected(item));
+    }
+
+    public IReadOnlyList<FolderSyncPlanItem> SelectedItems(FolderSyncPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return plan.Items.Where(IsSelected).ToArray();
+    }
 }
 
 public static class FolderSyncPlanner
@@ -111,7 +209,8 @@ public static class FolderSyncPlanner
         FolderSyncJob job,
         IReadOnlyCollection<FolderSyncFile> localFiles,
         IReadOnlyCollection<FolderSyncFile> remoteFiles,
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        TimeSpan? lifetime = null)
     {
         job.Validate();
         ArgumentNullException.ThrowIfNull(localFiles);
@@ -168,7 +267,15 @@ public static class FolderSyncPlanner
                 changed ? (job.IncludeChangedFiles ? reason : "任务未包含已更改文件") : reason));
         }
 
-        return new FolderSyncPlan(job.Id, now ?? DateTimeOffset.UtcNow, result);
+        var analyzedAt = now ?? DateTimeOffset.UtcNow;
+        var effectiveLifetime = lifetime ?? FolderSyncPlanIdentity.DefaultLifetime;
+        if (effectiveLifetime <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(lifetime), "分析结果有效期必须大于零。");
+        return new FolderSyncPlan(job.Id, analyzedAt, result)
+        {
+            JobFingerprint = FolderSyncPlanIdentity.CreateFingerprint(job),
+            ExpiresAt = analyzedAt + effectiveLifetime
+        };
     }
 
     private static Dictionary<string, FolderSyncFile> ToMap(IEnumerable<FolderSyncFile> files, string side)
