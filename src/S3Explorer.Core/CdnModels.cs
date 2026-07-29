@@ -181,6 +181,13 @@ public interface ICdnDeliveryService
         long sampleBytes,
         CancellationToken cancellationToken);
 
+    Task<CdnProbeResult> ProbeHeadAsync(
+        CdnProfile profile,
+        CdnCredential? credential,
+        Uri url,
+        CancellationToken cancellationToken) =>
+        ProbeAsync(profile, credential, url, 1, cancellationToken);
+
     Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
         CdnCredential? credential,

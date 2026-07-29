@@ -196,10 +196,10 @@ internal static class Program
             ("publish", _) =>
             [
                 "profile", "source", "bucket", "prefix", "project", "product", "version", "manifest",
-                "delete-mode", "full", "dry-run", "cdn-profile", "warmup", "yes", .. TransferOptions
+                "delete-mode", "access", "full", "dry-run", "cdn-profile", "warmup", "yes", .. TransferOptions
             ],
             ("verify", _) => ["manifest", "profile", "bucket", "prefix", .. TransferOptions],
-            ("cdn", "test" or "warmup") => ["profile", "path", "manifest", "prefix", "include-manifest"],
+            ("cdn", "test" or "warmup" or "cache-test") => ["profile", "path", "manifest", "prefix", "include-manifest"],
             _ => null
         };
         if (commandOptions is not null)
@@ -977,9 +977,11 @@ internal static class Program
           s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>] [--verify]
           s3explorer-cli publish --profile <name> --source <folder> --bucket <bucket> --prefix <version-prefix>
               [--project <name> --product <platform> --version <version>] [--manifest <path>]
-              [--delete-mode none] [--full] [--dry-run] [--cdn-profile <name> --warmup]
+              [--delete-mode none] [--access preserve|anonymous-read|private] [--full] [--dry-run]
+              [--cdn-profile <name> --warmup]
           s3explorer-cli verify --manifest <publish-manifest.json> [--profile <name>] [--bucket <bucket>] [--prefix <prefix>]
           s3explorer-cli cdn test --profile <cdn-name> (--path <path> | --manifest <file>)
+          s3explorer-cli cdn cache-test --profile <cdn-name> --path <path>
           s3explorer-cli cdn warmup --profile <cdn-name> (--path <path> | --manifest <file>) [--include-manifest]
 
         文件夹同步:
@@ -1029,7 +1031,7 @@ internal sealed class CliArguments
         "credential-source", "aws-profile", "access-key", "secret-key", "secret-key-env",
         "session-token", "session-token-env", "default-bucket", "direction", "local", "remote",
         "exclude", "page-size", "key-marker", "version-id-marker", "version-id", "source",
-        "project", "product", "version", "manifest", "delete-mode", "cdn-profile", "path",
+        "project", "product", "version", "manifest", "delete-mode", "access", "cdn-profile", "path",
         "transfers", "multipart-concurrency", "upload-limit", "download-limit",
         "multipart-threshold", "part-size"
     };

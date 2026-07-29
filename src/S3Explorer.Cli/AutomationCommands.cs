@@ -137,6 +137,9 @@ internal static class AutomationCommands
         var deleteMode = args.Optional("delete-mode")?.Trim().ToLowerInvariant() ?? "none";
         if (deleteMode != "none")
             throw new CliUsageException("第一阶段仅支持 --delete-mode none，不会删除远程对象。");
+        var accessMode = ParseAccessMode(args.Optional("access"));
+        if (accessMode != PublishAccessMode.Preserve && !args.Flag("dry-run") && !args.Flag("yes"))
+            throw new CliUsageException("修改对象 ACL 必须显式提供 --yes；程序不会修改 Bucket Policy 或 Public Access Block。");
 
         var manifestPath = Path.GetFullPath(args.Optional("manifest") ?? Path.Combine(source, DefaultManifestName));
         var localFiles = await PublishManifestUtility.ScanAsync(source, manifestPath, cancellationToken);
@@ -156,6 +159,8 @@ internal static class AutomationCommands
                 bucket,
                 prefix,
                 remoteUri = BuildRemoteUri(profile, bucket, prefix),
+                accessMode,
+                aclTargets = accessMode == PublishAccessMode.Preserve ? 0 : localFiles.Count + 1,
                 plan
             };
             return new AutomationCommandResult(
@@ -168,6 +173,7 @@ internal static class AutomationCommands
 
         var failures = new ConcurrentBag<OperationFailure>();
         var uploadedFiles = 0;
+        var aclUpdatedFiles = 0;
         long uploadedBytes = 0;
         var changed = plan.Items
             .Where(value => value.Change != PublishChangeKind.Unchanged)
@@ -198,6 +204,32 @@ internal static class AutomationCommands
             }
         }, cancellationToken);
 
+        if (failures.Count == 0 && accessMode != PublishAccessMode.Preserve)
+        {
+            await transfer.ForEachAsync(localFiles, async (file, token) =>
+            {
+                try
+                {
+                    await storage.PutObjectAclAsync(
+                        profile,
+                        bucket,
+                        CombineKey(prefix, file.Entry.Path),
+                        ToObjectAclMode(accessMode),
+                        token);
+                    Interlocked.Increment(ref aclUpdatedFiles);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception exception)
+                {
+                    failures.Add(new OperationFailure
+                    {
+                        Path = file.Entry.Path,
+                        Message = SensitiveDataRedactor.Redact(exception.Message)
+                    });
+                }
+            }, cancellationToken);
+        }
+
         var manifest = new PublishManifest
         {
             Project = project,
@@ -206,6 +238,7 @@ internal static class AutomationCommands
             Profile = profile.Name,
             Bucket = bucket,
             Prefix = prefix,
+            AccessMode = accessMode,
             GeneratedAtUtc = DateTimeOffset.UtcNow,
             Files = localFiles.Select(value => value.Entry).OrderBy(value => value.Path, StringComparer.Ordinal).ToList()
         };
@@ -230,6 +263,16 @@ internal static class AutomationCommands
                 await CliRemoteVerifier.VerifyAsync(
                     storage, profile, bucket, manifestKey, manifestEntry.Size, manifestEntry.Sha256,
                     transfer, cancellationToken);
+                if (accessMode != PublishAccessMode.Preserve)
+                {
+                    await storage.PutObjectAclAsync(
+                        profile,
+                        bucket,
+                        manifestKey,
+                        ToObjectAclMode(accessMode),
+                        cancellationToken);
+                    aclUpdatedFiles++;
+                }
                 manifestPublished = true;
             }
             catch (OperationCanceledException) { throw; }
@@ -268,6 +311,8 @@ internal static class AutomationCommands
             Profile = profile.Name,
             Bucket = bucket,
             Prefix = prefix,
+            AccessMode = accessMode,
+            AclUpdatedFiles = aclUpdatedFiles,
             UploadedFiles = uploadedFiles,
             SkippedFiles = plan.UnchangedFiles,
             FailedFiles = failures.Count,
@@ -281,6 +326,7 @@ internal static class AutomationCommands
         var text = result.Success
             ? $"发布成功：上传 {result.UploadedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
               $"失败 0，耗时 {stopwatch.Elapsed.TotalSeconds:N1} 秒。\n远程目录：{result.RemoteUri}" +
+              (accessMode == PublishAccessMode.Preserve ? string.Empty : $"\n对象 ACL：{accessMode}，已更新 {aclUpdatedFiles:N0} 项") +
               (cdnUrl.Length > 0 ? $"\nCDN URL：{cdnUrl}" : string.Empty)
             : manifestPublished
                 ? $"资源与 Manifest 已发布，但后处理失败：上传 {result.UploadedFiles:N0}，" +
@@ -359,8 +405,8 @@ internal static class AutomationCommands
         ICdnDeliveryService deliveryService,
         CancellationToken cancellationToken)
     {
-        if (verb is not ("test" or "warmup"))
-            throw new CliUsageException("用法：cdn test|warmup --profile <name-or-id> --path <path> [--manifest <file>]");
+        if (verb is not ("test" or "warmup" or "cache-test"))
+            throw new CliUsageException("用法：cdn test|cache-test|warmup --profile <name-or-id> --path <path> [--manifest <file>]");
         var (profile, credential) = await ResolveCdnAsync(
             args.Require("profile"), configurationStore, credentialStore, cancellationToken);
         var paths = new List<string>();
@@ -375,15 +421,19 @@ internal static class AutomationCommands
                 paths.Add(CombineKey(prefix, DefaultManifestName));
         }
         if (paths.Count == 0)
-            throw new CliUsageException("cdn test/warmup 需要 --path 或 --manifest。");
+            throw new CliUsageException("cdn test/cache-test/warmup 需要 --path 或 --manifest。");
         var result = await ExecuteCdnAsync(
             verb, profile, credential, paths.Distinct(StringComparer.Ordinal).ToArray(),
             deliveryService, cancellationToken);
+        var cacheTransition = verb == "cache-test"
+            ? string.Join(" → ", result.Items.Select(value => value.CacheStatus))
+            : string.Empty;
         return new AutomationCommandResult(
             result.Success ? 0 : OperationFailed,
             result,
             result.Success
-                ? $"CDN {verb} 完成：成功 {result.Succeeded:N0}，失败 0。"
+                ? $"CDN {verb} 完成：成功 {result.Succeeded:N0}，失败 0。" +
+                  (cacheTransition.Length == 0 ? string.Empty : $" 缓存：{cacheTransition}")
                 : $"CDN {verb} 完成：成功 {result.Succeeded:N0}，失败 {result.Failed:N0}。");
     }
 
@@ -403,22 +453,31 @@ internal static class AutomationCommands
             var url = PublishManifestUtility.BuildCdnUri(profile, path);
             try
             {
-                if (verb == "test")
+                if (verb is "test" or "cache-test")
                 {
-                    var probe = await deliveryService.ProbeAsync(
-                        profile, credential, url, profile.WarmupRangeBytes, cancellationToken);
-                    items.Add(new CdnItemResult
+                    var attempts = verb == "cache-test" ? 2 : 1;
+                    for (var attempt = 1; attempt <= attempts; attempt++)
                     {
-                        Path = path,
-                        Url = probe.FinalUrl.AbsoluteUri,
-                        Success = probe.Success,
-                        StatusCode = probe.StatusCode,
-                        BytesRead = probe.BytesRead,
-                        ElapsedMilliseconds = (long)probe.TotalElapsed.TotalMilliseconds,
-                        Message = probe.Success
-                            ? $"HTTP {probe.StatusCode}，缓存 {probe.CacheStatus}"
-                            : $"HTTP {probe.StatusCode} {probe.ReasonPhrase}"
-                    });
+                        var probe = verb == "cache-test"
+                            ? await deliveryService.ProbeHeadAsync(
+                                profile, credential, url, cancellationToken)
+                            : await deliveryService.ProbeAsync(
+                                profile, credential, url, profile.WarmupRangeBytes, cancellationToken);
+                        items.Add(new CdnItemResult
+                        {
+                            Path = path,
+                            Url = probe.FinalUrl.AbsoluteUri,
+                            Success = probe.Success,
+                            StatusCode = probe.StatusCode,
+                            BytesRead = probe.BytesRead,
+                            ElapsedMilliseconds = (long)probe.TotalElapsed.TotalMilliseconds,
+                            Attempt = attempt,
+                            CacheStatus = probe.CacheStatus,
+                            Message = probe.Success
+                                ? $"第 {attempt} 次：HTTP {probe.StatusCode}，缓存 {probe.CacheStatus}"
+                                : $"第 {attempt} 次：HTTP {probe.StatusCode} {probe.ReasonPhrase}"
+                        });
+                    }
                 }
                 else
                 {
@@ -598,6 +657,22 @@ internal static class AutomationCommands
             throw new CliUsageException($"远程前缀不安全：{value}");
         return normalized;
     }
+
+    internal static PublishAccessMode ParseAccessMode(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "preserve" => PublishAccessMode.Preserve,
+            "anonymous-read" or "public-read" => PublishAccessMode.AnonymousRead,
+            "private" => PublishAccessMode.Private,
+            _ => throw new CliUsageException("--access 只能是 preserve、anonymous-read 或 private。")
+        };
+
+    private static ObjectAclMode ToObjectAclMode(PublishAccessMode value) => value switch
+    {
+        PublishAccessMode.AnonymousRead => ObjectAclMode.PublicRead,
+        PublishAccessMode.Private => ObjectAclMode.Private,
+        _ => throw new InvalidOperationException($"访问模式 {value} 不需要修改对象 ACL。")
+    };
 
     private static string CombineKey(string prefix, string relative)
     {

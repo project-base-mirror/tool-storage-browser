@@ -108,12 +108,15 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 面向 Unity、CI 和构建机的发布命令只接收 Profile ID/名称，不接收或保存长期密钥：
 
     s3explorer-cli upload --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --transfers 4 --upload-limit 0 --verify --output json --non-interactive
-    s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
+    s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --access preserve --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
     s3explorer-cli verify --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
     s3explorer-cli cdn test --profile "cdn-dev" --path "android/1.2.3/config.bytes" --output json --non-interactive
+    s3explorer-cli cdn cache-test --profile "cdn-dev" --path "game-survival/android/1.2.3/config.bytes" --output json --non-interactive
     s3explorer-cli cdn warmup --profile "cdn-dev" --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
 
 `publish` 会扫描本地产物并计算 SHA-256，与远程 Manifest 比较，只上传新增和变化文件；每个对象上传后都会下载验证 Size/SHA-256，最终 `publish-manifest.json` 仅在文件全部成功时最后上传。默认只支持 `--delete-mode none`，版本目录不会被自动删除。`--dry-run` 可只输出变更计划，`--full` 可忽略远程 Manifest 重新上传全部文件。
+
+默认 `--access preserve` 不改变对象 ACL。CDN 使用匿名源站时可显式指定 `--access anonymous-read --yes`，它只设置当前 Manifest 对象与 Manifest 本身的对象级 `public-read`；不会修改 Bucket Policy 或 Public Access Block。`--access private --yes` 可恢复这些对象的私有 ACL。`cdn cache-test` 会对同一 URL 连续发送两次 HEAD 请求并分别输出缓存 Header。
 
 同步任务可以由桌面端“工具 → 文件夹同步”创建，也可以完全通过命令行管理：
 

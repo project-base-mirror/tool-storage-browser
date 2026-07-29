@@ -31,6 +31,22 @@ s3explorer-cli publish --profile minio-dev --source D:\Build\Windows --bucket ga
 
 Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥仍由 S3 Explorer 在 Windows 用户配置目录中保存并通过 DPAPI 保护，不应写入 Unity 工程、命令行或日志。
 
+## CDN 匿名读取与缓存探测
+
+对象默认保持存储端现有 ACL。需要让 CDN 通过匿名源站读取本次发布内容时，显式使用：
+
+    s3explorer-cli publish ... --access anonymous-read --yes
+
+该选项只把当前 Manifest 中的对象和 `publish-manifest.json` 设置为对象级 `public-read`，不会读取或修改 Bucket Policy，也不会关闭 Public Access Block。目标服务禁用对象 ACL、启用了 Bucket Owner Enforced 或拒绝 `PutObjectAcl` 时，发布会返回明确错误；此时应改用 CDN 源站鉴权或由管理员配置访问边界，不能由发布工具绕过。
+
+恢复对象私有 ACL 可显式使用 `--access private --yes`。默认 `--access preserve` 不修改既有 ACL；`--dry-run` 只显示将处理的 ACL 数量。
+
+CDN 配置完成后，可对同一路径连续发送两次 HEAD 请求并查看缓存 Header：
+
+    s3explorer-cli cdn cache-test --profile "cdn-prod" --path "bucket/deploy/game-survival/config.bytes" --output json --non-interactive
+
+结果逐次返回 `attempt`、HTTP 状态和 `cacheStatus`，可观察 `X-Cache: MISS` 到 `X-Cache: HIT`；若对象此前已经缓存，第一次也可能直接为 HIT。
+
 Contracts DLL 和 CLI 不再要求产品版本完全一致。Unity 插件应先运行 `s3explorer-cli version --output json`，读取 `contractApiVersion`、`minimumSupportedContractApiVersion`、`maximumSupportedContractApiVersion` 以及 Manifest Schema 范围；只要插件使用的 Contract API 与 Manifest Schema 都落在 CLI 返回范围内即可继续。`version` 字段仅用于诊断和展示，不能作为拒绝运行的依据。
 
 当前 Contract API 和 Manifest Schema 都是 `1`。从 v0.6.7 开始，`S3Explorer.Contracts.dll` 的程序集 ABI 版本固定为 `1.0.0.0`，文件版本仍跟随产品版本；只有破坏兼容性的契约升级才会改变 ABI 主版本。旧插件需要一次性改为上述范围判断，此后普通补丁升级不再要求同步 DLL。

@@ -143,6 +143,37 @@ public sealed class CdnInfrastructureTests
     }
 
     [Fact]
+    public async Task HeadProbesCanObserveMissThenHitWithoutDownloadingContent()
+    {
+        var attempts = 0;
+        var methods = new List<HttpMethod>();
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                methods.Add(request.Method);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(new byte[4096]),
+                    RequestMessage = request
+                };
+                response.Headers.TryAddWithoutValidation("X-Cache", ++attempts == 1 ? "MISS" : "HIT");
+                response.Content.Headers.ContentLength = 4096;
+                return response;
+            }));
+        var profile = Profile();
+        var url = new Uri("https://cdn.example/file.bin");
+
+        var first = await service.ProbeHeadAsync(profile, null, url, CancellationToken.None);
+        var second = await service.ProbeHeadAsync(profile, null, url, CancellationToken.None);
+
+        Assert.All(methods, method => Assert.Equal(HttpMethod.Head, method));
+        Assert.Equal(0, first.BytesRead);
+        Assert.Equal(0, second.BytesRead);
+        Assert.Contains("MISS", first.CacheStatus, StringComparison.Ordinal);
+        Assert.Contains("HIT", second.CacheStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CertificateInspectorReadsValidityFromRealTlsHandshake()
     {
         var checkedAt = DateTimeOffset.UtcNow;

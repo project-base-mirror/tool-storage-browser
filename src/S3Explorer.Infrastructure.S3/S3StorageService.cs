@@ -826,6 +826,39 @@ public sealed class S3StorageService : IS3StorageService
         }
     }
 
+    public async Task PutObjectAclAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        ObjectAclMode mode,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(bucket))
+            throw new ArgumentException("Bucket 不能为空。", nameof(bucket));
+        if (string.IsNullOrWhiteSpace(key))
+            throw new ArgumentException("对象 Key 不能为空。", nameof(key));
+
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.PutACLAsync(new PutACLRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                CannedACL = mode == ObjectAclMode.PublicRead
+                    ? S3CannedACL.PublicRead
+                    : S3CannedACL.Private
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (
+            string.Equals(exception.ErrorCode, "AccessControlListNotSupported", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "对象存储已禁用对象 ACL（常见于 Bucket Owner Enforced）。请使用 CDN 源站鉴权，或由管理员显式配置只读访问；程序不会自动修改 Bucket Policy 或 Public Access Block。",
+                exception);
+        }
+    }
+
     public Task DownloadFileAsync(
         ConnectionProfile profile,
         string bucket,

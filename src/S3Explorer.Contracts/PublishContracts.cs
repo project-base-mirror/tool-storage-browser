@@ -51,6 +51,14 @@ public enum PublishChangeKind
     Unchanged
 }
 
+/// <summary>Controls whether publishing preserves or explicitly changes object ACLs.</summary>
+public enum PublishAccessMode
+{
+    Preserve,
+    AnonymousRead,
+    Private
+}
+
 /// <summary>A versioned manifest shared by the CLI, Unity Editor and game runtime.</summary>
 public sealed class PublishManifest
 {
@@ -63,6 +71,7 @@ public sealed class PublishManifest
     public string Profile { get; set; } = string.Empty;
     public string Bucket { get; set; } = string.Empty;
     public string Prefix { get; set; } = string.Empty;
+    public PublishAccessMode AccessMode { get; set; } = PublishAccessMode.Preserve;
     public DateTimeOffset GeneratedAtUtc { get; set; }
     public List<PublishManifestFile> Files { get; set; } = new List<PublishManifestFile>();
 }
@@ -108,6 +117,8 @@ public sealed class PublishResult
     public string Profile { get; set; } = string.Empty;
     public string Bucket { get; set; } = string.Empty;
     public string Prefix { get; set; } = string.Empty;
+    public PublishAccessMode AccessMode { get; set; } = PublishAccessMode.Preserve;
+    public int AclUpdatedFiles { get; set; }
     public int UploadedFiles { get; set; }
     public int SkippedFiles { get; set; }
     public int FailedFiles { get; set; }
@@ -143,6 +154,8 @@ public sealed class CdnItemResult
     public long BytesRead { get; set; }
     public long ElapsedMilliseconds { get; set; }
     public string Message { get; set; } = string.Empty;
+    public int Attempt { get; set; } = 1;
+    public string CacheStatus { get; set; } = string.Empty;
 }
 
 /// <summary>Aggregate result for CDN test or warmup commands.</summary>

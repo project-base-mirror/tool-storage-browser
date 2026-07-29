@@ -66,6 +66,39 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             headers);
     }
 
+    public async Task<CdnProbeResult> ProbeHeadAsync(
+        CdnProfile profile,
+        CdnCredential? credential,
+        Uri url,
+        CancellationToken cancellationToken)
+    {
+        ValidateUrl(url);
+        using var client = CreateClient(profile);
+        using var request = new HttpRequestMessage(HttpMethod.Head, url);
+        ApplyCredential(request, credential);
+
+        var stopwatch = Stopwatch.StartNew();
+        using var response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        var timeToHeaders = stopwatch.Elapsed;
+        stopwatch.Stop();
+        var headers = CollectHeaders(response);
+        return new CdnProbeResult(
+            url,
+            response.RequestMessage?.RequestUri ?? url,
+            (int)response.StatusCode,
+            response.ReasonPhrase ?? string.Empty,
+            timeToHeaders,
+            stopwatch.Elapsed,
+            0,
+            response.Content.Headers.ContentLength,
+            response.Content.Headers.ContentType?.ToString(),
+            DetectCacheStatus(headers),
+            headers);
+    }
+
     public async Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
         CdnCredential? credential,

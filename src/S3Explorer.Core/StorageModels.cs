@@ -41,6 +41,12 @@ public sealed record PagedObjectVersionResult(
     string? NextVersionIdMarker,
     bool HasMore);
 
+public enum ObjectAclMode
+{
+    Private,
+    PublicRead
+}
+
 public sealed record ConnectionTestResult(
     bool Success,
     TimeSpan Elapsed,
@@ -111,6 +117,7 @@ public interface IS3StorageService
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
     Task<PagedObjectVersionResult> ListObjectVersionsAsync(ConnectionProfile profile, string bucket, string prefix, string? keyMarker, string? versionIdMarker, int pageSize, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
+    Task PutObjectAclAsync(ConnectionProfile profile, string bucket, string key, ObjectAclMode mode, CancellationToken cancellationToken);
     Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task DownloadObjectVersionAsync(ConnectionProfile profile, string bucket, string key, string versionId, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task RestoreObjectVersionAsync(ConnectionProfile profile, string bucket, string key, string versionId, CancellationToken cancellationToken);

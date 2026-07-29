@@ -1,4 +1,5 @@
 using S3Explorer.Cli;
+using S3Explorer.Contracts;
 using Xunit;
 
 namespace S3Explorer.Cli.Tests;
@@ -50,5 +51,33 @@ public sealed class CliArgumentsTests
             parsed.EnsureOnly(["output", "json"]));
 
         Assert.Contains("当前命令不支持", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null, PublishAccessMode.Preserve)]
+    [InlineData("preserve", PublishAccessMode.Preserve)]
+    [InlineData("anonymous-read", PublishAccessMode.AnonymousRead)]
+    [InlineData("public-read", PublishAccessMode.AnonymousRead)]
+    [InlineData("private", PublishAccessMode.Private)]
+    public void PublishAccessModeIsParsed(string? value, PublishAccessMode expected)
+    {
+        Assert.Equal(expected, AutomationCommands.ParseAccessMode(value));
+    }
+
+    [Fact]
+    public void UnsupportedPublishAccessModeIsRejected()
+    {
+        var exception = Assert.Throws<CliUsageException>(() =>
+            AutomationCommands.ParseAccessMode("bucket-public"));
+
+        Assert.Contains("--access", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CacheTestAcceptsOnlyCdnProbeOptions()
+    {
+        var parsed = CliArguments.Parse(["cdn", "cache-test", "--profile", "edge", "--path", "file.bin"]);
+
+        Program.ValidateCommandOptions("cdn", "cache-test", parsed);
     }
 }

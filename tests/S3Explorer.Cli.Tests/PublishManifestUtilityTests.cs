@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using S3Explorer.Cli;
 using S3Explorer.Contracts;
 using Xunit;
@@ -101,6 +102,17 @@ public sealed class PublishManifestUtilityTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void OlderManifestWithoutAccessModeDefaultsToPreserve()
+    {
+        var manifest = JsonSerializer.Deserialize<PublishManifest>(
+            "{\"schemaVersion\":1,\"files\":[]}",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(manifest);
+        Assert.Equal(PublishAccessMode.Preserve, manifest.AccessMode);
     }
 
     private static PublishManifestFile ManifestFile(string path, long size, char hash) =>
