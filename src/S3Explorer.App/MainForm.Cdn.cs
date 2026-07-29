@@ -154,7 +154,9 @@ internal sealed partial class MainForm
             _cdnCredentials,
             initialProfile ?? _currentProfile,
             initialBucket ?? _currentBucket,
-            _cdnCertificateInspector);
+            _cdnCertificateInspector,
+            _storage,
+            _cdnDeliveryService);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 

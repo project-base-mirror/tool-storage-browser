@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Reflection;
 using S3Explorer.Core;
 using Xunit;
 
@@ -53,14 +54,34 @@ public sealed class CdnDialogLayoutTests
                 Assert.Single(dialog.Controls.Find("CdnConfigurationTabs", searchAllChildren: true)));
             Assert.Equal(3, tabs.TabPages.Count);
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnProfileButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnProfileButton"));
             var certificate = FindButton(dialog, "CheckCdnCertificateButton");
             AssertButtonIsReadable(dialog, certificate);
             Assert.True(certificate.Enabled);
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnCredentialButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnBindingButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnBindingButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CheckCdnBindingsButton"));
+            var profileGrid = Assert.IsType<DataGridView>(Assert.Single(
+                dialog.Controls.Find("CdnProfilesTabGrid", searchAllChildren: true)));
+            var bindingGrid = Assert.IsType<DataGridView>(Assert.Single(
+                dialog.Controls.Find("CdnBindingsTabGrid", searchAllChildren: true)));
+            Assert.True(profileGrid.MultiSelect);
+            Assert.True(bindingGrid.MultiSelect);
+            Assert.Contains(bindingGrid.Columns.Cast<DataGridViewColumn>(), column => column.Name == "check");
             var save = FindButton(dialog, "SaveCdnConfigurationButton");
             AssertButtonIsReadable(dialog, save);
+            Assert.Equal("保存全部更改", save.Text);
+            Assert.False(save.Enabled);
             Assert.Same(save, dialog.AcceptButton);
+            var dirty = Assert.IsType<Label>(Assert.Single(
+                dialog.Controls.Find("CdnConfigurationDirtyStatus", searchAllChildren: true)));
+            Assert.Equal("没有未保存的更改", dirty.Text);
+            typeof(CdnConfigurationDialog)
+                .GetMethod("MarkDirty", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(dialog, null);
+            Assert.True(save.Enabled);
+            Assert.Contains("未保存", dirty.Text, StringComparison.Ordinal);
         });
     }
 
@@ -150,10 +171,102 @@ public sealed class CdnDialogLayoutTests
             Assert.Equal(CdnProfile.MaximumNotesLength, notes.MaxLength);
             notes.Text = "发布域名，证书由平台团队维护。";
             dialog.Show();
-            FindButton(dialog, "SaveCdnProfileButton").PerformClick();
+            var confirm = FindButton(dialog, "SaveCdnProfileButton");
+            Assert.Equal("确定", confirm.Text);
+            confirm.PerformClick();
 
             Assert.Equal(DialogResult.OK, dialog.DialogResult);
             Assert.Equal("发布域名，证书由平台团队维护。", dialog.Profile.Notes);
+        });
+    }
+
+    [Fact]
+    public void SavedCertificateStatusIsShownAndOnlyKeptForTheSameEndpoint()
+    {
+        RunSta(() =>
+        {
+            var now = DateTimeOffset.Parse("2026-07-29T12:00:00Z");
+            var check = new CdnCertificateCheckResult(
+                new Uri("https://cdn.example.com"),
+                now,
+                now.AddDays(-30),
+                now.AddDays(60),
+                "CN=cdn.example.com",
+                "CN=Example CA",
+                new string('A', 64),
+                "Tls13",
+                CdnCertificateProblems.None,
+                []);
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com",
+                LastCertificateCheck = check
+            };
+            using (var center = new CdnConfigurationDialog([], new CdnConfiguration([profile], []), []))
+            {
+                var grid = Assert.IsType<DataGridView>(Assert.Single(
+                    center.Controls.Find("CdnProfilesTabGrid", searchAllChildren: true)));
+                Assert.Contains("正常", grid.Rows[0].Cells["certificate"].Value?.ToString(), StringComparison.Ordinal);
+                Assert.Contains("2026-07-29", grid.Rows[0].Cells["certificate"].Value?.ToString(), StringComparison.Ordinal);
+            }
+
+            using (var unchanged = new CdnProfileEditorDialog(profile, []))
+            {
+                unchanged.Show();
+                FindButton(unchanged, "SaveCdnProfileButton").PerformClick();
+                Assert.NotNull(unchanged.Profile.LastCertificateCheck);
+            }
+
+            using (var changed = new CdnProfileEditorDialog(profile, []))
+            {
+                var url = Assert.IsType<TextBox>(Assert.Single(
+                    changed.Controls.Find("CdnProfileBaseUrl", searchAllChildren: true)));
+                url.Text = "https://other.example.com";
+                changed.Show();
+                FindButton(changed, "SaveCdnProfileButton").PerformClick();
+                Assert.Null(changed.Profile.LastCertificateCheck);
+            }
+        });
+    }
+
+    [Fact]
+    public void RefreshKeepsThePreviouslySelectedProfileAndBinding()
+    {
+        RunSta(() =>
+        {
+            var storage = new ConnectionProfile { Name = "storage" };
+            var firstProfile = new CdnProfile { Name = "first", BaseUrl = "https://first.example.com" };
+            var secondProfile = new CdnProfile { Name = "second", BaseUrl = "https://second.example.com" };
+            var firstBinding = new CdnBinding
+            {
+                StorageProfileId = storage.Id,
+                Bucket = "one",
+                CdnProfileId = firstProfile.Id
+            };
+            var secondBinding = new CdnBinding
+            {
+                StorageProfileId = storage.Id,
+                Bucket = "two",
+                CdnProfileId = secondProfile.Id
+            };
+            using var dialog = new CdnConfigurationDialog(
+                [storage],
+                new CdnConfiguration([firstProfile, secondProfile], [firstBinding, secondBinding]),
+                []);
+            var profiles = Assert.IsType<DataGridView>(Assert.Single(
+                dialog.Controls.Find("CdnProfilesTabGrid", searchAllChildren: true)));
+            var bindings = Assert.IsType<DataGridView>(Assert.Single(
+                dialog.Controls.Find("CdnBindingsTabGrid", searchAllChildren: true)));
+            SelectOnly(profiles, secondProfile.Id);
+            SelectOnly(bindings, secondBinding.Id);
+
+            typeof(CdnConfigurationDialog)
+                .GetMethod("RefreshAll", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(dialog, [null, null, null]);
+
+            Assert.Equal(secondProfile.Id, Assert.Single(profiles.SelectedRows.Cast<DataGridViewRow>()).Tag);
+            Assert.Equal(secondBinding.Id, Assert.Single(bindings.SelectedRows.Cast<DataGridViewRow>()).Tag);
         });
     }
 
@@ -306,6 +419,13 @@ public sealed class CdnDialogLayoutTests
 
     private static Label FindLabel(Control root, string name) =>
         Assert.IsType<Label>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
+
+    private static void SelectOnly(DataGridView grid, Guid id)
+    {
+        grid.ClearSelection();
+        var row = grid.Rows.Cast<DataGridViewRow>().Single(item => item.Tag is Guid value && value == id);
+        row.Selected = true;
+    }
 
     private static void WaitUntil(Func<bool> condition, TimeSpan? timeout = null)
     {
