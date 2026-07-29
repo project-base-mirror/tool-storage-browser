@@ -43,6 +43,12 @@ Assert-True -Condition ($publishSource -match 'Start-Process -FilePath "explorer
 Assert-True -Condition ($publishSource -match 'Remove-Item -LiteralPath \$outputRoot -Recurse -Force') -Message "Publish.ps1 must rebuild the release directory from a clean state."
 Assert-True -Condition ($publishSource -match 'Add-Type -AssemblyName System.IO.Compression.FileSystem') -Message "Publish.ps1 must load ZipFile support in Windows PowerShell."
 
+$installerSource = Get-Content -LiteralPath (Join-Path $repositoryRoot "installer\Package.wxs") -Raw
+Assert-True -Condition ($installerSource -cnotmatch 'Lorem ipsum|LicenseAgreementDlg') -Message "Installer must not expose placeholder license content."
+Assert-True -Condition ($installerSource -match 'ProgramFiles64Folder') -Message "Installer must default to the 64-bit Program Files directory."
+$applicationIconPath = Join-Path $repositoryRoot "src\S3Explorer.App\Assets\S3Explorer.ico"
+Assert-True -Condition (Test-Path -LiteralPath $applicationIconPath -PathType Leaf) -Message "Application icon is missing."
+
 foreach ($batchName in @("build.bat", "publish.bat")) {
     $batchSource = Get-Content -LiteralPath (Join-Path $repositoryRoot $batchName) -Raw
     Assert-True -Condition ($batchSource -match '%~dp0') -Message "$batchName must resolve paths from the repository root."
@@ -102,14 +108,30 @@ Assert-True -Condition ($guiFile -match '(?i)S3Explorer\.exe$') -Message "MSI do
 Assert-True -Condition ($cliFile -match '(?i)s3explorer-cli\.exe$') -Message "MSI does not contain s3explorer-cli.exe."
 $msiLogging = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MsiLogging'"
 $applicationFolder = Get-MsiQueryValue -Query "SELECT ``DefaultDir`` FROM ``Directory`` WHERE ``Directory``='APPLICATIONFOLDER'"
-$installDialog = Get-MsiQueryValue -Query "SELECT ``Dialog`` FROM ``Dialog`` WHERE ``Dialog``='InstallDirDlg'"
+$applicationFolderParent = Get-MsiQueryValue -Query "SELECT ``Directory_Parent`` FROM ``Directory`` WHERE ``Directory``='APPLICATIONFOLDER'"
+$installDialog = Get-MsiQueryValue -Query "SELECT ``Dialog`` FROM ``Dialog`` WHERE ``Dialog``='S3ExplorerInstallDirDlg'"
+$licenseDialog = Get-MsiQueryValue -Query "SELECT ``Dialog`` FROM ``Dialog`` WHERE ``Dialog``='LicenseAgreementDlg'"
 $desktopFeature = Get-MsiQueryValue -Query "SELECT ``Feature`` FROM ``Feature`` WHERE ``Feature``='DesktopShortcutFeature'"
 $desktopShortcut = Get-MsiQueryValue -Query "SELECT ``Shortcut`` FROM ``Shortcut`` WHERE ``Shortcut``='DesktopShortcut'"
+$desktopShortcutProperty = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='INSTALLDESKTOPSHORTCUT'"
+$desktopShortcutCondition = Get-MsiQueryValue -Query "SELECT ``Condition`` FROM ``Component`` WHERE ``Component``='DesktopShortcutComponent'"
+$arpIcon = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ARPPRODUCTICON'"
+$installerIcon = Get-MsiQueryValue -Query "SELECT ``Name`` FROM ``Icon`` WHERE ``Name``='S3ExplorerIcon.exe'"
+$startMenuIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='StartMenuShortcut'"
+$desktopIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='DesktopShortcut'"
 Assert-True -Condition ($msiLogging -ceq "voicewarmup") -Message "MSI automatic logging is not enabled."
 Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($applicationFolder)) -Message "MSI does not expose an application install directory."
-Assert-True -Condition ($installDialog -ceq "InstallDirDlg") -Message "MSI does not contain the install-directory dialog."
+Assert-True -Condition ($applicationFolderParent -ceq "ProgramFiles64Folder") -Message "MSI application directory is not rooted under ProgramFiles64Folder."
+Assert-True -Condition ($installDialog -ceq "S3ExplorerInstallDirDlg") -Message "MSI does not contain the install-directory dialog."
+Assert-True -Condition ([string]::IsNullOrWhiteSpace($licenseDialog)) -Message "MSI still contains a placeholder license dialog."
 Assert-True -Condition ($desktopFeature -ceq "DesktopShortcutFeature") -Message "MSI does not expose the optional desktop shortcut feature."
 Assert-True -Condition ($desktopShortcut -ceq "DesktopShortcut") -Message "MSI does not contain the desktop shortcut."
+Assert-True -Condition ($desktopShortcutProperty -ceq "1") -Message "MSI does not select the desktop shortcut by default."
+Assert-True -Condition ($desktopShortcutCondition -ceq "INSTALLDESKTOPSHORTCUT = 1") -Message "MSI desktop shortcut is not controlled by the setup checkbox."
+Assert-True -Condition ($arpIcon -ceq "S3ExplorerIcon.exe") -Message "MSI does not expose the application icon in Programs and Features."
+Assert-True -Condition ($installerIcon -ceq "S3ExplorerIcon.exe") -Message "MSI application icon resource is missing."
+Assert-True -Condition ($startMenuIcon -ceq "S3ExplorerIcon.exe") -Message "Start menu shortcut does not use the application icon."
+Assert-True -Condition ($desktopIcon -ceq "S3ExplorerIcon.exe") -Message "Desktop shortcut does not use the application icon."
 
 if (-not $SkipPackageBuild) {
     $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)

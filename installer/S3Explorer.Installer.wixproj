@@ -6,7 +6,8 @@
     <Cultures>zh-CN</Cultures>
     <DebugType>None</DebugType>
     <DefaultCompressionLevel>high</DefaultCompressionLevel>
-    <DefineConstants>$(DefineConstants);ProductVersion=$(Version);PayloadDir=$(PayloadDir)</DefineConstants>
+    <ApplicationIconPath>$(MSBuildThisFileDirectory)..\src\S3Explorer.App\Assets\S3Explorer.ico</ApplicationIconPath>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(Version);PayloadDir=$(PayloadDir);ApplicationIconPath=$(ApplicationIconPath)</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.UI.wixext" Version="5.0.0" />
