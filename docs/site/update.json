@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.2",
-  "version": "0.6.2",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.2",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.2/S3Explorer-v0.6.2-win-x64.zip",
-  "notes": "新增 Unity 2021.3 可引用的发布契约，以及面向 Unity/CI 的 Manifest 增量发布、逐文件校验、CDN 测试与预热命令。",
-  "publishedAt": "2026-07-29T11:48:56+08:00"
+  "tagName": "v0.6.3",
+  "version": "0.6.3",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.3",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.3/S3Explorer-v0.6.3-win-x64.zip",
+  "notes": "修复 Windows 电源请求原生 API 绑定错误导致上传、下载等传输在启动阶段失败的问题，并新增全部、进行中、成功、失败任务视图与可复制的完整任务详情。",
+  "publishedAt": "2026-07-29T14:43:23+08:00"
 }
