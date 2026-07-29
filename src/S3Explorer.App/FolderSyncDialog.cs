@@ -128,7 +128,7 @@ internal sealed class FolderSyncDialog : Form
         Icon = UiIcons.CreateApplicationIcon();
         BuildLayout();
         WireEvents();
-        Shown += async (_, _) => await InitializeAsync();
+        Shown += async (_, _) => await RunCommandAsync("加载同步任务", InitializeAsync);
         FormClosing += (_, _) => _operation?.Cancel();
         FormClosed += (_, _) => _transferQueue.Changed -= TransferQueueChanged;
         _transferQueue.Changed += TransferQueueChanged;
@@ -275,11 +275,11 @@ internal sealed class FolderSyncDialog : Form
             _results.SelectedItems.Clear();
             hit.Selected = true;
         };
-        _add.Click += async (_, _) => await AddJobAsync();
-        _edit.Click += async (_, _) => await EditJobAsync();
-        _delete.Click += async (_, _) => await DeleteJobAsync();
-        _analyze.Click += async (_, _) => await AnalyzeAsync();
-        _synchronize.Click += async (_, _) => await QueueSynchronizationAsync();
+        _add.Click += async (_, _) => await RunCommandAsync("添加同步任务", AddJobAsync);
+        _edit.Click += async (_, _) => await RunCommandAsync("编辑同步任务", EditJobAsync);
+        _delete.Click += async (_, _) => await RunCommandAsync("删除同步任务", DeleteJobAsync);
+        _analyze.Click += async (_, _) => await RunCommandAsync("分析同步任务", AnalyzeAsync);
+        _synchronize.Click += async (_, _) => await RunCommandAsync("开始同步", QueueSynchronizationAsync);
         _execution.Click += (_, _) => ShowExecutionReport();
         _stop.Click += (_, _) => _operation?.Cancel();
     }
@@ -289,9 +289,12 @@ internal sealed class FolderSyncDialog : Form
         var exact = new ToolStripMenuItem("排除此文件");
         var extension = new ToolStripMenuItem("排除此扩展名");
         var directory = new ToolStripMenuItem("排除此目录");
-        exact.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.ExactFile);
-        extension.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.Extension);
-        directory.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.ParentDirectory);
+        exact.Click += async (_, _) => await RunCommandAsync(
+            "添加排除规则", () => AddExclusionRuleAsync(ExclusionRuleKind.ExactFile));
+        extension.Click += async (_, _) => await RunCommandAsync(
+            "添加排除规则", () => AddExclusionRuleAsync(ExclusionRuleKind.Extension));
+        directory.Click += async (_, _) => await RunCommandAsync(
+            "添加排除规则", () => AddExclusionRuleAsync(ExclusionRuleKind.ParentDirectory));
         _resultMenu.Items.AddRange([exact, extension, directory]);
         _resultMenu.Opening += (_, args) =>
         {
@@ -439,15 +442,24 @@ internal sealed class FolderSyncDialog : Form
 
     private async Task InitializeAsync()
     {
+        _profiles = await _profileStore.LoadAsync();
+        _jobs = (await _jobStore.LoadAsync()).ToList();
+        RebuildJobList();
+    }
+
+    private async Task RunCommandAsync(string operation, Func<Task> action)
+    {
         try
         {
-            _profiles = await _profileStore.LoadAsync();
-            _jobs = (await _jobStore.LoadAsync()).ToList();
-            RebuildJobList();
+            await action();
+        }
+        catch (OperationCanceledException)
+        {
+            _summary.Text = $"{operation}已取消";
         }
         catch (Exception exception)
         {
-            MessageBox.Show(this, exception.Message, "无法加载同步任务", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ErrorDialog.ShowException(this, $"{operation}失败", operation, exception);
         }
     }
 

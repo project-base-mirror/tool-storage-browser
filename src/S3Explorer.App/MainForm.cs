@@ -15,6 +15,7 @@ internal sealed record ObjectClipboardPayload(
 
 internal sealed partial class MainForm : Form
 {
+    private static readonly TimeSpan ShutdownStepTimeout = TimeSpan.FromSeconds(60);
     private static string DisplayVersion
     {
         get
@@ -168,9 +169,13 @@ internal sealed partial class MainForm : Form
                 if (_automation is null && _settings.CheckForUpdatesOnStartup)
                     _ = CheckForUpdatesAsync(automatic: true);
             }
-            catch (Exception exception) when (_automation is not null)
+            catch (Exception exception)
             {
-                _automation.Fail(this, exception);
+                _logger.Error("Main window initialization failed", exception);
+                if (_automation is not null)
+                    _automation.Fail(this, exception);
+                else
+                    ErrorDialog.ShowException(this, "启动未完成", "初始化主窗口", exception);
             }
         };
         FormClosing += MainForm_FormClosing;
@@ -180,10 +185,10 @@ internal sealed partial class MainForm : Form
     private void BuildMenu()
     {
         var file = new ToolStripMenuItem("文件(&F)");
-        file.DropDownItems.Add(Command("new-connection", "新建连接...", async (_, _) => await NewConnectionAsync(), Keys.Control | Keys.N));
-        file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", async (_, _) => await EditCurrentConnectionAsync()));
-        file.DropDownItems.Add(Command("copy-connection", "复制当前连接", async (_, _) => await CopyCurrentConnectionAsync()));
-        file.DropDownItems.Add(Command("delete-connection", "删除当前连接", async (_, _) => await DeleteCurrentConnectionAsync()));
+        file.DropDownItems.Add(Command("new-connection", "新建连接...", async (_, _) => await RunUiCommandAsync("新建连接", NewConnectionAsync), Keys.Control | Keys.N));
+        file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", async (_, _) => await RunUiCommandAsync("编辑连接", EditCurrentConnectionAsync)));
+        file.DropDownItems.Add(Command("copy-connection", "复制当前连接", async (_, _) => await RunUiCommandAsync("复制连接", CopyCurrentConnectionAsync)));
+        file.DropDownItems.Add(Command("delete-connection", "删除当前连接", async (_, _) => await RunUiCommandAsync("删除连接", DeleteCurrentConnectionAsync)));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Command("connect", "连接", async (_, _) => await ConnectSelectedAsync()));
         file.DropDownItems.Add(Command("disconnect", "断开连接", (_, _) => Disconnect()));
@@ -285,7 +290,7 @@ internal sealed partial class MainForm : Form
 
     private void BuildToolbar()
     {
-        AddToolbarButton("new-connection", "新建连接", UiIconKind.NewConnection, async (_, _) => await NewConnectionAsync());
+        AddToolbarButton("new-connection", "新建连接", UiIconKind.NewConnection, async (_, _) => await RunUiCommandAsync("新建连接", NewConnectionAsync));
         AddToolbarButton("connect-toolbar", "连接/断开", UiIconKind.Connect, async (_, _) =>
         {
             if (_currentProfile is null) await ConnectSelectedAsync(); else Disconnect();
@@ -371,9 +376,9 @@ internal sealed partial class MainForm : Form
         var connect = new ToolStripMenuItem("连接", UiIcons.Create(UiIconKind.Connect, 16));
         connect.Click += async (_, _) => await ConnectSelectedAsync();
         var edit = new ToolStripMenuItem("修改...", UiIcons.Create(UiIconKind.Properties, 16));
-        edit.Click += async (_, _) => await EditCurrentConnectionAsync();
+        edit.Click += async (_, _) => await RunUiCommandAsync("编辑连接", EditCurrentConnectionAsync);
         var copy = new ToolStripMenuItem("复制连接", UiIcons.Create(UiIconKind.Copy, 16));
-        copy.Click += async (_, _) => await CopyCurrentConnectionAsync();
+        copy.Click += async (_, _) => await RunUiCommandAsync("复制连接", CopyCurrentConnectionAsync);
         var export = new ToolStripMenuItem("导出此连接...", UiIcons.Create(UiIconKind.Download, 16));
         export.Click += async (_, _) => await ExportConnectionsAsync(exportAll: false);
         var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
@@ -654,21 +659,114 @@ internal sealed partial class MainForm : Form
 
     private async Task InitializeAsync()
     {
-        if (await _configurationTransactions.RecoverPendingAsync())
-            _logger.Warning("Recovered an interrupted configuration transaction during startup.");
-        _settings = await _settingsStore.LoadAsync();
-        _transferRuntime.Apply(_settings);
+        var warnings = new List<string>();
+        try
+        {
+            if (await _configurationTransactions.RecoverPendingAsync())
+                warnings.Add("已完成上次中断的连接/CDN 配置事务。");
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to recover configuration transaction", exception);
+            warnings.Add($"配置事务恢复：{exception.GetType().Name}: {exception.Message}");
+        }
+
+        try
+        {
+            _settings = await _settingsStore.LoadAsync();
+            AddRecoveryWarning(warnings, "应用设置", _settingsStore);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to load application settings", exception);
+            _settings = new AppSettings();
+            warnings.Add($"应用设置：{exception.GetType().Name}: {exception.Message}；已使用安全默认值。");
+        }
+
+        try
+        {
+            _transferRuntime.Apply(_settings);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to apply transfer settings", exception);
+            _settings = new AppSettings();
+            _transferRuntime.Apply(_settings);
+            warnings.Add("传输参数无效，已恢复安全默认值。");
+        }
         _transfers.ConfigureRetryPolicy(_settings.RetryCount, _settings.RetryDelaySeconds);
         ApplySettings();
-        _profiles = await _profileStore.LoadAsync();
+
+        try
+        {
+            _profiles = await _profileStore.LoadAsync();
+            AddRecoveryWarning(warnings, "对象存储连接", _profileStore as IRecoveryAwareStore);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to load storage profiles", exception);
+            _profiles = [];
+            warnings.Add($"对象存储连接：{exception.GetType().Name}: {exception.Message}；原文件已保留，当前以空列表启动。");
+        }
         PopulateProfiles();
-        await LoadCdnStateAsync();
-        await _cdnJobQueue.InitializeAsync();
-        await _transfers.InitializeAsync();
-        await ProcessCompletedCdnUploadsAsync(_transferQueue.Snapshot.Tasks);
-        await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
+        warnings.AddRange(await LoadCdnStateAsync());
+
+        var cdnQueueReady = false;
+        try
+        {
+            await _cdnJobQueue.InitializeAsync();
+            cdnQueueReady = true;
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to initialize CDN job queue", exception);
+            warnings.Add($"CDN 任务队列：{exception.GetType().Name}: {exception.Message}");
+        }
+
+        var transferQueueReady = false;
+        try
+        {
+            await _transfers.InitializeAsync();
+            await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
+            transferQueueReady = true;
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to initialize transfer queue", exception);
+            warnings.Add($"传输队列：{exception.GetType().Name}: {exception.Message}");
+        }
+
+        if (cdnQueueReady && transferQueueReady)
+            await ProcessCompletedCdnUploadsAsync(_transferQueue.Snapshot.Tasks);
         _speedTimer.Start();
         UpdateCommandStates();
+
+        if (warnings.Count > 0)
+        {
+            var summary = SensitiveDataRedactor.Redact(string.Join(Environment.NewLine, warnings.Select(value => "• " + value)));
+            _logger.Warning("Startup completed with recovery warnings: " + summary);
+            _requestStatus.Text = $"启动完成，{warnings.Count} 项恢复提示";
+            if (_automation is null)
+            {
+                MessageBox.Show(
+                    this,
+                    "应用已启动，但检测到以下恢复情况：\n\n" + summary + "\n\n详细信息已写入内置日志。",
+                    "启动恢复提示",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+    }
+
+    private static void AddRecoveryWarning(
+        ICollection<string> warnings,
+        string name,
+        IRecoveryAwareStore? store)
+    {
+        if (store?.LastRecovery is not { } recovery) return;
+        warnings.Add(recovery.RestoredFromBackup
+            ? $"{name}主文件损坏，已从最近备份恢复；损坏文件已保留。"
+            : $"{name}主文件损坏且没有可用备份，已保留损坏文件并使用默认值。");
     }
 
     internal AutomationReport BuildAutomationReport()
@@ -2621,6 +2719,23 @@ internal sealed partial class MainForm : Form
         return item;
     }
 
+    private async Task RunUiCommandAsync(string operation, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (OperationCanceledException)
+        {
+            _requestStatus.Text = $"{operation}已取消";
+        }
+        catch (Exception exception)
+        {
+            _logger.Error($"UI command failed operation={operation}", exception);
+            ErrorDialog.ShowException(this, $"{operation}失败", operation, exception);
+        }
+    }
+
     private static ToolStripMenuItem ContextCommand(
         string id,
         string text,
@@ -2738,21 +2853,21 @@ internal sealed partial class MainForm : Form
             switch (closeAction)
             {
                 case TransferCloseAction.Wait:
-                    await _transfers.WaitForIdleAsync();
+                    await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待传输完成");
                     break;
                 case TransferCloseAction.Cancel:
-                    await _transfers.CancelAllAsync();
-                    await _transfers.WaitForIdleAsync();
+                    await AwaitShutdownStepAsync(_transfers.CancelAllAsync(), "取消传输");
+                    await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待取消完成");
                     break;
                 case TransferCloseAction.Pause:
-                    await _transfers.PauseAllAsync();
-                    await _transfers.WaitForIdleAsync();
+                    await AwaitShutdownStepAsync(_transfers.PauseAllAsync(), "暂停传输");
+                    await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待暂停完成");
                     break;
             }
 
-            await SaveSettingsAsync();
-            await _cdnJobQueue.DisposeAsync();
-            await _transferQueue.DisposeAsync();
+            await AwaitShutdownStepAsync(SaveSettingsAsync(), "保存应用设置");
+            await AwaitShutdownStepAsync(_cdnJobQueue.DisposeAsync().AsTask(), "保存 CDN 任务队列");
+            await AwaitShutdownStepAsync(_transferQueue.DisposeAsync().AsTask(), "保存传输队列");
             _closing = true;
             BeginInvoke(Close);
         }
@@ -2773,7 +2888,7 @@ internal sealed partial class MainForm : Form
         }
         var widths = _objects.Columns.Cast<ColumnHeader>().Select(column => column.Width).ToArray();
         var transferHeight = _outerSplit.Panel2Collapsed ? _settings.TransferPanelHeight : Math.Max(100, _outerSplit.Height - _outerSplit.SplitterDistance);
-        _settings = _settings with
+        var proposed = _settings with
         {
             WindowX = WindowState == FormWindowState.Normal ? Left : RestoreBounds.Left,
             WindowY = WindowState == FormWindowState.Normal ? Top : RestoreBounds.Top,
@@ -2786,6 +2901,25 @@ internal sealed partial class MainForm : Form
             SortColumn = _sortColumn,
             SortAscending = _sortAscending
         };
-        await _settingsStore.SaveAsync(_settings);
+        await _settingsStore.SaveAsync(proposed);
+        _settings = proposed;
+    }
+
+    internal static async Task AwaitShutdownStepAsync(
+        Task operation,
+        string operationName,
+        TimeSpan? timeout = null)
+    {
+        var effectiveTimeout = timeout ?? ShutdownStepTimeout;
+        try
+        {
+            await operation.WaitAsync(effectiveTimeout);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException(
+                $"{operationName}超过 {effectiveTimeout.TotalSeconds:N0} 秒仍未完成，退出已取消；任务和配置不会被强制丢弃。",
+                exception);
+        }
     }
 }

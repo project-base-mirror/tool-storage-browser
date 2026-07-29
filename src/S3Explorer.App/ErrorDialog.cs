@@ -1,4 +1,5 @@
 using Amazon.S3;
+using S3Explorer.Core;
 
 namespace S3Explorer.App;
 
@@ -15,7 +16,10 @@ internal sealed class ErrorDialog : Form
         var type = exception is AmazonS3Exception s3 ? s3.ErrorCode : exception.GetType().Name;
         var status = exception is AmazonS3Exception aws ? $"{(int)aws.StatusCode} {aws.StatusCode}" : "—";
         var requestId = exception is AmazonS3Exception request ? request.RequestId : "—";
-        var suggestion = Suggest(exception);
+        var safeOperation = SensitiveDataRedactor.Redact(operation);
+        var safeLocation = SensitiveDataRedactor.Redact(location);
+        var safeMessage = SensitiveDataRedactor.Redact(exception.Message);
+        var suggestion = SensitiveDataRedactor.Redact(Suggest(exception));
 
         var table = new TableLayoutPanel
         {
@@ -26,19 +30,19 @@ internal sealed class ErrorDialog : Form
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        AddRow(table, 0, "操作：", operation);
-        AddRow(table, 1, "位置：", location);
+        AddRow(table, 0, "操作：", safeOperation);
+        AddRow(table, 1, "位置：", safeLocation);
         AddRow(table, 2, "错误类型：", type ?? title);
         AddRow(table, 3, "HTTP 状态：", status);
         AddRow(table, 4, "Request ID：", requestId ?? "—");
-        AddRow(table, 5, "消息：", exception.Message);
+        AddRow(table, 5, "消息：", safeMessage);
         AddRow(table, 6, "建议：", suggestion);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
         var close = new Button { Text = "关闭", DialogResult = DialogResult.OK, Size = new Size(112, 32) };
         var copy = new Button { Text = "复制详细信息", Size = new Size(112, 32) };
-        copy.Click += (_, _) => Clipboard.SetText(
-            $"操作: {operation}\r\n位置: {location}\r\n类型: {type}\r\nHTTP: {status}\r\nRequestId: {requestId}\r\n消息: {exception.Message}\r\n建议: {suggestion}");
+        copy.Click += (_, _) => Clipboard.SetText(BuildDetails(
+            safeOperation, safeLocation, type ?? title, status, requestId ?? "—", safeMessage, suggestion));
         buttons.Controls.AddRange([close, copy]);
         table.Controls.Add(buttons, 0, 7);
         table.SetColumnSpan(buttons, 2);
@@ -52,6 +56,18 @@ internal sealed class ErrorDialog : Form
         using var dialog = new ErrorDialog(title, operation, location, exception);
         dialog.ShowDialog(owner);
     }
+
+    internal static string BuildDetails(
+        string operation,
+        string location,
+        string type,
+        string status,
+        string requestId,
+        string message,
+        string suggestion) =>
+        SensitiveDataRedactor.Redact(
+            $"操作: {operation}\r\n位置: {location}\r\n类型: {type}\r\nHTTP: {status}\r\n" +
+            $"RequestId: {requestId}\r\n消息: {message}\r\n建议: {suggestion}");
 
     private static void AddRow(TableLayoutPanel table, int row, string label, string value)
     {

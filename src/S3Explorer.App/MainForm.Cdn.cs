@@ -118,30 +118,45 @@ internal sealed partial class MainForm
         return item;
     }
 
-    private async Task LoadCdnStateAsync()
+    private async Task<IReadOnlyList<string>> LoadCdnStateAsync()
     {
+        var warnings = new List<string>();
+        var configuration = CdnConfiguration.Empty;
+        IReadOnlyList<CdnCredential> credentials = [];
         try
         {
-            var configuration = await _cdnConfigurationStore.LoadAsync();
-            var credentials = await _cdnCredentialStore.LoadAsync();
-            CdnConfigurationValidator.EnsureValid(configuration, credentials);
-            _cdnConfiguration = configuration;
-            _cdnCredentials = credentials;
+            configuration = await _cdnConfigurationStore.LoadAsync();
         }
         catch (Exception exception)
         {
             _logger.Error("Failed to load CDN configuration", exception);
-            _cdnConfiguration = CdnConfiguration.Empty;
-            _cdnCredentials = [];
-            if (_automation is null)
-            {
-                ErrorDialog.ShowException(
-                    this,
-                    "无法加载 CDN 配置",
-                    "CDN 配置和独立凭据",
-                    exception);
-            }
+            warnings.Add($"CDN 配置：{exception.GetType().Name}: {exception.Message}");
         }
+
+        try
+        {
+            credentials = await _cdnCredentialStore.LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to load CDN credentials", exception);
+            warnings.Add($"CDN 独立凭据：{exception.GetType().Name}: {exception.Message}");
+        }
+
+        _cdnConfiguration = configuration;
+        _cdnCredentials = credentials;
+        try
+        {
+            CdnConfigurationValidator.EnsureValid(configuration, credentials);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("CDN configuration and credentials are not mutually consistent", exception);
+            warnings.Add($"CDN 配置关联：{exception.Message}");
+        }
+        AddRecoveryWarning(warnings, "CDN 配置", _cdnConfigurationStore as IRecoveryAwareStore);
+        AddRecoveryWarning(warnings, "CDN 独立凭据", _cdnCredentialStore as IRecoveryAwareStore);
+        return warnings;
     }
 
     private async Task ShowCdnConfigurationAsync(

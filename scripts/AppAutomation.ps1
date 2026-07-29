@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("Start", "Status", "Stop", "Smoke", "Version", "Help")]
+    [ValidateSet("Start", "Status", "Stop", "Smoke", "CorruptSmoke", "Version", "Help")]
     [string]$Command = "Help",
 
     [ValidateRange(1, 300)]
@@ -258,6 +258,55 @@ switch ($Command) {
         })
     }
 
+    "CorruptSmoke" {
+        Ensure-ApplicationBuild
+        $runRoot = Join-Path $automationRoot ("corrupt-smoke-" + [Guid]::NewGuid().ToString("N"))
+        $runState = Join-Path $runRoot "state.json"
+        $runReport = Join-Path $runRoot "report.json"
+        $runScreenshot = Join-Path $runRoot "screenshot.png"
+        $runData = Join-Path $runRoot "data"
+        New-Item -ItemType Directory -Path $runData -Force | Out-Null
+        foreach ($name in @(
+            "profiles.json",
+            "settings.json",
+            "transfers.json",
+            "cdn-config.json",
+            "cdn-credentials.json",
+            "cdn-jobs.json"
+        )) {
+            Set-Content -LiteralPath (Join-Path $runData $name) -Value "{truncated" -Encoding utf8
+        }
+
+        $process = Start-ApplicationProcess -State $runState -Report $runReport -Screenshot $runScreenshot -Data $runData -Smoke
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            [void]$process.CloseMainWindow()
+            throw "Corrupt-state UI smoke process timed out."
+        }
+        if ($process.ExitCode -ne 0) {
+            $failedState = Read-AutomationState -Path $runState
+            throw "Corrupt-state UI smoke failed with exit code $($process.ExitCode): $($failedState.error)"
+        }
+
+        $report = Get-Content -LiteralPath $runReport -Raw | ConvertFrom-Json
+        if (-not [bool]$report.passed) {
+            throw "Corrupt-state UI smoke did not reach a usable main window."
+        }
+        $preserved = @(Get-ChildItem -LiteralPath $runData -File -Filter "*.corrupt-*" -ErrorAction SilentlyContinue)
+        if ($preserved.Count -lt 6) {
+            throw "Corrupt-state UI smoke preserved only $($preserved.Count) of 6 malformed stores."
+        }
+
+        Write-JsonResult ([ordered]@{
+            command = "CorruptSmoke"
+            status = "passed"
+            passed = $true
+            checks = @($report.checks).Count
+            preservedCorruptStores = $preserved.Count
+            reportPath = $runReport
+            screenshotPath = $runScreenshot
+        })
+    }
+
     "Version" {
         [xml]$properties = Get-Content -LiteralPath (Join-Path $repositoryRoot "Directory.Build.props") -Raw
         Write-JsonResult ([ordered]@{ command = "Version"; version = [string]$properties.Project.PropertyGroup.Version })
@@ -271,6 +320,7 @@ switch ($Command) {
                 "Status - report verified process and UI state",
                 "Stop   - gracefully close the verified app process",
                 "Smoke  - run isolated UI checks and create a screenshot",
+                "CorruptSmoke - prove malformed user-state files do not block startup",
                 "Version - print the repository application version",
                 "Help   - print this fixed command list"
             )
