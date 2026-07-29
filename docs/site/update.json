@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.3",
-  "version": "0.6.3",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.3",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.3/S3Explorer-v0.6.3-win-x64.zip",
-  "notes": "修复 Windows 电源请求原生 API 绑定错误导致上传、下载等传输在启动阶段失败的问题，并新增全部、进行中、成功、失败任务视图与可复制的完整任务详情。",
-  "publishedAt": "2026-07-29T14:43:23+08:00"
+  "tagName": "v0.6.4",
+  "version": "0.6.4",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.4",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.4/S3Explorer-v0.6.4-win-x64.zip",
+  "notes": "修复测试连接结果被裁切、S3 兼容存储默认 Region、类型切换覆盖 Endpoint，以及旧连接被错误识别为 Amazon S3 的问题；新增可直接导入 Unity 的 Contracts SDK 下载包。",
+  "publishedAt": "2026-07-29T16:24:04+08:00"
 }

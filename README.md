@@ -125,7 +125,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。`--output json` 提供结构化结果，旧的 `--json` 仍兼容；普通终端默认输出可读中文提示。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。源码树中可用 `cli.bat help` 查看完整命令。
 
-Unity 2021.3 可只引用 `S3Explorer.Contracts` 的 `netstandard2.1` DTO，并通过 `Process` 调用 CLI。Unity 项目只需保存 Profile ID、Bucket、Prefix 和 CDN Profile ID；AccessKey、SecretKey 与 SessionToken 继续由对象存储工具在 `%APPDATA%\S3Explorer` 下使用 DPAPI 保护。
+Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX.Y.Z.zip`，只引用其中 `netstandard2.1` DTO，并通过 `Process` 调用同版本 CLI。Unity 项目只需保存 Profile ID、Bucket、Prefix 和 CDN Profile ID；AccessKey、SecretKey 与 SessionToken 继续由对象存储工具在 `%APPDATA%\S3Explorer` 下使用 DPAPI 保护。完整步骤见 [`docs/Unity-Publish-Integration.md`](docs/Unity-Publish-Integration.md)。
 
 ## UI 自动化
 
@@ -156,9 +156,10 @@ Unity 2021.3 可只引用 `S3Explorer.Contracts` 的 `netstandard2.1` DTO，并�
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.3-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.3-win-x64-self-contained.zip
-    artifacts/release/S3Explorer-v0.6.3-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.4-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.4-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.4.zip
+    artifacts/release/S3Explorer-v0.6.4-win-x64-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -177,7 +178,7 @@ Unity 2021.3 可只引用 `S3Explorer.Contracts` 的 `netstandard2.1` DTO，并�
 
     pwsh .\scripts\Publish.ps1 -MeasureRuntime
 
-`release-metrics.json` 会记录两个发布目录的压缩前大小、ZIP 大小、MSI 大小、各自产物 SHA-256、SDK 版本、签名配置状态，以及可选的启动时间和内存数据。
+`release-metrics.json` 会记录两个应用发布目录的压缩前大小、应用 ZIP、Unity Contracts SDK ZIP、MSI 的大小和 SHA-256，以及 .NET SDK 版本、签名配置状态和可选的启动时间与内存数据。
 
 推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；版本、更新清单、Release 与 Pages 的固定同步步骤见 [`docs/Release-Process.md`](docs/Release-Process.md)，GitHub 交付机制见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
 
