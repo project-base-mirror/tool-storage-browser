@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.7",
-  "version": "0.6.7",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.7",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.7/S3Explorer-v0.6.7-win-x64.zip",
-  "notes": "文件夹同步增加逐项选择、筛选排序、快速排除、过期保护、执行报告和失败重试；Unity 改用稳定 Contract API/Manifest Schema 兼容协商；发布支持显式对象匿名只读和 CDN 连续双 HEAD 缓存检测，不修改 Bucket Policy。",
-  "publishedAt": "2026-07-29T20:58:02+08:00"
+  "tagName": "v0.6.8",
+  "version": "0.6.8",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.8",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.8/S3Explorer-v0.6.8-win-x64.zip",
+  "notes": "CDN 配置中心支持配置与 Bucket/前缀关联的多选删除、批量检测和复制；编辑后保持当前选择；HTTPS 证书检测结果持久保存；新增统一保存状态和未保存更改关闭确认。",
+  "publishedAt": "2026-07-29T23:20:59+08:00"
 }
