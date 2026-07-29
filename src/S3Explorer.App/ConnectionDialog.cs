@@ -9,12 +9,18 @@ internal sealed class ConnectionDialog : Form
         public override string ToString() => Text;
     }
 
+    private sealed record ConnectionDraft(
+        string Endpoint,
+        string Region,
+        bool UseHttps,
+        AddressingStyle AddressingStyle);
+
     private readonly IS3StorageService _storage;
     private readonly TextBox _name = new();
-    private readonly ComboBox _accountType = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly ComboBox _provider = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly TextBox _endpoint = new();
-    private readonly ComboBox _region = new() { DropDownStyle = ComboBoxStyle.DropDown };
+    private readonly ComboBox _accountType = new() { Name = "AccountTypeComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _provider = new() { Name = "ProviderComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly TextBox _endpoint = new() { Name = "EndpointTextBox" };
+    private readonly ComboBox _region = new() { Name = "RegionComboBox", DropDownStyle = ComboBoxStyle.DropDown };
     private readonly ComboBox _credentialSource = new()
     {
         Name = "CredentialSourceComboBox",
@@ -46,8 +52,20 @@ internal sealed class ConnectionDialog : Form
     private readonly NumericUpDown _connectionTimeout = new() { Minimum = 1, Maximum = 120, Value = 10 };
     private readonly NumericUpDown _timeout = new() { Minimum = 5, Maximum = 3600, Value = 100 };
     private readonly GroupBox _advancedGroup = new() { Text = "高级设置", Dock = DockStyle.Top, AutoSize = true };
-    private readonly Button _test = new() { Text = "测试连接", Size = new Size(104, 32) };
-    private readonly Label _result = new() { AutoSize = true, MaximumSize = new Size(510, 0), Margin = new Padding(10, 8, 3, 3) };
+    private readonly Button _test = new() { Name = "TestConnectionButton", Text = "测试连接", Size = new Size(104, 32) };
+    private readonly TextBox _result = new()
+    {
+        Name = "ConnectionTestResultTextBox",
+        ReadOnly = true,
+        Multiline = true,
+        ScrollBars = ScrollBars.Vertical,
+        BorderStyle = BorderStyle.FixedSingle,
+        BackColor = SystemColors.Window,
+        MinimumSize = new Size(0, 62),
+        Height = 62,
+        Visible = false,
+        TabStop = true
+    };
     private readonly Button _save = new() { Text = "保存", DialogResult = DialogResult.OK, Size = new Size(96, 32) };
     private readonly Button _cancel = new() { Text = "取消", DialogResult = DialogResult.Cancel, Size = new Size(96, 32) };
     private readonly Label _providerLabel = FieldLabel("服务商模板：");
@@ -60,15 +78,19 @@ internal sealed class ConnectionDialog : Form
     private readonly Label _awsProfileLabel = FieldLabel("AWS Profile：");
     private readonly Label _credentialHint = HintLabel("选择凭据的实际来源；环境和角色凭据不会保存到连接文件。");
     private readonly TableLayoutPanel _secretPanel = new() { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };
+    private readonly Dictionary<S3ServiceType, ConnectionDraft> _connectionDrafts = [];
     private readonly Guid _id;
     private bool _loading;
+    private bool _applyingSelection;
+    private S3ServiceType? _activeServiceType;
 
     public ConnectionProfile Profile { get; private set; }
 
     public ConnectionDialog(IS3StorageService storage, ConnectionProfile? profile = null)
     {
         _storage = storage;
-        Profile = profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3);
+        Profile = S3ProviderCatalog.RepairLegacyServiceType(
+            profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
         _id = Profile.Id;
 
         Text = profile is null ? "新建对象存储连接" : "编辑对象存储连接";
@@ -219,14 +241,19 @@ internal sealed class ConnectionDialog : Form
         var footer = new TableLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 64,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(0, 64),
             Padding = new Padding(16, 8, 16, 10),
-            ColumnCount = 2
+            ColumnCount = 2,
+            RowCount = 2
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var testPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        testPanel.Controls.AddRange([_test, _result]);
+        testPanel.Controls.Add(_test);
         var buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -235,8 +262,12 @@ internal sealed class ConnectionDialog : Form
             WrapContents = false
         };
         buttons.Controls.AddRange([_cancel, _save]);
-        footer.Controls.Add(testPanel, 0, 0);
-        footer.Controls.Add(buttons, 1, 0);
+        _result.Dock = DockStyle.Fill;
+        _result.Margin = new Padding(0, 0, 0, 8);
+        footer.Controls.Add(_result, 0, 0);
+        footer.SetColumnSpan(_result, 2);
+        footer.Controls.Add(testPanel, 0, 1);
+        footer.Controls.Add(buttons, 1, 1);
 
         Controls.Add(content);
         Controls.Add(footer);
@@ -334,6 +365,8 @@ internal sealed class ConnectionDialog : Form
         {
             _loading = false;
         }
+        _activeServiceType = profile.ServiceType;
+        _connectionDrafts[profile.ServiceType] = CaptureConnectionDraft();
         ApplyAccountSelection(applyPreset: false);
         UpdateCredentialSourceVisibility();
         UpdateSessionTokenVisibility();
@@ -341,44 +374,71 @@ internal sealed class ConnectionDialog : Form
 
     private void ApplyAccountSelection(bool applyPreset)
     {
-        if (_loading) return;
-        var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
-        _providerLabel.Visible = _provider.Visible = category == S3AccountCategory.S3Compatible;
+        if (_loading || _applyingSelection) return;
 
-        var serviceType = category == S3AccountCategory.S3Compatible
-            ? SelectedValue(_provider, S3ServiceType.Custom)
-            : S3ProviderCatalog.DefaultServiceType(category);
-        if (category == S3AccountCategory.S3Compatible && _provider.SelectedIndex < 0)
+        _applyingSelection = true;
+        try
         {
-            SelectChoice(_provider, S3ServiceType.Custom);
-            serviceType = S3ServiceType.Custom;
+            if (applyPreset && _activeServiceType is { } previousServiceType)
+                _connectionDrafts[previousServiceType] = CaptureConnectionDraft();
+
+            var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
+            _providerLabel.Visible = _provider.Visible = category == S3AccountCategory.S3Compatible;
+
+            var serviceType = category == S3AccountCategory.S3Compatible
+                ? SelectedValue(_provider, S3ServiceType.Custom)
+                : S3ProviderCatalog.DefaultServiceType(category);
+            if (category == S3AccountCategory.S3Compatible && _provider.SelectedIndex < 0)
+            {
+                SelectChoice(_provider, S3ServiceType.Custom);
+                serviceType = S3ServiceType.Custom;
+            }
+
+            var definition = S3ProviderCatalog.Get(serviceType);
+            var endpointVisible = category == S3AccountCategory.S3Compatible;
+            _endpointLabel.Visible = _endpoint.Visible = endpointVisible;
+            _https.Enabled = endpointVisible;
+            var regionVisible = definition.RegionInput != RegionInputMode.Hidden;
+            _regionLabel.Visible = _region.Visible = regionVisible;
+            _regionLabel.Text = definition.RegionInput == RegionInputMode.Optional
+                ? "签名 Region（可选）："
+                : "Region：";
+            _regionHint.Text = definition.RegionInput switch
+            {
+                RegionInputMode.Hidden => $"{definition.DisplayName} 不需要手动设置 Region；程序会自动使用签名值 {definition.EffectiveDefaultSigningRegion}。",
+                RegionInputMode.Optional => $"默认 auto；仅在服务商明确要求时填写 SigV4 Region，auto 会使用安全签名值 {definition.EffectiveDefaultSigningRegion}。",
+                _ when serviceType == S3ServiceType.AmazonS3 => "默认 auto；连接使用全局 Endpoint，并以 us-east-1 签名。需要固定区域时再选择具体 Region。",
+                _ => "Region 同时用于服务区域与 SigV4 签名。"
+            };
+
+            if (serviceType != S3ServiceType.AmazonS3)
+                SelectChoice(_credentialSource, CredentialSourceKind.StoredKeys);
+            _credentialSource.Enabled = serviceType == S3ServiceType.AmazonS3;
+
+            if (applyPreset && _activeServiceType != serviceType)
+            {
+                if (_connectionDrafts.TryGetValue(serviceType, out var draft))
+                    ApplyConnectionDraft(draft);
+                else
+                    ApplyConnectionPreset(serviceType);
+                ClearConnectionTestResult();
+            }
+            else if (!endpointVisible)
+            {
+                _https.Checked = true;
+            }
+
+            _activeServiceType = serviceType;
+            UpdateCredentialSourceVisibility();
         }
-
-        var definition = S3ProviderCatalog.Get(serviceType);
-        var endpointVisible = category == S3AccountCategory.S3Compatible;
-        _endpointLabel.Visible = _endpoint.Visible = endpointVisible;
-        _https.Enabled = endpointVisible;
-        if (!endpointVisible)
-            _https.Checked = true;
-        var regionVisible = definition.RegionInput != RegionInputMode.Hidden;
-        _regionLabel.Visible = _region.Visible = regionVisible;
-        _regionLabel.Text = definition.RegionInput == RegionInputMode.Optional
-            ? "签名 Region（可选）："
-            : "Region：";
-        _regionHint.Text = definition.RegionInput switch
+        finally
         {
-            RegionInputMode.Hidden => $"{definition.DisplayName} 不需要手动设置 Region；程序会自动使用签名值 {definition.EffectiveDefaultSigningRegion}。",
-            RegionInputMode.Optional => "仅在服务商明确要求自定义 SigV4 Region 时填写；留空会使用模板默认值。",
-            _ when serviceType == S3ServiceType.AmazonS3 => "默认 auto；连接使用全局 Endpoint，并以 us-east-1 签名。需要固定区域时再选择具体 Region。",
-            _ => "Region 同时用于服务区域与 SigV4 签名。"
-        };
+            _applyingSelection = false;
+        }
+    }
 
-        if (serviceType != S3ServiceType.AmazonS3)
-            SelectChoice(_credentialSource, CredentialSourceKind.StoredKeys);
-        _credentialSource.Enabled = serviceType == S3ServiceType.AmazonS3;
-        UpdateCredentialSourceVisibility();
-
-        if (!applyPreset) return;
+    private void ApplyConnectionPreset(S3ServiceType serviceType)
+    {
         var preset = ConnectionProfile.CreatePreset(serviceType);
         _endpoint.Text = preset.Endpoint;
         _region.Text = preset.Region;
@@ -386,7 +446,23 @@ internal sealed class ConnectionDialog : Form
         _path.Checked = preset.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = preset.AddressingStyle == AddressingStyle.VirtualHosted;
         _auto.Checked = preset.AddressingStyle == AddressingStyle.Auto;
-        _result.Text = string.Empty;
+    }
+
+    private ConnectionDraft CaptureConnectionDraft() => new(
+        _endpoint.Text,
+        _region.Text,
+        _https.Checked,
+        _path.Checked ? AddressingStyle.PathStyle :
+            _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto);
+
+    private void ApplyConnectionDraft(ConnectionDraft draft)
+    {
+        _endpoint.Text = draft.Endpoint;
+        _region.Text = draft.Region;
+        _https.Checked = draft.UseHttps;
+        _path.Checked = draft.AddressingStyle == AddressingStyle.PathStyle;
+        _virtual.Checked = draft.AddressingStyle == AddressingStyle.VirtualHosted;
+        _auto.Checked = draft.AddressingStyle == AddressingStyle.Auto;
     }
 
     private void UpdateSessionTokenVisibility()
@@ -515,23 +591,38 @@ internal sealed class ConnectionDialog : Form
             profile.Validate();
             if (!ConfirmInsecureTls(profile)) return;
             _test.Enabled = false;
-            _result.ForeColor = SystemColors.ControlText;
-            _result.Text = $"正在连接（最多 {profile.ConnectionTimeoutSeconds} 秒）...";
+            ShowConnectionTestResult(
+                $"正在连接（最多 {profile.ConnectionTimeoutSeconds} 秒）...",
+                SystemColors.ControlText);
             var result = await _storage.TestConnectionAsync(profile, CancellationToken.None);
-            _result.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
-            _result.Text = result.Success
-                ? $"{result.Message} 凭据：{result.CredentialSource ?? profile.CredentialSourceDisplayName}；耗时 {result.Elapsed.TotalMilliseconds:N0} ms"
-                : $"连接失败：{result.ErrorCode ?? result.Message}（HTTP {result.HttpStatusCode?.ToString() ?? "—"}，RequestId {result.RequestId ?? "—"}）";
+            ShowConnectionTestResult(
+                ConnectionTestResultFormatter.Format(result, profile),
+                result.Success ? Color.DarkGreen : Color.DarkRed);
         }
         catch (Exception exception)
         {
-            _result.ForeColor = Color.DarkRed;
-            _result.Text = exception.Message;
+            ShowConnectionTestResult($"连接失败：{exception.Message}", Color.DarkRed);
         }
         finally
         {
             _test.Enabled = true;
         }
+    }
+
+    private void ShowConnectionTestResult(string text, Color color)
+    {
+        _result.ForeColor = color;
+        _result.Text = text;
+        _result.Visible = true;
+        _result.SelectionStart = 0;
+        _result.SelectionLength = 0;
+        PerformLayout();
+    }
+
+    private void ClearConnectionTestResult()
+    {
+        _result.Clear();
+        _result.Visible = false;
     }
 
     private bool ConfirmInsecureTls(ConnectionProfile profile)
@@ -567,5 +658,25 @@ internal sealed class ConnectionDialog : Form
         return category == S3AccountCategory.S3Compatible
             ? SelectedValue(_provider, S3ServiceType.Custom)
             : S3ProviderCatalog.DefaultServiceType(category);
+    }
+}
+
+internal static class ConnectionTestResultFormatter
+{
+    public static string Format(ConnectionTestResult result, ConnectionProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(profile);
+
+        if (result.Success)
+        {
+            return $"{result.Message}{Environment.NewLine}" +
+                $"凭据：{result.CredentialSource ?? profile.CredentialSourceDisplayName}；" +
+                $"Bucket：{result.BucketCount:N0}；耗时：{result.Elapsed.TotalMilliseconds:N0} ms";
+        }
+
+        return $"连接失败：{result.Message}{Environment.NewLine}" +
+            $"错误代码：{result.ErrorCode ?? "—"}；HTTP：{result.HttpStatusCode?.ToString() ?? "—"}；" +
+            $"Request ID：{result.RequestId ?? "—"}；耗时：{result.Elapsed.TotalMilliseconds:N0} ms";
     }
 }
