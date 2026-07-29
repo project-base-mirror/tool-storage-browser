@@ -72,6 +72,10 @@ jobs:
           }
           ./scripts/Publish.ps1 @publishParameters
 
+      - name: Validate packaged artifact structure
+        shell: pwsh
+        run: ./scripts/Test-Publish.ps1 -SkipPackageBuild
+
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
