@@ -40,6 +40,17 @@ internal static class Program
             var cdnCredentialStore = new JsonCdnCredentialStore(
                 new DpapiCdnCredentialProtector(),
                 options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
+            var configurationTransactions = new ConfigurationTransactionCoordinator(
+                profileStore,
+                cdnConfigurationStore,
+                cdnCredentialStore,
+                protector,
+                options.Enabled
+                    ? Path.Combine(dataRoot, "configuration-transaction.json")
+                    : Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "S3Explorer",
+                        "configuration-transaction.json"));
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
             var cdnJobStore = new JsonCdnJobStore(
                 options.Enabled ? Path.Combine(dataRoot, "cdn-jobs.json") : null);
@@ -92,6 +103,7 @@ internal static class Program
                 cdnDeliveryService,
                 cdnJobQueue,
                 cdnCertificateInspector,
+                configurationTransactions,
                 automation);
             Application.Run(form);
             return Environment.ExitCode;

@@ -428,8 +428,10 @@ internal sealed class FolderSyncDialog : Form
         };
         updated.Validate();
         var index = _jobs.FindIndex(value => value.Id == job.Id);
-        _jobs[index] = updated;
-        await _jobStore.SaveAsync(_jobs);
+        var proposed = _jobs.ToList();
+        proposed[index] = updated;
+        await _jobStore.SaveAsync(proposed);
+        _jobs = proposed;
         RebuildJobList(updated.Id);
         _empty.Text = $"已添加排除规则 {rule}。请重新分析。";
         _summary.Text = "需要重新分析";
@@ -521,8 +523,9 @@ internal sealed class FolderSyncDialog : Form
         }
         using var dialog = new FolderSyncJobDialog(_storage, _profiles, null, _initialProfile, _initialBucket, _initialPrefix);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _jobs.Add(dialog.Job);
-        await _jobStore.SaveAsync(_jobs);
+        var proposed = _jobs.Append(dialog.Job).ToList();
+        await _jobStore.SaveAsync(proposed);
+        _jobs = proposed;
         RebuildJobList(dialog.Job.Id);
     }
 
@@ -533,8 +536,10 @@ internal sealed class FolderSyncDialog : Form
         using var dialog = new FolderSyncJobDialog(_storage, _profiles, job);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var index = _jobs.FindIndex(item => item.Id == job.Id);
-        _jobs[index] = dialog.Job;
-        await _jobStore.SaveAsync(_jobs);
+        var proposed = _jobs.ToList();
+        proposed[index] = dialog.Job;
+        await _jobStore.SaveAsync(proposed);
+        _jobs = proposed;
         RebuildJobList(dialog.Job.Id);
     }
 
@@ -545,8 +550,9 @@ internal sealed class FolderSyncDialog : Form
         if (MessageBox.Show(this, $"删除同步任务“{job.Name}”？\n\n不会删除本地或远端文件。", "删除同步任务",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
-        _jobs.RemoveAll(item => item.Id == job.Id);
-        await _jobStore.SaveAsync(_jobs);
+        var proposed = _jobs.Where(item => item.Id != job.Id).ToList();
+        await _jobStore.SaveAsync(proposed);
+        _jobs = proposed;
         RebuildJobList();
     }
 
@@ -788,8 +794,10 @@ internal sealed class FolderSyncDialog : Form
         {
             var index = _jobs.FindIndex(item => item.Id == job.Id);
             if (index < 0) return;
-            _jobs[index] = job with { LastRunAt = completedAt };
-            await _jobStore.SaveAsync(_jobs);
+            var proposed = _jobs.ToList();
+            proposed[index] = job with { LastRunAt = completedAt };
+            await _jobStore.SaveAsync(proposed);
+            _jobs = proposed;
         }
         finally
         {

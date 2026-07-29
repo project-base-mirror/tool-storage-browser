@@ -163,8 +163,9 @@ internal sealed partial class MainForm
         try
         {
             CdnConfigurationValidator.EnsureValid(dialog.Configuration, dialog.Credentials);
-            await _cdnCredentialStore.SaveAsync(dialog.Credentials);
-            await _cdnConfigurationStore.SaveAsync(dialog.Configuration);
+            await _configurationTransactions.SaveAsync(
+                new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials),
+                new ConfigurationSnapshot(_profiles, dialog.Configuration, dialog.Credentials));
             _cdnCredentials = dialog.Credentials;
             _cdnConfiguration = dialog.Configuration;
             UpdateCommandStates();

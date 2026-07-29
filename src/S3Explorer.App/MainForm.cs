@@ -64,6 +64,7 @@ internal sealed partial class MainForm : Form
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly IFolderSyncJobStore _syncJobStore;
     private readonly GitHubUpdateChecker _updateChecker;
+    private readonly ConfigurationTransactionCoordinator _configurationTransactions;
     private readonly ConnectionArchiveService _connectionArchive = new();
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new() { Name = "StatusBar" };
@@ -113,6 +114,7 @@ internal sealed partial class MainForm : Form
         ICdnDeliveryService cdnDeliveryService,
         PersistentCdnJobQueue cdnJobQueue,
         ICdnCertificateInspector cdnCertificateInspector,
+        ConfigurationTransactionCoordinator configurationTransactions,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -129,6 +131,7 @@ internal sealed partial class MainForm : Form
         _cdnJobQueue = cdnJobQueue;
         _cdnUploadAutomation = new CdnUploadAutomationCoordinator(cdnJobQueue);
         _cdnCertificateInspector = cdnCertificateInspector;
+        _configurationTransactions = configurationTransactions;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -177,9 +180,9 @@ internal sealed partial class MainForm : Form
     private void BuildMenu()
     {
         var file = new ToolStripMenuItem("文件(&F)");
-        file.DropDownItems.Add(Command("new-connection", "新建连接...", (_, _) => NewConnection(), Keys.Control | Keys.N));
-        file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", (_, _) => EditCurrentConnection()));
-        file.DropDownItems.Add(Command("copy-connection", "复制当前连接", (_, _) => CopyCurrentConnection()));
+        file.DropDownItems.Add(Command("new-connection", "新建连接...", async (_, _) => await NewConnectionAsync(), Keys.Control | Keys.N));
+        file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", async (_, _) => await EditCurrentConnectionAsync()));
+        file.DropDownItems.Add(Command("copy-connection", "复制当前连接", async (_, _) => await CopyCurrentConnectionAsync()));
         file.DropDownItems.Add(Command("delete-connection", "删除当前连接", async (_, _) => await DeleteCurrentConnectionAsync()));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Command("connect", "连接", async (_, _) => await ConnectSelectedAsync()));
@@ -282,7 +285,7 @@ internal sealed partial class MainForm : Form
 
     private void BuildToolbar()
     {
-        AddToolbarButton("new-connection", "新建连接", UiIconKind.NewConnection, (_, _) => NewConnection());
+        AddToolbarButton("new-connection", "新建连接", UiIconKind.NewConnection, async (_, _) => await NewConnectionAsync());
         AddToolbarButton("connect-toolbar", "连接/断开", UiIconKind.Connect, async (_, _) =>
         {
             if (_currentProfile is null) await ConnectSelectedAsync(); else Disconnect();
@@ -368,9 +371,9 @@ internal sealed partial class MainForm : Form
         var connect = new ToolStripMenuItem("连接", UiIcons.Create(UiIconKind.Connect, 16));
         connect.Click += async (_, _) => await ConnectSelectedAsync();
         var edit = new ToolStripMenuItem("修改...", UiIcons.Create(UiIconKind.Properties, 16));
-        edit.Click += (_, _) => EditCurrentConnection();
+        edit.Click += async (_, _) => await EditCurrentConnectionAsync();
         var copy = new ToolStripMenuItem("复制连接", UiIcons.Create(UiIconKind.Copy, 16));
-        copy.Click += (_, _) => CopyCurrentConnection();
+        copy.Click += async (_, _) => await CopyCurrentConnectionAsync();
         var export = new ToolStripMenuItem("导出此连接...", UiIcons.Create(UiIconKind.Download, 16));
         export.Click += async (_, _) => await ExportConnectionsAsync(exportAll: false);
         var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
@@ -651,6 +654,8 @@ internal sealed partial class MainForm : Form
 
     private async Task InitializeAsync()
     {
+        if (await _configurationTransactions.RecoverPendingAsync())
+            _logger.Warning("Recovered an interrupted configuration transaction during startup.");
         _settings = await _settingsStore.LoadAsync();
         _transferRuntime.Apply(_settings);
         _transfers.ConfigureRetryPolicy(_settings.RetryCount, _settings.RetryDelaySeconds);
@@ -811,26 +816,25 @@ internal sealed partial class MainForm : Form
     private static string FormatLocalTime(DateTimeOffset? value) =>
         value is null ? "—" : value.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 
-    private void NewConnection()
+    private async Task NewConnectionAsync()
     {
         using var dialog = new ConnectionDialog(_storage);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _profiles = _profiles.Append(dialog.Profile).ToArray();
-        SaveProfilesAndRefresh();
+        await SaveProfilesAndRefreshAsync(_profiles.Append(dialog.Profile).ToArray());
     }
 
-    private void EditCurrentConnection()
+    private async Task EditCurrentConnectionAsync()
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
         using var dialog = new ConnectionDialog(_storage, profile);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _profiles = _profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray();
+        var proposed = _profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray();
+        await SaveProfilesAndRefreshAsync(proposed);
         if (_currentProfile?.Id == profile.Id) _currentProfile = dialog.Profile;
-        SaveProfilesAndRefresh();
     }
 
-    private void CopyCurrentConnection()
+    private async Task CopyCurrentConnectionAsync()
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
@@ -842,8 +846,7 @@ internal sealed partial class MainForm : Form
             LastConnectionCheckedAtUtc = null,
             LastConnectionSucceededAtUtc = null
         };
-        _profiles = _profiles.Append(copy).ToArray();
-        SaveProfilesAndRefresh();
+        await SaveProfilesAndRefreshAsync(_profiles.Append(copy).ToArray());
         var node = FindProfileNode(copy);
         if (node is not null)
         {
@@ -871,15 +874,17 @@ internal sealed partial class MainForm : Form
                 $"确定删除连接“{profile.Name}”吗？\n\n这只删除本地配置，不会删除任何远程 Bucket 或对象。",
                 "删除连接", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
-        _profiles = _profiles.Where(item => item.Id != profile.Id).ToArray();
+        var proposed = _profiles.Where(item => item.Id != profile.Id).ToArray();
+        await _profileStore.SaveAsync(proposed);
+        _profiles = proposed;
         if (_currentProfile?.Id == profile.Id) Disconnect();
-        await _profileStore.SaveAsync(_profiles);
         PopulateProfiles();
     }
 
-    private void SaveProfilesAndRefresh()
+    private async Task SaveProfilesAndRefreshAsync(IReadOnlyList<ConnectionProfile> proposed)
     {
-        _profileStore.SaveAsync(_profiles).GetAwaiter().GetResult();
+        await _profileStore.SaveAsync(proposed);
+        _profiles = proposed;
         PopulateProfiles();
     }
 
@@ -894,14 +899,15 @@ internal sealed partial class MainForm : Form
             LastConnectionCheckedAtUtc = now,
             LastConnectionSucceededAtUtc = succeeded ? now : profile.LastConnectionSucceededAtUtc
         };
-        _profiles = _profiles
+        var proposed = _profiles
             .Select(item => item.Id == updated.Id ? updated : item)
             .ToArray();
-        if (_currentProfile?.Id == updated.Id)
-            _currentProfile = updated;
         try
         {
-            await _profileStore.SaveAsync(_profiles);
+            await _profileStore.SaveAsync(proposed);
+            _profiles = proposed;
+            if (_currentProfile?.Id == updated.Id)
+                _currentProfile = updated;
         }
         catch (Exception exception)
         {
@@ -1042,26 +1048,15 @@ internal sealed partial class MainForm : Form
                 preview.ImportCdnCredentials,
                 preview.ConflictStrategy);
 
-            try
-            {
-                await _profileStore.SaveAsync(merged.Profiles);
-                await _cdnCredentialStore.SaveAsync(merged.CdnCredentials);
-                await _cdnConfigurationStore.SaveAsync(merged.CdnConfiguration);
-            }
-            catch (Exception saveException)
-            {
-                try
-                {
-                    await _profileStore.SaveAsync(previousProfiles);
-                    await _cdnCredentialStore.SaveAsync(previousCdnCredentials);
-                    await _cdnConfigurationStore.SaveAsync(previousCdnConfiguration);
-                }
-                catch (Exception rollbackException)
-                {
-                    _logger.Error("Connection and CDN import rollback failed", rollbackException);
-                }
-                throw new IOException("保存导入结果失败，已尝试恢复导入前的连接和 CDN 配置。", saveException);
-            }
+            await _configurationTransactions.SaveAsync(
+                new ConfigurationSnapshot(
+                    previousProfiles,
+                    previousCdnConfiguration,
+                    previousCdnCredentials),
+                new ConfigurationSnapshot(
+                    merged.Profiles,
+                    merged.CdnConfiguration,
+                    merged.CdnCredentials));
 
             _profiles = merged.Profiles;
             _cdnConfiguration = merged.CdnConfiguration;
