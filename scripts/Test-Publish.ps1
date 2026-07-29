@@ -32,7 +32,7 @@ function Assert-True {
     }
 }
 
-foreach ($relativePath in @("build.bat", "publish.bat", "cli.bat", "scripts\Build.ps1", "scripts\Publish.ps1", "scripts\Sign-Artifacts.ps1", "installer\S3Explorer.Installer.wixproj", "installer\Package.wxs")) {
+foreach ($relativePath in @("build.bat", "publish.bat", "cli.bat", "scripts\Build.ps1", "scripts\Publish.ps1", "scripts\Sign-Artifacts.ps1", "scripts\Verify-RemoteRelease.ps1", "installer\S3Explorer.Installer.wixproj", "installer\Package.wxs")) {
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repositoryRoot $relativePath)) -Message "Missing required script: $relativePath"
 }
 

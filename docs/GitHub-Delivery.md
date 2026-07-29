@@ -57,6 +57,8 @@ Release 工作流会：
 3. 生成带版本号的 framework-dependent、自包含、Unity Contracts SDK ZIP、MSI、`release-metrics.json` 和 `SHA256SUMS.txt`。
 4. 保存 Actions artifact，并创建同名 GitHub Release；重新运行时覆盖同名资产，不创建重复 Release。
 
+发布后的默认验收使用 `scripts/Verify-RemoteRelease.ps1`：小文件和普通 ZIP 仍会实际下载并执行 CLI/SDK 检查，大型 self-contained ZIP 与 MSI 使用 GitHub 资产 SHA-256 digest 对照 `SHA256SUMS.txt`，避免每次重复下载约 150 MiB。安装器、签名或打包链发生变化时使用 `-FullDownload`；要求检查签名时同时使用 `-RequireSigning`。
+
 也可以手工运行 **Publish GitHub Release**，但输入必须是已经存在的 tag。工作流不会替用户创建或移动 tag。
 
 ## 下载地址约定
