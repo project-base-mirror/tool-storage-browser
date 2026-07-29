@@ -38,9 +38,10 @@ internal sealed class TransferQueueControl : UserControl
     private readonly PersistentTransferQueue _queue;
     private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
     private readonly ListView _batches = CreateBatchList();
-    private readonly ListView _active = CreateTaskList();
-    private readonly ListView _completed = CreateTaskList();
-    private readonly ListView _failed = CreateTaskList();
+    private readonly ListView _all = CreateTaskList("AllTransfersList");
+    private readonly ListView _active = CreateTaskList("ActiveTransfersList");
+    private readonly ListView _completed = CreateTaskList("SuccessfulTransfersList");
+    private readonly ListView _failed = CreateTaskList("FailedTransfersList");
     private readonly ConcurrentDictionary<Guid, ProgressSample> _progress = new();
     private readonly Dictionary<Guid, TransferTaskState> _knownStates = [];
     private TransferBatchSummary[] _batchRows = [];
@@ -242,6 +243,9 @@ internal sealed class TransferQueueControl : UserControl
         toolbar.Items.Add(ActionButton("取消", UiIconKind.Delete, task => _queue.CancelAsync(task.Id)));
         toolbar.Items.Add(new ToolStripSeparator());
         toolbar.Items.Add(ActionButton("重试", UiIconKind.Refresh, task => _queue.RetryAsync(task.Id)));
+        var taskDetails = new ToolStripButton("任务详情", UiIcons.Create(UiIconKind.Info, 16));
+        taskDetails.Click += (_, _) => OpenSelectedTaskDetails();
+        toolbar.Items.Add(taskDetails);
         toolbar.Items.Add(GlobalButton("重试全部失败", UiIconKind.Refresh, () => _queue.RetryAllFailedAsync()));
         toolbar.Items.Add(GlobalButton("暂停全部", UiIconKind.Transfers, () => _queue.PauseAllAsync()));
         toolbar.Items.Add(GlobalButton("取消全部", UiIconKind.Delete, () => _queue.CancelAllAsync()));
@@ -268,11 +272,16 @@ internal sealed class TransferQueueControl : UserControl
         toolbar.Items.Add(cancelBatch);
 
         AddTab("批次", _batches);
+        AddTab("全部", _all);
         AddTab("进行中", _active);
-        AddTab("已完成", _completed);
+        AddTab("成功", _completed);
         AddTab("失败", _failed);
         _batches.RetrieveVirtualItem += RetrieveBatchItem;
         _batches.DoubleClick += (_, _) => OpenSelectedBatchDetails();
+        ConfigureTaskList(_all);
+        ConfigureTaskList(_active);
+        ConfigureTaskList(_completed);
+        ConfigureTaskList(_failed);
 
         Controls.Add(_tabs);
         Controls.Add(toolbar);
@@ -307,16 +316,18 @@ internal sealed class TransferQueueControl : UserControl
         _tabs.TabPages.Add(page);
     }
 
-    private static ListView CreateTaskList()
+    private static ListView CreateTaskList(string name)
     {
         var list = new ListView
         {
+            Name = name,
             Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
             HideSelection = false,
             MultiSelect = false,
-            GridLines = true
+            GridLines = true,
+            ShowItemToolTips = true
         };
         list.Columns.Add("文件名", 190);
         list.Columns.Add("方向", 60);
@@ -329,6 +340,37 @@ internal sealed class TransferQueueControl : UserControl
         list.Columns.Add("状态", 110);
         list.Columns.Add("错误", 260);
         return list;
+    }
+
+    private void ConfigureTaskList(ListView list)
+    {
+        list.DoubleClick += (_, _) => OpenSelectedTaskDetails();
+        list.MouseDown += (_, args) =>
+        {
+            if (args.Button != MouseButtons.Right)
+                return;
+            var item = list.GetItemAt(args.X, args.Y);
+            if (item is not null)
+                item.Selected = true;
+        };
+        list.KeyDown += (_, args) =>
+        {
+            if (args.KeyCode == Keys.Enter)
+            {
+                OpenSelectedTaskDetails();
+                args.Handled = true;
+            }
+            else if (args.Control && args.KeyCode == Keys.C)
+            {
+                CopySelectedTaskDetails();
+                args.SuppressKeyPress = true;
+            }
+        };
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("查看详细信息", UiIcons.Create(UiIconKind.Info, 16), (_, _) => OpenSelectedTaskDetails());
+        menu.Items.Add("复制详细信息", UiIcons.Create(UiIconKind.Copy, 16), (_, _) => CopySelectedTaskDetails());
+        list.ContextMenuStrip = menu;
     }
 
     private static ListView CreateBatchList()
@@ -409,7 +451,10 @@ internal sealed class TransferQueueControl : UserControl
         _batches.VirtualListSize = _batchRows.Length;
         _batches.Invalidate();
 
-        var standalone = snapshot.Tasks.Where(task => task.BatchId is null).ToArray();
+        var standalone = snapshot.Tasks
+            .Where(task => task.BatchId is null)
+            .OrderByDescending(task => task.UpdatedAt)
+            .ToArray();
         var active = standalone
             .Where(task => task.State is not (
                 TransferTaskState.Completed or
@@ -418,22 +463,23 @@ internal sealed class TransferQueueControl : UserControl
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
         var completed = standalone
-            .Where(task => task.State is TransferTaskState.Completed or TransferTaskState.Cancelled)
-            .OrderByDescending(task => task.UpdatedAt)
+            .Where(task => task.State == TransferTaskState.Completed)
             .ToArray();
         var failed = standalone
             .Where(task => task.State == TransferTaskState.Failed)
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
 
+        Populate(_all, standalone.Take(VisibleStandaloneLimit));
         Populate(_active, active.Take(VisibleStandaloneLimit));
         Populate(_completed, completed.Take(VisibleStandaloneLimit));
         Populate(_failed, failed.Take(VisibleStandaloneLimit));
 
         _tabs.TabPages[0].Text = $"批次 ({_batchRows.Length:N0})";
-        _tabs.TabPages[1].Text = TabText("进行中", active.Length);
-        _tabs.TabPages[2].Text = TabText("已完成", completed.Length);
-        _tabs.TabPages[3].Text = TabText("失败", failed.Length);
+        _tabs.TabPages[1].Text = TabText("全部", standalone.Length);
+        _tabs.TabPages[2].Text = TabText("进行中", active.Length);
+        _tabs.TabPages[3].Text = TabText("成功", completed.Length);
+        _tabs.TabPages[4].Text = TabText("失败", failed.Length);
     }
 
     private void RetrieveBatchItem(object? sender, RetrieveVirtualItemEventArgs args)
@@ -519,7 +565,11 @@ internal sealed class TransferQueueControl : UserControl
         var remaining = speed > 0 && total > transferred
             ? TimeSpan.FromSeconds((total - transferred) / speed).ToString(@"hh\:mm\:ss")
             : "—";
-        var item = new ListViewItem(name) { Tag = task };
+        var item = new ListViewItem(name)
+        {
+            Tag = task,
+            ToolTipText = task.Failure?.SafeMessage ?? string.Empty
+        };
         item.SubItems.Add(DirectionText(task.Direction));
         item.SubItems.Add(source);
         item.SubItems.Add(target);
@@ -559,6 +609,23 @@ internal sealed class TransferQueueControl : UserControl
             return;
         using var dialog = new BatchFailureDialog(_queue, batch.Id);
         dialog.ShowDialog(this);
+    }
+
+    private void OpenSelectedTaskDetails()
+    {
+        var task = SelectedTask();
+        if (task is null)
+            return;
+        using var dialog = new TransferTaskDetailsDialog(task);
+        dialog.ShowDialog(this);
+    }
+
+    private void CopySelectedTaskDetails()
+    {
+        var task = SelectedTask();
+        if (task is null)
+            return;
+        Clipboard.SetText(TransferTaskDetailsFormatter.Format(task));
     }
 
     private async Task ExecuteActionAsync(Func<Task> action)
@@ -634,7 +701,7 @@ internal sealed class TransferQueueControl : UserControl
         TransferTaskState.Paused => "已暂停",
         TransferTaskState.RetryPending => "等待重试",
         TransferTaskState.Interrupted => "已中断，可继续",
-        TransferTaskState.Completed => "已完成",
+        TransferTaskState.Completed => "成功",
         TransferTaskState.Failed => "失败",
         TransferTaskState.Cancelled => "已取消",
         TransferTaskState.CleanupPending => "等待清理",
