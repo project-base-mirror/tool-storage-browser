@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.6",
-  "version": "0.6.6",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.6",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.6/S3Explorer-v0.6.6-win-x64.zip",
-  "notes": "修复 x64 安装器默认落入 Program Files (x86)、占位许可文本和程序图标缺失；MSI 改为多文件部署，并同时提供自带运行时与依赖 .NET 10 Desktop Runtime 两种安装包。",
-  "publishedAt": "2026-07-29T18:45:00+08:00"
+  "tagName": "v0.6.7",
+  "version": "0.6.7",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.7",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.7/S3Explorer-v0.6.7-win-x64.zip",
+  "notes": "文件夹同步增加逐项选择、筛选排序、快速排除、过期保护、执行报告和失败重试；Unity 改用稳定 Contract API/Manifest Schema 兼容协商；发布支持显式对象匿名只读和 CDN 连续双 HEAD 缓存检测，不修改 Bucket Policy。",
+  "publishedAt": "2026-07-29T20:58:02+08:00"
 }

@@ -141,9 +141,11 @@ try {
     $versionJson = ($versionResult | Out-String) | ConvertFrom-Json
     Assert-True -Condition ([bool]$versionJson.ok) -Message "Downloaded CLI version smoke returned ok=false."
     Assert-True -Condition ([string]$versionJson.data.version -ceq $version) -Message "Downloaded CLI version mismatch."
-    $contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName(
-        (Join-Path $contractsDirectory "S3Explorer.Contracts.dll"))
-    Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "$version.0") -Message "Contracts assembly version mismatch."
+    $contractsDll = Join-Path $contractsDirectory "S3Explorer.Contracts.dll"
+    $contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName($contractsDll)
+    Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "1.0.0.0") -Message "Contracts assembly ABI version mismatch."
+    $contractsFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($contractsDll).FileVersion
+    Assert-True -Condition ($contractsFileVersion -ceq "$version.0") -Message "Contracts file version mismatch."
 
     $metrics = Get-Content -LiteralPath $metricsPath -Raw | ConvertFrom-Json
     Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics.json package count is invalid."

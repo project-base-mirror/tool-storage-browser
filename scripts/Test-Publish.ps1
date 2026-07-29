@@ -219,7 +219,8 @@ if (-not $SkipPackageBuild) {
 }
 
 $contractsDirectory = Join-Path $releaseRoot $contractsName
-$contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $contractsDirectory "S3Explorer.Contracts.dll"))
+$contractsDll = Join-Path $contractsDirectory "S3Explorer.Contracts.dll"
+$contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName($contractsDll)
 Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "1.0.0.0") -Message "Contracts assembly ABI version $($contractsAssembly.Version) does not match stable version 1.0.0.0."
 $contractsFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($contractsDll).FileVersion
 Assert-True -Condition ($contractsFileVersion -ceq "$version.0") -Message "Contracts file version $contractsFileVersion does not match product version $version.0."

@@ -55,7 +55,7 @@ pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
 
-检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI 和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；两个 MSI 必须使用多文件负载，且只有 self-contained MSI 包含 .NET 运行时；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，且程序集版本必须与发布版本一致。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
+检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI 和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；两个 MSI 必须使用多文件负载，且只有 self-contained MSI 包含 .NET 运行时；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，Contracts 的 ABI `AssemblyVersion` 保持 `1.0.0.0`，`FileVersion` 跟随发布版本。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
 
 ### 正式签名配置
 

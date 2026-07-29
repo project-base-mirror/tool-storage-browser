@@ -160,11 +160,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.6-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.6-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.6.zip
-    artifacts/release/S3Explorer-v0.6.6-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.6.6-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.6.7-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.7-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.7.zip
+    artifacts/release/S3Explorer-v0.6.7-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.7-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -245,11 +245,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 ## 当前限制
 
-当前仍未实现 CORS、生命周期、版本历史、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
+当前仍未实现生命周期、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
 
 CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API 或 Prefix Purge。
 
-文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
+文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。分析结果可筛选、排序、逐项勾选并从右键添加文件/扩展名/目录排除规则；分析快照会在任务参数变化或 15 分钟后失效。执行记录支持脱敏 JSON/CSV 导出和失败项重新入队。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 
 对象“目录”由 `Delimiter = "/"`、`CommonPrefixes` 和以 `/` 结尾的零字节对象模拟；S3 本身没有本地文件系统意义上的真实目录。
 
