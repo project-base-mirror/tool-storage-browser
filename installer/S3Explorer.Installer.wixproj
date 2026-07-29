@@ -3,8 +3,12 @@
     <OutputType>Package</OutputType>
     <OutputName>S3Explorer-v$(Version)-win-x64-setup</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
+    <Cultures>zh-CN</Cultures>
     <DebugType>None</DebugType>
     <DefaultCompressionLevel>high</DefaultCompressionLevel>
     <DefineConstants>$(DefineConstants);ProductVersion=$(Version);PayloadDir=$(PayloadDir)</DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.0" />
+  </ItemGroup>
 </Project>

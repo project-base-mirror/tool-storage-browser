@@ -100,6 +100,16 @@ $guiFile = Get-MsiQueryValue -Query "SELECT ``FileName`` FROM ``File`` WHERE ``F
 $cliFile = Get-MsiQueryValue -Query "SELECT ``FileName`` FROM ``File`` WHERE ``File``='S3ExplorerCliExe'"
 Assert-True -Condition ($guiFile -match '(?i)S3Explorer\.exe$') -Message "MSI does not contain S3Explorer.exe."
 Assert-True -Condition ($cliFile -match '(?i)s3explorer-cli\.exe$') -Message "MSI does not contain s3explorer-cli.exe."
+$msiLogging = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MsiLogging'"
+$applicationFolder = Get-MsiQueryValue -Query "SELECT ``DefaultDir`` FROM ``Directory`` WHERE ``Directory``='APPLICATIONFOLDER'"
+$installDialog = Get-MsiQueryValue -Query "SELECT ``Dialog`` FROM ``Dialog`` WHERE ``Dialog``='InstallDirDlg'"
+$desktopFeature = Get-MsiQueryValue -Query "SELECT ``Feature`` FROM ``Feature`` WHERE ``Feature``='DesktopShortcutFeature'"
+$desktopShortcut = Get-MsiQueryValue -Query "SELECT ``Shortcut`` FROM ``Shortcut`` WHERE ``Shortcut``='DesktopShortcut'"
+Assert-True -Condition ($msiLogging -ceq "voicewarmup") -Message "MSI automatic logging is not enabled."
+Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($applicationFolder)) -Message "MSI does not expose an application install directory."
+Assert-True -Condition ($installDialog -ceq "InstallDirDlg") -Message "MSI does not contain the install-directory dialog."
+Assert-True -Condition ($desktopFeature -ceq "DesktopShortcutFeature") -Message "MSI does not expose the optional desktop shortcut feature."
+Assert-True -Condition ($desktopShortcut -ceq "DesktopShortcut") -Message "MSI does not contain the desktop shortcut."
 
 if (-not $SkipPackageBuild) {
     $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)
