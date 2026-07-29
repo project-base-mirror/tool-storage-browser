@@ -12,11 +12,12 @@ public sealed class FolderSyncDialogLayoutTests
         RunSta(() =>
         {
             using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            var queue = new PersistentTransferQueue(null!, null!);
             using var dialog = new FolderSyncDialog(
                 null!,
                 null!,
                 null!,
-                null!,
+                queue,
                 new AppSettings());
             dialog.Font = largerFont;
             dialog.Size = dialog.MinimumSize;
@@ -45,6 +46,8 @@ public sealed class FolderSyncDialogLayoutTests
             Assert.Contains(results.Columns.Cast<ColumnHeader>(), column => column.Text == "扩展名");
             Assert.NotNull(results.ContextMenuStrip);
             Assert.Equal(3, results.ContextMenuStrip!.Items.Count);
+            var actions = dialog.Controls.OfType<ToolStrip>().Single();
+            Assert.Contains(actions.Items.Cast<ToolStripItem>(), item => item.Name == "SyncExecutionReport");
         });
     }
 

@@ -65,6 +65,7 @@ internal sealed class FolderSyncDialog : Form
     private readonly ToolStripButton _add = new("添加任务", UiIcons.Create(UiIconKind.NewConnection, 18));
     private readonly ToolStripButton _edit = new("编辑任务", UiIcons.Create(UiIconKind.Settings, 18)) { Enabled = false };
     private readonly ToolStripButton _delete = new("删除任务", UiIcons.Create(UiIconKind.Delete, 18)) { Enabled = false };
+    private readonly ToolStripButton _execution = new("执行结果", UiIcons.Create(UiIconKind.Info, 18)) { Name = "SyncExecutionReport", Enabled = false };
     private readonly ToolStripDropDownButton _selectionActions = new("选择项目", UiIcons.Create(UiIconKind.Properties, 18)) { Name = "SyncSelectionActions", Enabled = false };
     private readonly ToolStripComboBox _filter = new() { Name = "SyncResultFilter", DropDownStyle = ComboBoxStyle.DropDownList, Alignment = ToolStripItemAlignment.Right };
     private readonly ToolStripLabel _summary = new("尚未分析") { Alignment = ToolStripItemAlignment.Right };
@@ -88,10 +89,12 @@ internal sealed class FolderSyncDialog : Form
     private List<FolderSyncJob> _jobs = [];
     private FolderSyncPlan? _plan;
     private FolderSyncPlanSelection? _selection;
+    private Guid? _latestExecutionId;
     private CancellationTokenSource? _operation;
     private int _sortColumn;
     private bool _sortAscending = true;
     private bool _populatingResults;
+    private bool _updatingRunHistory;
 
     public bool QueuedTransfers { get; private set; }
 
@@ -127,6 +130,8 @@ internal sealed class FolderSyncDialog : Form
         WireEvents();
         Shown += async (_, _) => await InitializeAsync();
         FormClosing += (_, _) => _operation?.Cancel();
+        FormClosed += (_, _) => _transferQueue.Changed -= TransferQueueChanged;
+        _transferQueue.Changed += TransferQueueChanged;
     }
 
     private void BuildLayout()
@@ -240,7 +245,7 @@ internal sealed class FolderSyncDialog : Form
             new ToolStripSeparator(),
             _selectionActions,
             new ToolStripSeparator(),
-            _add, _edit, _delete,
+            _add, _edit, _delete, _execution,
             new ToolStripSeparator(),
             _summary,
             new ToolStripLabel("筛选：") { Alignment = ToolStripItemAlignment.Right },
@@ -275,6 +280,7 @@ internal sealed class FolderSyncDialog : Form
         _delete.Click += async (_, _) => await DeleteJobAsync();
         _analyze.Click += async (_, _) => await AnalyzeAsync();
         _synchronize.Click += async (_, _) => await QueueSynchronizationAsync();
+        _execution.Click += (_, _) => ShowExecutionReport();
         _stop.Click += (_, _) => _operation?.Cancel();
     }
 
@@ -469,6 +475,10 @@ internal sealed class FolderSyncDialog : Form
         _selection = null;
         var job = CurrentJob();
         var hasJob = job is not null;
+        _latestExecutionId = job is null
+            ? null
+            : FolderSyncReportProjector.FindLatestExecutionId(job.Id, _transferQueue.Snapshot.Batches);
+        _execution.Enabled = _operation is null && _latestExecutionId is not null;
         _edit.Enabled = _delete.Enabled = _analyze.Enabled = hasJob;
         _synchronize.Enabled = false;
         _results.Items.Clear();
@@ -636,6 +646,7 @@ internal sealed class FolderSyncDialog : Form
 
         await RunOperationAsync("正在创建同步批次...", async token =>
         {
+            var executionId = Guid.NewGuid();
             var groups = selectedItems.GroupBy(item => ToTransferDirection(item.Action));
             foreach (var group in groups)
             {
@@ -646,7 +657,9 @@ internal sealed class FolderSyncDialog : Form
                     Name = $"同步 {job.Name} - {DirectionText(group.Key)}",
                     Bucket = job.Bucket,
                     RootPath = job.LocalDirectory,
-                    Direction = group.Key
+                    Direction = group.Key,
+                    FolderSyncJobId = job.Id,
+                    FolderSyncExecutionId = executionId
                 }, token);
                 var tasks = group.Select(item => CreateTransferTask(job, profile, item, group.Key)).ToArray();
                 foreach (var chunk in tasks.Chunk(256))
@@ -654,6 +667,8 @@ internal sealed class FolderSyncDialog : Form
                 await _transferQueue.CompleteBatchDiscoveryAsync(batch.Id, cancellationToken: token);
             }
             QueuedTransfers = true;
+            _latestExecutionId = executionId;
+            _execution.Enabled = true;
             _synchronize.Enabled = false;
             _selectionActions.Enabled = false;
             _summary.Text = $"已加入队列 {selectedItems.Count:N0} 项";
@@ -726,10 +741,60 @@ internal sealed class FolderSyncDialog : Form
         _add.Enabled = !busy;
         _edit.Enabled = _delete.Enabled = !busy && CurrentJob() is not null;
         _selectionActions.Enabled = !busy && _plan is not null;
+        _execution.Enabled = !busy && _latestExecutionId is not null;
         _stop.Enabled = busy;
         _jobList.Enabled = !busy;
         _summary.Text = status;
         UseWaitCursor = busy;
+    }
+
+    private void ShowExecutionReport()
+    {
+        var job = CurrentJob();
+        if (job is null || _latestExecutionId is not Guid executionId) return;
+        using var dialog = new FolderSyncExecutionDialog(_transferQueue, job, executionId);
+        dialog.ShowDialog(this);
+    }
+
+    private void TransferQueueChanged(object? sender, TransferQueueChangedEventArgs args)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        BeginInvoke(new Action(async () => await RefreshExecutionStateAsync()));
+    }
+
+    private async Task RefreshExecutionStateAsync()
+    {
+        if (_updatingRunHistory) return;
+        var job = CurrentJob();
+        if (job is null) return;
+        _latestExecutionId = FolderSyncReportProjector.FindLatestExecutionId(job.Id, _transferQueue.Snapshot.Batches);
+        _execution.Enabled = _operation is null && _latestExecutionId is not null;
+        if (_latestExecutionId is not Guid executionId) return;
+
+        FolderSyncExecutionReport report;
+        try
+        {
+            report = FolderSyncReportProjector.Project(job, executionId, _transferQueue.Snapshot);
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        if (!report.IsFinished || report.CompletedAt is not DateTimeOffset completedAt || job.LastRunAt >= completedAt)
+            return;
+
+        _updatingRunHistory = true;
+        try
+        {
+            var index = _jobs.FindIndex(item => item.Id == job.Id);
+            if (index < 0) return;
+            _jobs[index] = job with { LastRunAt = completedAt };
+            await _jobStore.SaveAsync(_jobs);
+        }
+        finally
+        {
+            _updatingRunHistory = false;
+        }
     }
 
     private FolderSyncJob? CurrentJob()
