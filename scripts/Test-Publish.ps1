@@ -220,7 +220,9 @@ if (-not $SkipPackageBuild) {
 
 $contractsDirectory = Join-Path $releaseRoot $contractsName
 $contractsAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $contractsDirectory "S3Explorer.Contracts.dll"))
-Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "$version.0") -Message "Contracts assembly version $($contractsAssembly.Version) does not match $version.0."
+Assert-True -Condition ($contractsAssembly.Version.ToString() -ceq "1.0.0.0") -Message "Contracts assembly ABI version $($contractsAssembly.Version) does not match stable version 1.0.0.0."
+$contractsFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($contractsDll).FileVersion
+Assert-True -Condition ($contractsFileVersion -ceq "$version.0") -Message "Contracts file version $contractsFileVersion does not match product version $version.0."
 foreach ($contractsFile in @("S3Explorer.Contracts.dll", "S3Explorer.Contracts.xml", "README.md")) {
     $item = Get-Item -LiteralPath (Join-Path $contractsDirectory $contractsFile)
     Assert-True -Condition ($item.Length -gt 0) -Message "Unity contracts package file is empty: $contractsFile"

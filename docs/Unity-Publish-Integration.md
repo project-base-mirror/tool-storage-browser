@@ -14,7 +14,7 @@ S3Explorer.Contracts-vX.Y.Z.zip
 
 ## 导入 Unity
 
-1. 下载与所用 `s3explorer-cli.exe` 版本一致的 Contracts ZIP。
+1. 首次接入时下载 Contracts ZIP；以后只在 Contract API 或 Manifest Schema 超出当前插件支持范围时更新 DLL，产品补丁版本变化不要求替换。
 2. 将 `S3Explorer.Contracts.dll` 复制到 Unity 项目的 `Assets/Plugins/S3Explorer/`。
 3. 可将 XML 文件放在 DLL 旁边，供 IDE 显示类型说明；运行时不依赖该文件。
 4. Unity 2021.3 项目的 API Compatibility Level 使用 `.NET Standard 2.1`。
@@ -31,4 +31,6 @@ s3explorer-cli publish --profile minio-dev --source D:\Build\Windows --bucket ga
 
 Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥仍由 S3 Explorer 在 Windows 用户配置目录中保存并通过 DPAPI 保护，不应写入 Unity 工程、命令行或日志。
 
-Contracts DLL 和 CLI 必须使用同一版本。跨版本 DTO 会尽量保持兼容，但发布 Manifest 的 `SchemaVersion` 才是数据格式兼容性的最终依据。
+Contracts DLL 和 CLI 不再要求产品版本完全一致。Unity 插件应先运行 `s3explorer-cli version --output json`，读取 `contractApiVersion`、`minimumSupportedContractApiVersion`、`maximumSupportedContractApiVersion` 以及 Manifest Schema 范围；只要插件使用的 Contract API 与 Manifest Schema 都落在 CLI 返回范围内即可继续。`version` 字段仅用于诊断和展示，不能作为拒绝运行的依据。
+
+当前 Contract API 和 Manifest Schema 都是 `1`。从 v0.6.7 开始，`S3Explorer.Contracts.dll` 的程序集 ABI 版本固定为 `1.0.0.0`，文件版本仍跟随产品版本；只有破坏兼容性的契约升级才会改变 ABI 主版本。旧插件需要一次性改为上述范围判断，此后普通补丁升级不再要求同步 DLL。

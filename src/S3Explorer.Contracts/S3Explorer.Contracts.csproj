@@ -3,6 +3,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>S3Explorer.Contracts</AssemblyName>
     <RootNamespace>S3Explorer.Contracts</RootNamespace>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>

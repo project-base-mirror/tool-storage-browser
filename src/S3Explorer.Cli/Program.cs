@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using S3Explorer.Contracts;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
 using S3Explorer.Infrastructure.S3;
@@ -63,7 +64,7 @@ internal static class Program
             if (parsed.Positionals[0] == "version")
             {
                 parsed.EnsureOnly(GlobalOptions);
-                WriteSuccess(json, new { version = Version }, $"s3explorer-cli {Version}");
+                WriteSuccess(json, CreateCompatibilityInfo(), $"s3explorer-cli {Version} · Contract API {ContractCompatibility.CurrentApiVersion} · Manifest Schema {PublishManifest.CurrentSchemaVersion}");
                 return 0;
             }
 
@@ -920,6 +921,11 @@ internal static class Program
     private static string Version => Assembly.GetExecutingAssembly().GetName().Version is { } value
         ? $"{value.Major}.{value.Minor}.{value.Build}"
         : "unknown";
+
+    internal static CliCompatibilityInfo CreateCompatibilityInfo() => new()
+    {
+        Version = Version
+    };
 
     private static void WriteSuccess(bool json, object data, string text)
     {

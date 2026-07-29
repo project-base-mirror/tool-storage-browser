@@ -3,6 +3,46 @@ using System.Collections.Generic;
 
 namespace S3Explorer.Contracts;
 
+/// <summary>
+/// Stable compatibility boundary between automation clients and the S3 Explorer CLI.
+/// Product patch versions may change without changing this contract version.
+/// </summary>
+public static class ContractCompatibility
+{
+    public const int CurrentApiVersion = 1;
+    public const int MinimumSupportedApiVersion = 1;
+    public const int MaximumSupportedApiVersion = 1;
+    public const int MinimumSupportedManifestSchemaVersion = 1;
+    public const int MaximumSupportedManifestSchemaVersion = PublishManifest.CurrentSchemaVersion;
+
+    public static bool SupportsApiVersion(int apiVersion) =>
+        apiVersion is >= MinimumSupportedApiVersion and <= MaximumSupportedApiVersion;
+
+    public static bool SupportsManifestSchemaVersion(int schemaVersion) =>
+        schemaVersion is >= MinimumSupportedManifestSchemaVersion and <= MaximumSupportedManifestSchemaVersion;
+}
+
+/// <summary>
+/// Version information returned by <c>s3explorer-cli version --output json</c>.
+/// Consumers should check the contract and schema ranges instead of requiring an exact product version.
+/// </summary>
+public sealed class CliCompatibilityInfo
+{
+    public string Version { get; set; } = string.Empty;
+    public int ContractApiVersion { get; set; } = ContractCompatibility.CurrentApiVersion;
+    public int MinimumSupportedContractApiVersion { get; set; } = ContractCompatibility.MinimumSupportedApiVersion;
+    public int MaximumSupportedContractApiVersion { get; set; } = ContractCompatibility.MaximumSupportedApiVersion;
+    public int ManifestSchemaVersion { get; set; } = PublishManifest.CurrentSchemaVersion;
+    public int MinimumSupportedManifestSchemaVersion { get; set; } = ContractCompatibility.MinimumSupportedManifestSchemaVersion;
+    public int MaximumSupportedManifestSchemaVersion { get; set; } = ContractCompatibility.MaximumSupportedManifestSchemaVersion;
+
+    public bool SupportsClient(int clientContractApiVersion, int clientManifestSchemaVersion) =>
+        clientContractApiVersion >= MinimumSupportedContractApiVersion &&
+        clientContractApiVersion <= MaximumSupportedContractApiVersion &&
+        clientManifestSchemaVersion >= MinimumSupportedManifestSchemaVersion &&
+        clientManifestSchemaVersion <= MaximumSupportedManifestSchemaVersion;
+}
+
 /// <summary>Describes why a local publish file differs from its remote manifest entry.</summary>
 public enum PublishChangeKind
 {
