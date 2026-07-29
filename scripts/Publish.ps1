@@ -23,6 +23,7 @@ $signingScript = Join-Path $PSScriptRoot "Sign-Artifacts.ps1"
 $propsPath = Join-Path $repositoryRoot "Directory.Build.props"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $outputRoot = Join-Path $artifactsRoot "release"
+$installerPayloadRoot = Join-Path $artifactsRoot "installer-payload"
 [xml]$props = Get-Content -LiteralPath $propsPath -Raw
 $version = [string]$props.Project.PropertyGroup.Version
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
@@ -40,6 +41,12 @@ $contractsDirectory = Join-Path $outputRoot $contractsName
 $contractsZip = Join-Path $outputRoot "$contractsName.zip"
 $installerName = "S3Explorer-$releaseTag-$Runtime-setup.msi"
 $installerPath = Join-Path $outputRoot $installerName
+$frameworkInstallerName = "S3Explorer-$releaseTag-$Runtime-framework-dependent-setup.msi"
+$frameworkInstallerPath = Join-Path $outputRoot $frameworkInstallerName
+$selfContainedInstallerPayload = Join-Path $installerPayloadRoot "$Runtime-self-contained"
+$frameworkInstallerPayload = Join-Path $installerPayloadRoot "$Runtime-framework-dependent"
+$selfContainedInstallerIntermediate = Join-Path (Split-Path -Parent $installerProject) "obj\release-self-contained\"
+$frameworkInstallerIntermediate = Join-Path (Split-Path -Parent $installerProject) "obj\release-framework-dependent\"
 $metricsPath = Join-Path $outputRoot "release-metrics.json"
 
 function Invoke-DotNet {
@@ -102,7 +109,8 @@ function New-ArtifactMetric {
 function Publish-Package {
     param(
         [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)][bool]$SelfContained
+        [Parameter(Mandatory)][bool]$SelfContained,
+        [bool]$SingleFile = $true
     )
 
     if (Test-Path -LiteralPath $Destination) {
@@ -110,6 +118,7 @@ function Publish-Package {
     }
 
     $selfContainedValue = $SelfContained.ToString().ToLowerInvariant()
+    $singleFileValue = $SingleFile.ToString().ToLowerInvariant()
     Invoke-DotNet -Arguments @(
         "publish",
         $appProject,
@@ -118,9 +127,9 @@ function Publish-Package {
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
-        "-p:PublishSingleFile=true",
-        "-p:IncludeNativeLibrariesForSelfExtract=true",
-        "-p:EnableCompressionInSingleFile=$selfContainedValue",
+        "-p:PublishSingleFile=$singleFileValue",
+        "-p:IncludeNativeLibrariesForSelfExtract=$singleFileValue",
+        "-p:EnableCompressionInSingleFile=$($SelfContained -and $SingleFile)",
         "-p:PublishReadyToRun=false",
         "-p:GenerateDocumentationFile=false",
         "-p:DebugType=None",
@@ -134,9 +143,9 @@ function Publish-Package {
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
-        "-p:PublishSingleFile=true",
-        "-p:IncludeNativeLibrariesForSelfExtract=true",
-        "-p:EnableCompressionInSingleFile=$selfContainedValue",
+        "-p:PublishSingleFile=$singleFileValue",
+        "-p:IncludeNativeLibrariesForSelfExtract=$singleFileValue",
+        "-p:EnableCompressionInSingleFile=$($SelfContained -and $SingleFile)",
         "-p:PublishReadyToRun=false",
         "-p:GenerateDocumentationFile=false",
         "-p:DebugType=None",
@@ -224,8 +233,12 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 if (Test-Path -LiteralPath $outputRoot) {
     Remove-Item -LiteralPath $outputRoot -Recurse -Force
 }
+if (Test-Path -LiteralPath $installerPayloadRoot) {
+    Remove-Item -LiteralPath $installerPayloadRoot -Recurse -Force
+}
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $installerPayloadRoot -Force | Out-Null
 
 if (-not $SkipValidation) {
     Invoke-DotNet -Arguments @("restore", $solution)
@@ -235,6 +248,8 @@ if (-not $SkipValidation) {
 
 Publish-Package -Destination $frameworkDirectory -SelfContained $false
 Publish-Package -Destination $selfContainedDirectory -SelfContained $true
+Publish-Package -Destination $frameworkInstallerPayload -SelfContained $false -SingleFile $false
+Publish-Package -Destination $selfContainedInstallerPayload -SelfContained $true -SingleFile $false
 Invoke-DotNet -Arguments @("build", $contractsProject, "-c", $Configuration)
 
 $contractsOutput = Join-Path $repositoryRoot "src\S3Explorer.Contracts\bin\$Configuration\netstandard2.1"
@@ -254,7 +269,11 @@ Invoke-CodeSigning -ArtifactPaths @(
     (Join-Path $frameworkDirectory "S3Explorer.exe"),
     (Join-Path $frameworkDirectory "s3explorer-cli.exe"),
     (Join-Path $selfContainedDirectory "S3Explorer.exe"),
-    (Join-Path $selfContainedDirectory "s3explorer-cli.exe")
+    (Join-Path $selfContainedDirectory "s3explorer-cli.exe"),
+    (Join-Path $frameworkInstallerPayload "S3Explorer.exe"),
+    (Join-Path $frameworkInstallerPayload "s3explorer-cli.exe"),
+    (Join-Path $selfContainedInstallerPayload "S3Explorer.exe"),
+    (Join-Path $selfContainedInstallerPayload "s3explorer-cli.exe")
 )
 New-ZipArchive -SourceDirectory $frameworkDirectory -DestinationPath $frameworkZip
 New-ZipArchive -SourceDirectory $selfContainedDirectory -DestinationPath $selfContainedZip
@@ -263,13 +282,29 @@ Invoke-DotNet -Arguments @(
     "build",
     $installerProject,
     "-c", $Configuration,
-    "-p:PayloadDir=$selfContainedDirectory",
+    "-p:PayloadDir=$selfContainedInstallerPayload",
+    "-p:InstallerOutputName=$([IO.Path]::GetFileNameWithoutExtension($installerName))",
+    "-p:InstallerFlavor=self-contained",
+    "-p:IntermediateOutputPath=$selfContainedInstallerIntermediate",
     "-p:OutputPath=$outputRoot"
 )
 if (-not (Test-Path -LiteralPath $installerPath)) {
     throw "Installer build did not produce $installerName."
 }
-Invoke-CodeSigning -ArtifactPaths @($installerPath)
+Invoke-DotNet -Arguments @(
+    "build",
+    $installerProject,
+    "-c", $Configuration,
+    "-p:PayloadDir=$frameworkInstallerPayload",
+    "-p:InstallerOutputName=$([IO.Path]::GetFileNameWithoutExtension($frameworkInstallerName))",
+    "-p:InstallerFlavor=framework-dependent",
+    "-p:IntermediateOutputPath=$frameworkInstallerIntermediate",
+    "-p:OutputPath=$outputRoot"
+)
+if (-not (Test-Path -LiteralPath $frameworkInstallerPath)) {
+    throw "Installer build did not produce $frameworkInstallerName."
+}
+Invoke-CodeSigning -ArtifactPaths @($installerPath, $frameworkInstallerPath)
 
 $runtimeMetric = $null
 if ($MeasureRuntime) {
@@ -283,6 +318,7 @@ $metrics = [ordered]@{
     dotnetSdkVersion = (& dotnet --version).Trim()
     trimmingEnabled = $false
     singleFileEnabled = $true
+    installerSingleFileEnabled = $false
     signing = [ordered]@{
         configured = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("S3EXPLORER_SIGNING_PFX_BASE64"))
         required = [bool]$RequireSigning
@@ -293,6 +329,21 @@ $metrics = [ordered]@{
     )
     contracts = New-ArtifactMetric -Name "$contractsName.zip" -Path $contractsZip
     installer = New-ArtifactMetric -Name $installerName -Path $installerPath
+    frameworkInstaller = New-ArtifactMetric -Name $frameworkInstallerName -Path $frameworkInstallerPath
+    installerPayloads = @(
+        [ordered]@{
+            name = "self-contained"
+            selfContained = $true
+            fileCount = @(Get-ChildItem -LiteralPath $selfContainedInstallerPayload -File -Recurse).Count
+            directoryBytes = Get-DirectorySize -Path $selfContainedInstallerPayload
+        },
+        [ordered]@{
+            name = "framework-dependent"
+            selfContained = $false
+            fileCount = @(Get-ChildItem -LiteralPath $frameworkInstallerPayload -File -Recurse).Count
+            directoryBytes = Get-DirectorySize -Path $frameworkInstallerPayload
+        }
+    )
     runtimeMeasurement = $runtimeMetric
 }
 
@@ -304,6 +355,7 @@ Write-Host "Release artifacts: $resolvedOutputRoot"
 $metrics.packages | Format-Table name, directoryMiB, zipMiB, zipSha256 -AutoSize
 $metrics.contracts | Format-Table name, sizeMiB, sha256 -AutoSize
 $metrics.installer | Format-Table name, sizeMiB, sha256 -AutoSize
+$metrics.frameworkInstaller | Format-Table name, sizeMiB, sha256 -AutoSize
 if ($null -ne $runtimeMetric) {
     $runtimeMetric | Format-List
 }

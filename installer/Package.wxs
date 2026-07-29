@@ -17,6 +17,7 @@
     <Property Id="MsiLogging" Value="voicewarmup" />
     <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER" />
     <Property Id="INSTALLDESKTOPSHORTCUT" Value="1" />
+    <Property Id="INSTALLERFLAVOR" Value="$(InstallerFlavor)" />
     <Property Id="ARPPRODUCTICON" Value="S3ExplorerIcon.exe" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="如果安装失败，可在系统临时目录中查找最新的 MSI*.log 安装日志。" />
 
@@ -127,6 +128,10 @@
     <Feature Id="MainFeature" Title="S3 Explorer 主程序" Level="1" AllowAbsent="no">
       <ComponentRef Id="ApplicationFiles" />
       <ComponentRef Id="CliFiles" />
+      <Files Include="$(PayloadDir)\**" Directory="APPLICATIONFOLDER">
+        <Exclude Files="$(PayloadDir)\S3Explorer.exe" />
+        <Exclude Files="$(PayloadDir)\s3explorer-cli.exe" />
+      </Files>
     </Feature>
     <Feature Id="DesktopShortcutFeature" Title="桌面快捷方式" Level="1" AllowAbsent="no">
       <ComponentRef Id="DesktopShortcutComponent" />

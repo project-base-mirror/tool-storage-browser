@@ -15,6 +15,7 @@ $frameworkName = "S3Explorer-v$version-win-x64"
 $selfContainedName = "S3Explorer-v$version-win-x64-self-contained"
 $contractsName = "S3Explorer.Contracts-v$version"
 $installerName = "S3Explorer-v$version-win-x64-setup.msi"
+$frameworkInstallerName = "S3Explorer-v$version-win-x64-framework-dependent-setup.msi"
 
 & (Join-Path $PSScriptRoot "Test-UpdateManifest.ps1")
 if (-not $?) {
@@ -77,6 +78,7 @@ $expectedPaths = @(
     $contractsName,
     "$contractsName.zip",
     $installerName,
+    $frameworkInstallerName,
     "release-metrics.json"
 )
 
@@ -96,6 +98,32 @@ function Get-MsiQueryValue {
     $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
     if ($null -eq $record) { return $null }
     return $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, 1)
+}
+
+function Get-MsiQueryRowCount {
+    param([Parameter(Mandatory)][string]$Query)
+
+    $view = $msiDatabase.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $msiDatabase, @($Query))
+    $null = $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+    $count = 0
+    while ($null -ne $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)) {
+        $count++
+    }
+    return $count
+}
+
+function Get-MsiQueryValues {
+    param([Parameter(Mandatory)][string]$Query)
+
+    $view = $msiDatabase.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $msiDatabase, @($Query))
+    $null = $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+    $values = [System.Collections.Generic.List[string]]::new()
+    while ($true) {
+        $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+        if ($null -eq $record) { break }
+        $values.Add([string]$record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, 1))
+    }
+    return $values.ToArray()
 }
 
 $msiVersion = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'"
@@ -119,6 +147,11 @@ $arpIcon = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``
 $installerIcon = Get-MsiQueryValue -Query "SELECT ``Name`` FROM ``Icon`` WHERE ``Name``='S3ExplorerIcon.exe'"
 $startMenuIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='StartMenuShortcut'"
 $desktopIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='DesktopShortcut'"
+$installerFlavor = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='INSTALLERFLAVOR'"
+$selfContainedFileCount = Get-MsiQueryRowCount -Query "SELECT ``File`` FROM ``File``"
+$selfContainedFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``File``")
+$selfContainedManagedAssembly = @($selfContainedFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
+$selfContainedRuntime = @($selfContainedFileNames | Where-Object { $_ -match '(?i)coreclr\.dll$' })
 Assert-True -Condition ($msiLogging -ceq "voicewarmup") -Message "MSI automatic logging is not enabled."
 Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($applicationFolder)) -Message "MSI does not expose an application install directory."
 Assert-True -Condition ($applicationFolderParent -ceq "ProgramFiles64Folder") -Message "MSI application directory is not rooted under ProgramFiles64Folder."
@@ -132,6 +165,27 @@ Assert-True -Condition ($arpIcon -ceq "S3ExplorerIcon.exe") -Message "MSI does n
 Assert-True -Condition ($installerIcon -ceq "S3ExplorerIcon.exe") -Message "MSI application icon resource is missing."
 Assert-True -Condition ($startMenuIcon -ceq "S3ExplorerIcon.exe") -Message "Start menu shortcut does not use the application icon."
 Assert-True -Condition ($desktopIcon -ceq "S3ExplorerIcon.exe") -Message "Desktop shortcut does not use the application icon."
+Assert-True -Condition ($installerFlavor -ceq "self-contained") -Message "Primary MSI is not marked self-contained."
+Assert-True -Condition ($selfContainedFileCount -gt 2) -Message "Primary MSI still contains only bundled single-file executables."
+Assert-True -Condition ($selfContainedManagedAssembly.Count -gt 0) -Message "Primary MSI does not contain the unpacked application assemblies."
+Assert-True -Condition ($selfContainedRuntime.Count -gt 0) -Message "Primary MSI does not contain the self-contained .NET runtime."
+
+$frameworkMsiPath = (Resolve-Path -LiteralPath (Join-Path $releaseRoot $frameworkInstallerName)).Path
+$msiDatabase = $windowsInstaller.GetType().InvokeMember(
+    "OpenDatabase", "InvokeMethod", $null, $windowsInstaller, @($frameworkMsiPath, 0))
+$frameworkVersion = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'"
+$frameworkFlavor = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='INSTALLERFLAVOR'"
+$frameworkFileCount = Get-MsiQueryRowCount -Query "SELECT ``File`` FROM ``File``"
+$frameworkFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``File``")
+$frameworkManagedAssembly = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
+$frameworkRuntime = @($frameworkFileNames | Where-Object { $_ -match '(?i)coreclr\.dll$' })
+$frameworkRuntimeConfig = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.runtimeconfig\.json$' })
+Assert-True -Condition ($frameworkVersion -ceq $version) -Message "Framework-dependent MSI ProductVersion $frameworkVersion does not match $version."
+Assert-True -Condition ($frameworkFlavor -ceq "framework-dependent") -Message "Additional MSI is not marked framework-dependent."
+Assert-True -Condition ($frameworkFileCount -gt 2) -Message "Framework-dependent MSI still contains only bundled single-file executables."
+Assert-True -Condition ($frameworkManagedAssembly.Count -gt 0) -Message "Framework-dependent MSI does not contain the unpacked application assemblies."
+Assert-True -Condition ($frameworkRuntimeConfig.Count -gt 0) -Message "Framework-dependent MSI does not contain the runtime configuration."
+Assert-True -Condition ($frameworkRuntime.Count -eq 0) -Message "Framework-dependent MSI unexpectedly embeds the .NET runtime."
 
 if (-not $SkipPackageBuild) {
     $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)
@@ -175,10 +229,15 @@ foreach ($contractsFile in @("S3Explorer.Contracts.dll", "S3Explorer.Contracts.x
 $metrics = Get-Content -LiteralPath (Join-Path $releaseRoot "release-metrics.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($metrics.packages.Count -eq 2) -Message "release-metrics.json must contain exactly two packages."
 Assert-True -Condition ([bool]$metrics.singleFileEnabled) -Message "release-metrics.json must report single-file publishing."
+Assert-True -Condition (-not [bool]$metrics.installerSingleFileEnabled) -Message "release-metrics.json must report multi-file installer publishing."
 Assert-True -Condition ($metrics.packages.name -contains $frameworkName) -Message "Framework-dependent package metric is missing."
 Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Message "Self-contained package metric is missing."
 Assert-True -Condition ($metrics.contracts.name -ceq "$contractsName.zip") -Message "Unity contracts package metric is missing."
 Assert-True -Condition ($metrics.installer.name -ceq $installerName) -Message "Installer metric is missing."
+Assert-True -Condition ($metrics.frameworkInstaller.name -ceq $frameworkInstallerName) -Message "Framework-dependent installer metric is missing."
+Assert-True -Condition ($metrics.installerPayloads.Count -eq 2) -Message "Installer payload metrics must contain both deployment modes."
+Assert-True -Condition (($metrics.installerPayloads | Where-Object name -ceq 'self-contained').fileCount -gt 2) -Message "Self-contained installer payload metric is invalid."
+Assert-True -Condition (($metrics.installerPayloads | Where-Object name -ceq 'framework-dependent').fileCount -gt 2) -Message "Framework-dependent installer payload metric is invalid."
 
 Write-Host "Publish script tests passed."
 Write-Host "Verified release directory: $((Resolve-Path -LiteralPath $releaseRoot).Path)"
