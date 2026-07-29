@@ -9,6 +9,7 @@
 - `Directory.Build.props`、`docs/versions/vX.Y.Z.md`、`docs/site/update.json`、Pages 下载链接和 Release 资产名必须使用同一个版本。
 - 已推送的正式 tag 不移动、不覆盖；发布后发现问题时提交修复并发布下一个补丁版本。
 - GitHub Actions 是 Release 资产与 Pages 部署的唯一正式生成入口，本地包只用于发布前验证。
+- PR 和 `main` 推送不自动运行完整测试、Release 构建或 CLI 进程测试；频繁开发阶段先在本地获得快速反馈，正式 tag 发布工作流再复验发布树。
 
 ## 1. 发布前确认
 
@@ -48,12 +49,19 @@ pwsh .\scripts\Test-UpdateManifest.ps1
 
 ```powershell
 dotnet test .\S3Explorer.sln -c Release --no-restore
+pwsh .\scripts\Test-LocalMinio.ps1
 dotnet build .\S3Explorer.sln -c Release --no-restore
+& .\src\S3Explorer.Cli\bin\Release\net10.0-windows\win-x64\s3explorer-cli.exe version --output json
 pwsh .\scripts\AppAutomation.ps1 Smoke
+pwsh .\scripts\AppAutomation.ps1 CorruptSmoke
 pwsh .\scripts\Publish.ps1 -NoOpen
 pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
+
+`Test-LocalMinio.ps1` 是上传下载等真实 S3 行为的本地门禁。默认启动名称唯一、版本固定的隔离 MinIO 容器，测试结束后只删除自己创建的容器；也可同时传入 `-Endpoint`、`-AccessKey`、`-SecretKey` 使用已有测试实例。缺少 Docker 或连接参数时必须让门禁失败，不能把“未执行”报告成通过。普通 `dotnet test` 中未配置的集成用例显示为 `Skipped`。
+
+`CorruptSmoke` 会在隔离数据目录中预置损坏的连接、设置、传输和 CDN 存储，要求真实应用进程仍能打开主窗口并为每个损坏文件保留证据。独立 CLI 命令必须返回退出码 0、JSON `ok=true` 且版本与 `Directory.Build.props` 一致。
 
 检查 `artifacts/release/` 中的 framework-dependent ZIP、self-contained ZIP、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI 和 `release-metrics.json`。两个应用 ZIP 都只能暴露 `S3Explorer.exe` 与 `s3explorer-cli.exe`；两个 MSI 必须使用多文件负载，且只有 self-contained MSI 包含 .NET 运行时；SDK ZIP 只能包含 `S3Explorer.Contracts.dll`、XML 文档和接入说明，Contracts 的 ABI `AssemblyVersion` 保持 `1.0.0.0`，`FileVersion` 跟随发布版本。确认版本化文件名、入口程序、CLI、SDK、安装包和 SHA-256 均存在。Debug 版客户端正在运行时，不结束用户进程；发布验证使用 Release 和隔离自动化数据目录。
 

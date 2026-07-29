@@ -147,8 +147,9 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
     pwsh .\scripts\AppAutomation.ps1 Status
     pwsh .\scripts\AppAutomation.ps1 Stop
     pwsh .\scripts\AppAutomation.ps1 Smoke
+    pwsh .\scripts\AppAutomation.ps1 CorruptSmoke
 
-也可以使用 `scripts\app-automation.cmd`。`Start` 会在需要时构建 Release 版本，启动应用并等待窗口及核心控件就绪；`Status` 会校验 PID、进程路径和启动时间，避免误认同 PID 的其他进程；`Stop` 只发送正常窗口关闭请求，不强制终止进程。
+也可以使用 `scripts\app-automation.cmd`。`Start` 会在需要时构建 Release 版本，启动应用并等待窗口及核心控件就绪；`Status` 会校验 PID、进程路径和启动时间，避免误认同 PID 的其他进程；`Stop` 只发送正常窗口关闭请求，不强制终止进程。`CorruptSmoke` 会在隔离数据目录中预置损坏存储，验证应用仍能打开主窗口并保留损坏证据。
 
 `Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏、CDN 命令注册和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。
 
@@ -166,11 +167,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.8-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.8-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.8.zip
-    artifacts/release/S3Explorer-v0.6.8-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.6.8-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.6.9-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.9-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.9.zip
+    artifacts/release/S3Explorer-v0.6.9-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.9-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
