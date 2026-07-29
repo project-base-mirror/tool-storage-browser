@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.1",
-  "version": "0.6.1",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.1",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.1/S3Explorer-v0.6.1-win-x64.zip",
-  "notes": "新增 Bucket 配置、分页对象版本浏览、指定 Version ID 下载与恢复、永久版本删除和 Delete Marker 清理，并提供对应 CLI。",
-  "publishedAt": "2026-07-28T23:13:17+08:00"
+  "tagName": "v0.6.2",
+  "version": "0.6.2",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.2",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.2/S3Explorer-v0.6.2-win-x64.zip",
+  "notes": "新增 Unity 2021.3 可引用的发布契约，以及面向 Unity/CI 的 Manifest 增量发布、逐文件校验、CDN 测试与预热命令。",
+  "publishedAt": "2026-07-29T11:48:56+08:00"
 }
