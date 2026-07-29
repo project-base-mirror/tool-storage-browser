@@ -5,6 +5,7 @@ namespace S3Explorer.App;
 
 internal static class WindowsSleepInhibitor
 {
+    internal const string NativeLibraryName = "kernel32.dll";
     private const uint ContextVersion = 0;
     private const uint SimpleString = 1;
     private static readonly object Sync = new();
@@ -19,7 +20,17 @@ internal static class WindowsSleepInhibitor
         lock (Sync)
         {
             if (_leaseCount == 0)
-                CreateRequest();
+            {
+                try
+                {
+                    CreateRequest();
+                }
+                catch (Exception exception) when (IsOptionalPowerRequestFailure(exception))
+                {
+                    _requestHandle = IntPtr.Zero;
+                    return NoopLease.Instance;
+                }
+            }
             _leaseCount++;
         }
         return new Lease();
@@ -67,6 +78,12 @@ internal static class WindowsSleepInhibitor
         }
     }
 
+    private static bool IsOptionalPowerRequestFailure(Exception exception) =>
+        exception is Win32Exception or
+            DllNotFoundException or
+            EntryPointNotFoundException or
+            BadImageFormatException;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct ReasonContext
     {
@@ -99,18 +116,18 @@ internal static class WindowsSleepInhibitor
         public void Dispose() { }
     }
 
-    [DllImport("powrprof.dll", SetLastError = true)]
+    [DllImport(NativeLibraryName, SetLastError = true)]
     private static extern IntPtr PowerCreateRequest(ref ReasonContext context);
 
-    [DllImport("powrprof.dll", SetLastError = true)]
+    [DllImport(NativeLibraryName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PowerSetRequest(IntPtr powerRequest, PowerRequestType requestType);
 
-    [DllImport("powrprof.dll", SetLastError = true)]
+    [DllImport(NativeLibraryName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PowerClearRequest(IntPtr powerRequest, PowerRequestType requestType);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport(NativeLibraryName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);
 }
