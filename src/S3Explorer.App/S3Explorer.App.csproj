@@ -8,6 +8,7 @@
     <AssemblyName>S3Explorer</AssemblyName>
     <RootNamespace>S3Explorer.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\S3Explorer.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
