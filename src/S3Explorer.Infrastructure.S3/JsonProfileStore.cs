@@ -4,9 +4,9 @@ using S3Explorer.Core;
 
 namespace S3Explorer.Infrastructure.S3;
 
-public sealed class JsonProfileStore : IProfileStore
+public sealed class JsonProfileStore : IProfileStore, IRecoveryAwareStore
 {
-    private readonly string _path;
+    private readonly DurableJsonFile _file;
     private readonly ICredentialProtector _protector;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -18,33 +18,26 @@ public sealed class JsonProfileStore : IProfileStore
     public JsonProfileStore(ICredentialProtector protector, string? path = null)
     {
         _protector = protector;
-        _path = path ?? Path.Combine(
+        _file = new DurableJsonFile(path ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "S3Explorer",
-            "profiles.json");
+            "profiles.json"));
     }
+
+    public JsonStoreRecoveryInfo? LastRecovery => _file.LastRecovery;
 
     public async Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(_path))
-            return Array.Empty<ConnectionProfile>();
-
-        await using var stream = File.OpenRead(_path);
-        var document = await JsonSerializer.DeserializeAsync<ProfileDocument>(stream, _jsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        if (document is null)
-            return Array.Empty<ConnectionProfile>();
-
-        return document.Profiles
-            .Select(profile => S3ProviderCatalog.RepairLegacyServiceType(profile.ToRuntime(_protector)))
-            .ToArray();
+        var document = await _file.LoadAsync(
+            static () => new ProfileDocument(),
+            _jsonOptions,
+            ValidateDocument,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ToRuntime(document);
     }
 
     public async Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default)
     {
-        var directory = Path.GetDirectoryName(_path)!;
-        Directory.CreateDirectory(directory);
-
         var document = new ProfileDocument
         {
             Version = 3,
@@ -54,15 +47,34 @@ public sealed class JsonProfileStore : IProfileStore
                 .ToList()
         };
 
-        var temporaryPath = _path + ".tmp";
-        await using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
-        {
-            await JsonSerializer.SerializeAsync(stream, document, _jsonOptions, cancellationToken).ConfigureAwait(false);
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        File.Move(temporaryPath, _path, true);
+        await _file.SaveAsync(document, _jsonOptions, ValidateDocument, cancellationToken)
+            .ConfigureAwait(false);
     }
+
+    private void ValidateDocument(ProfileDocument document)
+    {
+        if (document.Version is < 1 or > 3)
+            throw new InvalidDataException($"不支持的连接配置文件版本：{document.Version}。");
+        if (document.Profiles is null || document.Profiles.Any(profile => profile is null))
+            throw new InvalidDataException("连接配置文件包含空集合或空记录。");
+
+        var profiles = ToRuntime(document);
+        var ids = new HashSet<Guid>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles)
+        {
+            profile.Validate();
+            if (!ids.Add(profile.Id))
+                throw new InvalidDataException($"连接 ID 重复：{profile.Id}。");
+            if (!names.Add(profile.Name.Trim()))
+                throw new InvalidDataException($"连接名称重复：{profile.Name}。");
+        }
+    }
+
+    private ConnectionProfile[] ToRuntime(ProfileDocument document) =>
+        document.Profiles
+            .Select(profile => S3ProviderCatalog.RepairLegacyServiceType(profile.ToRuntime(_protector)))
+            .ToArray();
 
     private sealed class ProfileDocument
     {

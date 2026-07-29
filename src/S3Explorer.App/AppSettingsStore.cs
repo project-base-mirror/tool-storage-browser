@@ -33,9 +33,45 @@ internal sealed record AppSettings
     public int[] ObjectColumnWidths { get; init; } = [320, 110, 120, 165, 120];
     public int SortColumn { get; init; }
     public bool SortAscending { get; init; } = true;
+
+    public AppSettings Normalize()
+    {
+        var defaults = new AppSettings();
+        var widths = ObjectColumnWidths is { Length: 5 }
+            ? ObjectColumnWidths.Select(value => Math.Clamp(value, 40, 2000)).ToArray()
+            : defaults.ObjectColumnWidths;
+        return this with
+        {
+            WindowWidth = Math.Clamp(WindowWidth, 960, 10000),
+            WindowHeight = Math.Clamp(WindowHeight, 600, 10000),
+            LeftPanelWidth = Math.Clamp(LeftPanelWidth, 180, 4000),
+            TransferPanelHeight = Math.Clamp(TransferPanelHeight, 120, 3000),
+            DefaultDownloadDirectory = string.IsNullOrWhiteSpace(DefaultDownloadDirectory)
+                ? defaults.DefaultDownloadDirectory
+                : DefaultDownloadDirectory.Trim(),
+            ObjectPageSize = Math.Clamp(
+                ObjectPageSize,
+                ObjectListingLimits.MinimumPageSize,
+                ObjectListingLimits.MaximumPageSize),
+            ObjectCacheLimit = Math.Clamp(
+                ObjectCacheLimit,
+                ObjectListingLimits.MinimumCacheLimit,
+                ObjectListingLimits.MaximumCacheLimit),
+            ConcurrentTransfers = Math.Clamp(ConcurrentTransfers, 1, 32),
+            MultipartConcurrency = Math.Clamp(MultipartConcurrency, 1, 32),
+            MultipartThresholdMb = Math.Clamp(MultipartThresholdMb, 5, 10240),
+            PartSizeMb = Math.Clamp(PartSizeMb, 5, 512),
+            RetryCount = Math.Clamp(RetryCount, 0, 20),
+            RetryDelaySeconds = Math.Clamp(RetryDelaySeconds, 0, 300),
+            UploadLimitKibPerSecond = Math.Clamp(UploadLimitKibPerSecond, 0, 1_048_576),
+            DownloadLimitKibPerSecond = Math.Clamp(DownloadLimitKibPerSecond, 0, 1_048_576),
+            ObjectColumnWidths = widths,
+            SortColumn = Math.Clamp(SortColumn, 0, widths.Length - 1)
+        };
+    }
 }
 
-internal sealed class AppSettingsStore
+internal sealed class AppSettingsStore : IRecoveryAwareStore
 {
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -44,38 +80,31 @@ internal sealed class AppSettingsStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private readonly string _path;
+    private readonly DurableJsonFile _file;
 
     public AppSettingsStore(string? path = null)
     {
-        _path = path ?? Path.Combine(
+        _file = new DurableJsonFile(path ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "S3Explorer",
-            "settings.json");
+            "settings.json"));
     }
+
+    public JsonStoreRecoveryInfo? LastRecovery => _file.LastRecovery;
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
-        try
-        {
-            if (!File.Exists(_path))
-                return new AppSettings();
-            await using var stream = File.OpenRead(_path);
-            return await JsonSerializer.DeserializeAsync<AppSettings>(stream, Options, cancellationToken)
-                .ConfigureAwait(false) ?? new AppSettings();
-        }
-        catch
-        {
-            return new AppSettings();
-        }
+        var settings = await _file.LoadAsync(
+            static () => new AppSettings(),
+            Options,
+            useDefaultWhenUnrecoverable: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return settings.Normalize();
     }
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temporary = _path + ".tmp";
-        await using (var stream = File.Create(temporary))
-            await JsonSerializer.SerializeAsync(stream, settings, Options, cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, _path, true);
+        await _file.SaveAsync(settings.Normalize(), Options, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
     }
 }

@@ -9,7 +9,7 @@ public interface IFolderSyncJobStore
     Task SaveAsync(IReadOnlyCollection<FolderSyncJob> jobs, CancellationToken cancellationToken = default);
 }
 
-public sealed class JsonFolderSyncJobStore : IFolderSyncJobStore
+public sealed class JsonFolderSyncJobStore : IFolderSyncJobStore, IRecoveryAwareStore
 {
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -18,39 +18,44 @@ public sealed class JsonFolderSyncJobStore : IFolderSyncJobStore
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
-    private readonly string _path;
+    private readonly DurableJsonFile _file;
 
     public JsonFolderSyncJobStore(string? path = null)
     {
-        _path = path ?? Path.Combine(
+        _file = new DurableJsonFile(path ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "S3Explorer",
-            "sync-jobs.json");
+            "sync-jobs.json"));
     }
+
+    public JsonStoreRecoveryInfo? LastRecovery => _file.LastRecovery;
 
     public async Task<IReadOnlyList<FolderSyncJob>> LoadAsync(CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(_path)) return Array.Empty<FolderSyncJob>();
-        await using var stream = File.OpenRead(_path);
-        var document = await JsonSerializer.DeserializeAsync<Document>(stream, Options, cancellationToken).ConfigureAwait(false)
-            ?? new Document();
-        if (document.Version != 1)
-            throw new InvalidOperationException($"不支持的同步任务存储版本：{document.Version}");
-        ValidateJobs(document.Jobs);
+        var document = await _file.LoadAsync(
+            static () => new Document(),
+            Options,
+            ValidateDocument,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return document.Jobs;
     }
 
     public async Task SaveAsync(IReadOnlyCollection<FolderSyncJob> jobs, CancellationToken cancellationToken = default)
     {
-        ValidateJobs(jobs);
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temporary = _path + ".tmp";
-        await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
-        {
-            await JsonSerializer.SerializeAsync(stream, new Document { Jobs = jobs.ToList() }, Options, cancellationToken).ConfigureAwait(false);
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-        File.Move(temporary, _path, true);
+        await _file.SaveAsync(
+            new Document { Jobs = jobs.ToList() },
+            Options,
+            ValidateDocument,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateDocument(Document document)
+    {
+        if (document.Version != 1)
+            throw new InvalidOperationException($"不支持的同步任务存储版本：{document.Version}");
+        if (document.Jobs is null || document.Jobs.Any(job => job is null))
+            throw new InvalidDataException("同步任务存储包含空集合或空记录。");
+        ValidateJobs(document.Jobs);
     }
 
     private static void ValidateJobs(IEnumerable<FolderSyncJob> jobs)
