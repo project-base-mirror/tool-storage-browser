@@ -24,6 +24,7 @@ public sealed class FolderSyncDialogLayoutTests
 
             var workspace = Assert.IsType<SplitContainer>(Find(dialog, "SyncWorkspace"));
             var jobs = Assert.IsType<ListView>(Find(dialog, "SyncJobList"));
+            var results = Assert.IsType<ListView>(Find(dialog, "SyncResultsList"));
             var resultsFrame = Assert.IsType<Panel>(Find(dialog, "SyncResultsFrame"));
             var source = Find(dialog, "SyncSourcePathCard");
             var destination = Find(dialog, "SyncDestinationPathCard");
@@ -39,6 +40,11 @@ public sealed class FolderSyncDialogLayoutTests
             var safeWidth = jobs.ClientSize.Width - SystemInformation.VerticalScrollBarWidth;
             Assert.True(columnsWidth <= safeWidth,
                 $"Task columns used {columnsWidth}px but only {safeWidth}px was safely available.");
+            Assert.True(results.CheckBoxes);
+            Assert.Equal(ColumnHeaderStyle.Clickable, results.HeaderStyle);
+            Assert.Contains(results.Columns.Cast<ColumnHeader>(), column => column.Text == "扩展名");
+            Assert.NotNull(results.ContextMenuStrip);
+            Assert.Equal(3, results.ContextMenuStrip!.Items.Count);
         });
     }
 

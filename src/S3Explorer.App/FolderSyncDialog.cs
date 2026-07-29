@@ -4,6 +4,13 @@ namespace S3Explorer.App;
 
 internal sealed class FolderSyncDialog : Form
 {
+    private enum ExclusionRuleKind
+    {
+        ExactFile,
+        Extension,
+        ParentDirectory
+    }
+
     private readonly IFolderSyncJobStore _jobStore;
     private readonly IProfileStore _profileStore;
     private readonly IS3StorageService _storage;
@@ -47,7 +54,9 @@ internal sealed class FolderSyncDialog : Form
         FullRowSelect = true,
         GridLines = false,
         HideSelection = false,
-        BorderStyle = BorderStyle.None
+        BorderStyle = BorderStyle.None,
+        CheckBoxes = true,
+        HeaderStyle = ColumnHeaderStyle.Clickable
     };
     private readonly ToolStrip _actions = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Bottom, ImageScalingSize = new Size(18, 18) };
     private readonly ToolStripButton _analyze = new("分析", UiIcons.Create(UiIconKind.Analyze, 18));
@@ -56,7 +65,8 @@ internal sealed class FolderSyncDialog : Form
     private readonly ToolStripButton _add = new("添加任务", UiIcons.Create(UiIconKind.NewConnection, 18));
     private readonly ToolStripButton _edit = new("编辑任务", UiIcons.Create(UiIconKind.Settings, 18)) { Enabled = false };
     private readonly ToolStripButton _delete = new("删除任务", UiIcons.Create(UiIconKind.Delete, 18)) { Enabled = false };
-    private readonly ToolStripComboBox _filter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Alignment = ToolStripItemAlignment.Right };
+    private readonly ToolStripDropDownButton _selectionActions = new("选择项目", UiIcons.Create(UiIconKind.Properties, 18)) { Name = "SyncSelectionActions", Enabled = false };
+    private readonly ToolStripComboBox _filter = new() { Name = "SyncResultFilter", DropDownStyle = ComboBoxStyle.DropDownList, Alignment = ToolStripItemAlignment.Right };
     private readonly ToolStripLabel _summary = new("尚未分析") { Alignment = ToolStripItemAlignment.Right };
     private readonly Label _empty = new()
     {
@@ -73,10 +83,15 @@ internal sealed class FolderSyncDialog : Form
         BackColor = SystemColors.Window,
         BorderStyle = BorderStyle.FixedSingle
     };
+    private readonly ContextMenuStrip _resultMenu = new() { Name = "SyncResultContextMenu" };
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private List<FolderSyncJob> _jobs = [];
     private FolderSyncPlan? _plan;
+    private FolderSyncPlanSelection? _selection;
     private CancellationTokenSource? _operation;
+    private int _sortColumn;
+    private bool _sortAscending = true;
+    private bool _populatingResults;
 
     public bool QueuedTransfers { get; private set; }
 
@@ -164,11 +179,14 @@ internal sealed class FolderSyncDialog : Form
         route.Controls.Add(CreatePathCard("SyncDestinationPathCard", _destinationCaption, _destination, UiIconKind.Bucket), 2, 0);
 
         _results.Columns.Add("文件", 300);
+        _results.Columns.Add("扩展名", 80);
         _results.Columns.Add("状态", 80);
         _results.Columns.Add("操作", 90);
         _results.Columns.Add("本地大小", 100, HorizontalAlignment.Right);
         _results.Columns.Add("远端大小", 100, HorizontalAlignment.Right);
         _results.Columns.Add("原因", 240);
+        _results.ContextMenuStrip = _resultMenu;
+        BuildResultContextMenu();
         _body.Controls.Add(_empty);
         _body.Controls.Add(_results);
 
@@ -212,10 +230,15 @@ internal sealed class FolderSyncDialog : Form
         workspace.Panel1.Controls.Add(navigation);
         workspace.Panel2.Controls.Add(content);
 
-        _filter.Items.AddRange(["全部", "待执行", "新增", "已更改", "已删除", "已排除"]);
+        _filter.Items.AddRange(["全部", "已选择", "新增", "已更改", "已删除", "跳过"]);
         _filter.SelectedIndex = 0;
+        _selectionActions.DropDownItems.Add("全选当前筛选", null, (_, _) => SetVisibleSelection(true));
+        _selectionActions.DropDownItems.Add("全不选当前筛选", null, (_, _) => SetVisibleSelection(false));
+        _selectionActions.DropDownItems.Add("反选当前筛选", null, (_, _) => InvertVisibleSelection());
         _actions.Items.AddRange([
             _analyze, _synchronize, _stop,
+            new ToolStripSeparator(),
+            _selectionActions,
             new ToolStripSeparator(),
             _add, _edit, _delete,
             new ToolStripSeparator(),
@@ -237,12 +260,173 @@ internal sealed class FolderSyncDialog : Form
         _jobList.Resize += (_, _) => ResizeJobColumns();
         _jobList.FontChanged += (_, _) => ResizeJobColumns();
         _filter.SelectedIndexChanged += (_, _) => PopulateResults();
+        _results.ColumnClick += (_, args) => SortResults(args.Column);
+        _results.ItemCheck += ResultsOnItemCheck;
+        _results.MouseDown += (_, args) =>
+        {
+            if (args.Button != MouseButtons.Right) return;
+            var hit = _results.HitTest(args.Location).Item;
+            if (hit is null) return;
+            _results.SelectedItems.Clear();
+            hit.Selected = true;
+        };
         _add.Click += async (_, _) => await AddJobAsync();
         _edit.Click += async (_, _) => await EditJobAsync();
         _delete.Click += async (_, _) => await DeleteJobAsync();
         _analyze.Click += async (_, _) => await AnalyzeAsync();
         _synchronize.Click += async (_, _) => await QueueSynchronizationAsync();
         _stop.Click += (_, _) => _operation?.Cancel();
+    }
+
+    private void BuildResultContextMenu()
+    {
+        var exact = new ToolStripMenuItem("排除此文件");
+        var extension = new ToolStripMenuItem("排除此扩展名");
+        var directory = new ToolStripMenuItem("排除此目录");
+        exact.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.ExactFile);
+        extension.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.Extension);
+        directory.Click += async (_, _) => await AddExclusionRuleAsync(ExclusionRuleKind.ParentDirectory);
+        _resultMenu.Items.AddRange([exact, extension, directory]);
+        _resultMenu.Opening += (_, args) =>
+        {
+            var item = SelectedResultItem();
+            args.Cancel = item is null;
+            exact.Enabled = item is not null;
+            extension.Enabled = item is not null && Path.GetExtension(item.RelativePath).Length > 0;
+            directory.Enabled = item is not null && item.RelativePath.Contains('/');
+        };
+    }
+
+    private IEnumerable<FolderSyncPlanItem> VisibleItems()
+    {
+        if (_plan is null || _selection is null) return [];
+        var filter = _filter.SelectedIndex;
+        var values = _plan.Items.Where(item => filter switch
+        {
+            1 => _selection.IsSelected(item),
+            2 => item.Change == FolderSyncChange.New,
+            3 => item.Change == FolderSyncChange.Changed,
+            4 => item.Change == FolderSyncChange.Deleted,
+            5 => item.Action == FolderSyncAction.None,
+            _ => true
+        });
+        return (_sortColumn, _sortAscending) switch
+        {
+            (0, true) => values.OrderBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (0, false) => values.OrderByDescending(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (1, true) => values.OrderBy(item => Path.GetExtension(item.RelativePath), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (1, false) => values.OrderByDescending(item => Path.GetExtension(item.RelativePath), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (2, true) => values.OrderBy(item => item.Change).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (2, false) => values.OrderByDescending(item => item.Change).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (3, true) => values.OrderBy(item => item.Action).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (3, false) => values.OrderByDescending(item => item.Action).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (4, true) => values.OrderBy(item => item.Local?.Size ?? -1).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (4, false) => values.OrderByDescending(item => item.Local?.Size ?? -1).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (5, true) => values.OrderBy(item => item.Remote?.Size ?? -1).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (5, false) => values.OrderByDescending(item => item.Remote?.Size ?? -1).ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            (6, true) => values.OrderBy(item => item.Reason, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase),
+            _ => values.OrderByDescending(item => item.Reason, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    private void SortResults(int column)
+    {
+        if (_sortColumn == column) _sortAscending = !_sortAscending;
+        else
+        {
+            _sortColumn = column;
+            _sortAscending = true;
+        }
+        PopulateResults();
+    }
+
+    private void ResultsOnItemCheck(object? sender, ItemCheckEventArgs args)
+    {
+        if (_populatingResults || _selection is null ||
+            _results.Items[args.Index].Tag is not FolderSyncPlanItem item)
+            return;
+        if (item.Action == FolderSyncAction.None)
+        {
+            args.NewValue = CheckState.Unchecked;
+            return;
+        }
+        _selection.Set(item, args.NewValue == CheckState.Checked);
+        if (IsHandleCreated && !IsDisposed)
+            BeginInvoke(new Action(UpdateSelectionSummary));
+    }
+
+    private void SetVisibleSelection(bool selected)
+    {
+        if (_selection is null) return;
+        _selection.Set(VisibleItems().ToArray(), selected);
+        PopulateResults();
+    }
+
+    private void InvertVisibleSelection()
+    {
+        if (_selection is null) return;
+        _selection.Invert(VisibleItems().ToArray());
+        PopulateResults();
+    }
+
+    private void UpdateSelectionSummary()
+    {
+        if (_plan is null || _selection is null) return;
+        var selected = _selection.SelectedItems(_plan);
+        var bytes = selected
+            .Where(item => item.Action is FolderSyncAction.Upload or FolderSyncAction.Download)
+            .Sum(item => item.SourceSize(item.Action == FolderSyncAction.Upload
+                ? FolderSyncDirection.Upload
+                : FolderSyncDirection.Download));
+        _synchronize.Enabled = _operation is null && selected.Count > 0;
+        _selectionActions.Enabled = _operation is null;
+        _summary.Text = $"已选 {selected.Count:N0} / 待执行 {_plan.ActionCount:N0} · 传输 {FileSizeFormatter.Format(bytes)}";
+    }
+
+    private FolderSyncPlanItem? SelectedResultItem() =>
+        _results.SelectedItems.Count == 1
+            ? _results.SelectedItems[0].Tag as FolderSyncPlanItem
+            : null;
+
+    private async Task AddExclusionRuleAsync(ExclusionRuleKind kind)
+    {
+        var item = SelectedResultItem();
+        var job = CurrentJob();
+        if (item is null || job is null) return;
+        var extension = Path.GetExtension(item.RelativePath);
+        var slash = item.RelativePath.LastIndexOf('/');
+        var rule = kind switch
+        {
+            ExclusionRuleKind.ExactFile => item.RelativePath,
+            ExclusionRuleKind.Extension when extension.Length > 0 => $"*{extension};**/*{extension}",
+            ExclusionRuleKind.ParentDirectory when slash > 0 => item.RelativePath[..slash] + "/**",
+            _ => string.Empty
+        };
+        if (rule.Length == 0) return;
+        if (job.ExclusionPatterns.Contains(rule, StringComparer.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, $"排除规则已存在：{rule}", "文件夹同步", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(this, $"将排除规则添加到任务“{job.Name}”：\n\n{rule}\n\n添加后需要重新分析。",
+                "添加排除规则", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
+            return;
+
+        var updated = job with
+        {
+            ExclusionPatterns = job.ExclusionPatterns.Append(rule).ToArray()
+        };
+        updated.Validate();
+        var index = _jobs.FindIndex(value => value.Id == job.Id);
+        _jobs[index] = updated;
+        await _jobStore.SaveAsync(_jobs);
+        RebuildJobList(updated.Id);
+        _empty.Text = $"已添加排除规则 {rule}。请重新分析。";
+        _summary.Text = "需要重新分析";
     }
 
     private async Task InitializeAsync()
@@ -282,6 +466,7 @@ internal sealed class FolderSyncDialog : Form
     private void SelectCurrentJob()
     {
         _plan = null;
+        _selection = null;
         var job = CurrentJob();
         var hasJob = job is not null;
         _edit.Enabled = _delete.Enabled = _analyze.Enabled = hasJob;
@@ -369,54 +554,76 @@ internal sealed class FolderSyncDialog : Form
         await RunOperationAsync("正在分析本地与远端...", async token =>
         {
             _plan = await FolderSyncAnalyzer.AnalyzeAsync(job, profile, _storage, _pageSize, _itemLimit, token);
+            _selection = FolderSyncPlanSelection.SelectAllActions(_plan);
             PopulateResults();
-            _synchronize.Enabled = _plan.ActionCount > 0;
-            _summary.Text = $"待执行 {_plan.ActionCount:N0} · 传输 {FileSizeFormatter.Format(_plan.TransferBytes)}";
+            UpdateSelectionSummary();
         });
     }
 
     private void PopulateResults()
     {
-        if (_plan is null) return;
-        var filter = _filter.SelectedIndex;
-        var items = _plan.Items.Where(item => filter switch
-        {
-            1 => item.Action != FolderSyncAction.None,
-            2 => item.Change == FolderSyncChange.New,
-            3 => item.Change == FolderSyncChange.Changed,
-            4 => item.Change == FolderSyncChange.Deleted,
-            5 => item.Change == FolderSyncChange.Excluded,
-            _ => true
-        }).ToArray();
+        if (_plan is null || _selection is null) return;
+        var items = VisibleItems().ToArray();
 
         _results.BeginUpdate();
+        _populatingResults = true;
         try
         {
             _results.Items.Clear();
             foreach (var planItem in items)
             {
-                var row = new ListViewItem(planItem.RelativePath);
+                var row = new ListViewItem(planItem.RelativePath)
+                {
+                    Tag = planItem,
+                    Checked = _selection.IsSelected(planItem)
+                };
+                row.SubItems.Add(Path.GetExtension(planItem.RelativePath));
                 row.SubItems.Add(ChangeText(planItem.Change));
                 row.SubItems.Add(ActionText(planItem.Action));
                 row.SubItems.Add(planItem.Local is null ? "—" : FileSizeFormatter.Format(planItem.Local.Size));
                 row.SubItems.Add(planItem.Remote is null ? "—" : FileSizeFormatter.Format(planItem.Remote.Size));
                 row.SubItems.Add(planItem.Reason);
-                if (planItem.Change == FolderSyncChange.Excluded) row.ForeColor = SystemColors.GrayText;
+                if (planItem.Action == FolderSyncAction.None) row.ForeColor = SystemColors.GrayText;
                 else if (planItem.Action is FolderSyncAction.DeleteLocal or FolderSyncAction.DeleteRemote) row.ForeColor = Color.DarkRed;
                 _results.Items.Add(row);
             }
         }
-        finally { _results.EndUpdate(); }
+        finally
+        {
+            _populatingResults = false;
+            _results.EndUpdate();
+        }
         _results.Visible = true;
         _empty.Visible = false;
+        UpdateSelectionSummary();
     }
 
     private async Task QueueSynchronizationAsync()
     {
         var job = CurrentJob();
         var plan = _plan;
-        if (job is null || plan is null || plan.JobId != job.Id) return;
-        var deleteCount = plan.Items.Count(item => item.Action is FolderSyncAction.DeleteLocal or FolderSyncAction.DeleteRemote);
+        var selection = _selection;
+        if (job is null || plan is null || selection is null) return;
+        if (!plan.IsValidFor(job, DateTimeOffset.UtcNow, out var invalidReason))
+        {
+            _plan = null;
+            _selection = null;
+            _synchronize.Enabled = false;
+            _selectionActions.Enabled = false;
+            _results.Visible = false;
+            _empty.Visible = true;
+            _empty.Text = $"{invalidReason} 请重新分析后再同步。";
+            _summary.Text = "需要重新分析";
+            MessageBox.Show(this, _empty.Text, "同步计划已失效", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var selectedItems = selection.SelectedItems(plan);
+        if (selectedItems.Count == 0)
+        {
+            MessageBox.Show(this, "请至少勾选一个待执行项目。", "文件夹同步", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var deleteCount = selectedItems.Count(item => item.Action is FolderSyncAction.DeleteLocal or FolderSyncAction.DeleteRemote);
         if (deleteCount > 0 && MessageBox.Show(
                 this,
                 $"计划包含 {deleteCount:N0} 个删除操作。删除将通过传输队列执行。\n\n确认继续？",
@@ -429,9 +636,7 @@ internal sealed class FolderSyncDialog : Form
 
         await RunOperationAsync("正在创建同步批次...", async token =>
         {
-            var groups = plan.Items
-                .Where(item => item.Action != FolderSyncAction.None)
-                .GroupBy(item => ToTransferDirection(item.Action));
+            var groups = selectedItems.GroupBy(item => ToTransferDirection(item.Action));
             foreach (var group in groups)
             {
                 var batch = await _transferQueue.CreateBatchAsync(new TransferBatchRecord
@@ -450,9 +655,12 @@ internal sealed class FolderSyncDialog : Form
             }
             QueuedTransfers = true;
             _synchronize.Enabled = false;
-            _summary.Text = $"已加入队列 {plan.ActionCount:N0} 项";
-            MessageBox.Show(this, $"已将 {plan.ActionCount:N0} 项同步操作加入可恢复传输队列。", "文件夹同步",
+            _selectionActions.Enabled = false;
+            _summary.Text = $"已加入队列 {selectedItems.Count:N0} 项";
+            MessageBox.Show(this, $"已将 {selectedItems.Count:N0} 项同步操作加入可恢复传输队列。", "文件夹同步",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _plan = null;
+            _selection = null;
         });
     }
 
@@ -515,7 +723,9 @@ internal sealed class FolderSyncDialog : Form
     private void SetBusy(bool busy, string status)
     {
         _analyze.Enabled = !busy && CurrentJob() is not null;
-        _add.Enabled = _edit.Enabled = _delete.Enabled = !busy;
+        _add.Enabled = !busy;
+        _edit.Enabled = _delete.Enabled = !busy && CurrentJob() is not null;
+        _selectionActions.Enabled = !busy && _plan is not null;
         _stop.Enabled = busy;
         _jobList.Enabled = !busy;
         _summary.Text = status;
