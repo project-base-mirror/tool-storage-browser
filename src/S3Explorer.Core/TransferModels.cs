@@ -210,6 +210,8 @@ public sealed record TransferBatchRecord
     public string Bucket { get; init; } = string.Empty;
     public string RootPath { get; init; } = string.Empty;
     public TransferDirection Direction { get; init; }
+    public Guid? FolderSyncJobId { get; init; }
+    public Guid? FolderSyncExecutionId { get; init; }
     public IReadOnlyList<Guid> TaskIds { get; init; } = Array.Empty<Guid>();
     public bool DiscoveryCompleted { get; init; }
     public int SkippedCount { get; init; }
@@ -225,6 +227,10 @@ public sealed record TransferBatchRecord
         if (string.IsNullOrWhiteSpace(Name)) throw new ArgumentException("批次名称不能为空。", nameof(Name));
         if (string.IsNullOrWhiteSpace(Bucket)) throw new ArgumentException("Bucket 不能为空。", nameof(Bucket));
         if (string.IsNullOrWhiteSpace(RootPath)) throw new ArgumentException("批次根路径不能为空。", nameof(RootPath));
+        if (FolderSyncJobId.HasValue != FolderSyncExecutionId.HasValue)
+            throw new ArgumentException("文件夹同步批次必须同时记录任务 ID 和执行 ID。");
+        if (FolderSyncJobId == Guid.Empty || FolderSyncExecutionId == Guid.Empty)
+            throw new ArgumentException("文件夹同步任务 ID 和执行 ID 不能为空。");
         if (SkippedCount < 0) throw new ArgumentOutOfRangeException(nameof(SkippedCount));
         if (TaskIds.Any(id => id == Guid.Empty) || TaskIds.Distinct().Count() != TaskIds.Count)
             throw new ArgumentException("批次任务 ID 必须有效且唯一。", nameof(TaskIds));
