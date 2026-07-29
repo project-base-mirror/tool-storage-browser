@@ -65,7 +65,13 @@ public sealed class S3ClientFactory
             UseHttp = endpoint.Scheme == Uri.UriSchemeHttp,
             Timeout = TimeSpan.FromSeconds(profile.RequestTimeoutSeconds),
             MaxErrorRetry = 3,
-            AllowAutoRedirect = profile.FollowTemporaryRedirects
+            AllowAutoRedirect = profile.FollowTemporaryRedirects,
+            RequestChecksumCalculation = profile.ServiceType == S3ServiceType.AmazonS3
+                ? RequestChecksumCalculation.WHEN_SUPPORTED
+                : RequestChecksumCalculation.WHEN_REQUIRED,
+            ResponseChecksumValidation = profile.ServiceType == S3ServiceType.AmazonS3
+                ? ResponseChecksumValidation.WHEN_SUPPORTED
+                : ResponseChecksumValidation.WHEN_REQUIRED
         };
 
         if (profile.IgnoreCertificateErrors)

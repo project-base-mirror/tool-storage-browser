@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using S3Explorer.Core;
 using Xunit;
 
@@ -85,6 +86,38 @@ public sealed class S3ClientFactoryTests
 
         Assert.True(snapshot.ForcePathStyle);
         Assert.True(snapshot.DisableHostPrefixInjection);
+    }
+
+    [Fact]
+    public void CompatibleStorageUsesOnlyRequiredSdkChecksums()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
+        {
+            Name = "MinIO",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var config = new S3ClientFactory().CreateConfig(profile);
+
+        Assert.Equal(RequestChecksumCalculation.WHEN_REQUIRED, config.RequestChecksumCalculation);
+        Assert.Equal(ResponseChecksumValidation.WHEN_REQUIRED, config.ResponseChecksumValidation);
+    }
+
+    [Fact]
+    public void AmazonS3KeepsSupportedSdkChecksumsEnabled()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Amazon",
+            AccessKey = "access",
+            SecretKey = "secret"
+        };
+
+        var config = new S3ClientFactory().CreateConfig(profile);
+
+        Assert.Equal(RequestChecksumCalculation.WHEN_SUPPORTED, config.RequestChecksumCalculation);
+        Assert.Equal(ResponseChecksumValidation.WHEN_SUPPORTED, config.ResponseChecksumValidation);
     }
 
     [Fact]

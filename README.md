@@ -69,7 +69,13 @@ Windows 上最容易发现的入口位于仓库根目录。双击或在命令行
 
     dotnet test .\S3Explorer.sln -c Release --no-restore
 
-MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。只有同时设置以下环境变量时才访问远程测试实例：
+MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。未配置时测试会明确显示为 `Skipped`，不会计入通过数。开发机推荐使用一次性 Docker MinIO：
+
+    & .\scripts\Test-LocalMinio.ps1
+
+脚本自动启动隔离容器，执行真实上传、下载、复制、移动、Multipart 和 Bucket 管理测试，写入 `artifacts\local-minio\result.json`，最后只删除自己创建的容器。也可以同时传入 `-Endpoint`、`-AccessKey`、`-SecretKey` 使用现有测试实例。
+
+只有同时设置以下环境变量时，直接运行测试项目才会访问远程测试实例：
 
     S3EXPLORER_TEST_ENDPOINT
     S3EXPLORER_TEST_ACCESS_KEY

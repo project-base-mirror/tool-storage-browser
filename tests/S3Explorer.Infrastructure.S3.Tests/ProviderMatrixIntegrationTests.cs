@@ -29,18 +29,11 @@ public sealed class ProviderMatrixIntegrationTests
             (_, _, _, _) => Task.CompletedTask);
     }
 
-    [Fact]
+    [ConfiguredProviderFact]
     [Trait("Category", "Integration")]
     public async Task Configured_provider_runs_compatibility_matrix_and_cleans_resources()
     {
         var configuration = ProviderMatrixCase.Selected().Resolve();
-        if (!configuration.IsConfigured)
-        {
-            _output.WriteLine(configuration.ToReportJson(
-                ProviderMatrixStatus.NotConfigured,
-                "Required endpoint/access-key/secret-key environment variables are not configured."));
-            return;
-        }
 
         var service = new S3StorageService(new S3ClientFactory());
         var profile = configuration.CreateProfile();

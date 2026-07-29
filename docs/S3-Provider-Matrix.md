@@ -40,6 +40,14 @@ pwsh .\scripts\Invoke-S3ProviderMatrix.ps1 -FailOnRequiredNotConfigured
 
 The JSON report is written to `artifacts/provider-matrix.json`.
 
+For the normal local development gate, use an isolated Docker MinIO instead of a push-triggered workflow:
+
+```powershell
+& .\scripts\Test-LocalMinio.ps1
+```
+
+This command fails unless all four integration tests execute against a real MinIO instance and pass. Unconfigured direct test runs are reported as skipped, never passed. No PR or `main` push workflow runs this gate automatically; run it locally before committing changes that affect S3 behavior and before preparing a release.
+
 ## Coverage
 
 Configured providers run:

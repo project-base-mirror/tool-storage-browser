@@ -70,7 +70,8 @@ public sealed class BucketManagementTests
         Assert.True(capabilities.Policy.Supported);
         Assert.True(capabilities.Acl.Supported);
         Assert.True(capabilities.EmptyBucket.Supported);
-        Assert.True(capabilities.Cors.Supported);
+        Assert.False(capabilities.Cors.Supported);
+        Assert.Contains("Community", capabilities.Cors.Reason, StringComparison.Ordinal);
         Assert.True(capabilities.Versioning.Supported);
         Assert.True(capabilities.Encryption.Supported);
         Assert.True(capabilities.KmsEncryption.Supported);

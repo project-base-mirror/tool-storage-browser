@@ -92,7 +92,30 @@ Windows：
 
 ## 运行真实 MinIO 集成测试
 
-集成测试默认不会访问远程服务。只有同时设置 Endpoint、Access Key 和 Secret Key 时才执行真实 CRUD。
+集成测试默认不会访问远程服务。未配置完整 Endpoint、Access Key 和 Secret Key 时，测试框架会明确报告 `Skipped`，不会把提前返回误计为通过。
+
+开发机首选运行一键本地门禁：
+
+    & .\scripts\Test-LocalMinio.ps1
+
+脚本会：
+
+1. 复用已运行的 Docker Desktop；未运行时自动启动并等待就绪。
+2. 使用随机名称和空闲本地端口启动隔离的 MinIO 容器。
+3. 执行所有 `Category=Integration` 测试，任何失败都返回非零退出码。
+4. 将不含凭据的结果写入 `artifacts\local-minio\result.json`。
+5. 在结束时只删除本次创建的容器；Docker Desktop 保持运行以缩短后续验证时间。
+
+如需使用现有测试实例而不启动容器：
+
+    & .\scripts\Test-LocalMinio.ps1 `
+      -Endpoint 'https://oss.example.test' `
+      -AccessKey '<临时 Access Key>' `
+      -SecretKey '<临时 Secret Key>'
+
+三个参数必须同时提供。脚本不会将凭据写入测试报告。
+
+局域网或其他现有环境也可以通过环境变量直接运行：
 
 PowerShell：
 
@@ -124,6 +147,8 @@ PowerShell：
 7. 下载并校验文件内容。
 8. 批量删除对象。
 9. 删除空 Bucket。
+
+本地 Community MinIO 不支持 Bucket 级 CORS，应用会将该能力显示为不可用；可使用服务端全局 CORS。Bucket 默认加密依赖服务端 KMS，基础容器门禁只验证能力提示和加密状态读取，不伪造 KMS 环境。
 
 成功时会删除远程 Bucket 和本地临时文件。测试异常中止时，检查并清理遗留的 `s3explorer-test-*` Bucket：
 

@@ -24,7 +24,7 @@ public sealed class MinioIntegrationTests
             (_, _, _, _) => Task.CompletedTask);
     }
 
-    [Fact]
+    [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
     public async Task Crud_flow_runs_against_explicit_test_instance()
     {
@@ -41,7 +41,7 @@ public sealed class MinioIntegrationTests
         }
     }
 
-    [Fact]
+    [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
     public async Task Copy_and_move_support_same_and_cross_bucket_with_special_keys()
     {
@@ -50,11 +50,6 @@ public sealed class MinioIntegrationTests
         try
         {
             var configuration = ProviderMatrixCase.Selected().Resolve();
-            if (!configuration.IsConfigured)
-            {
-                _output.WriteLine("MinIO copy/move integration test is not configured.");
-                return;
-            }
 
             var service = new S3StorageService(new S3ClientFactory());
             var profile = configuration.CreateProfile();
@@ -152,7 +147,7 @@ public sealed class MinioIntegrationTests
         }
     }
 
-    [Fact]
+    [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
     public async Task Bucket_management_policy_acl_scan_and_safe_empty_runs_against_minio()
     {
@@ -168,11 +163,6 @@ public sealed class MinioIntegrationTests
         try
         {
             var configuration = ProviderMatrixCase.Selected().Resolve();
-            if (!configuration.IsConfigured)
-            {
-                _output.WriteLine("MinIO bucket-management integration test is not configured.");
-                return;
-            }
 
             service = new S3StorageService(new S3ClientFactory());
             profile = configuration.CreateProfile();
@@ -204,14 +194,9 @@ public sealed class MinioIntegrationTests
             Assert.Equal(S3ServiceType.MinIO, properties.ServiceType);
             Assert.False(properties.Capabilities.PublicAccessBlock.Supported);
             Assert.False(properties.Capabilities.ObjectOwnership.Supported);
-
-            var cors = new BucketCorsConfiguration([
-                new BucketCorsRule("web", ["https://example.com"], ["GET", "HEAD"],
-                    ["Content-Type"], ["ETag"], 600)
-            ]);
-            await service.PutBucketCorsAsync(profile, bucket, cors, CancellationToken.None);
-            Assert.True(BucketCorsDocument.AreSemanticallyEquivalent(
-                cors, await service.GetBucketCorsAsync(profile, bucket, CancellationToken.None)));
+            Assert.False(properties.Capabilities.Cors.Supported);
+            Assert.True(properties.Capabilities.Encryption.Supported);
+            Assert.Contains("服务端必须", properties.Capabilities.Encryption.Reason, StringComparison.Ordinal);
 
             await service.PutBucketTagsAsync(profile, bucket,
                 [new BucketTag("environment", "integration")], CancellationToken.None);
@@ -222,11 +207,6 @@ public sealed class MinioIntegrationTests
                 profile, bucket, BucketVersioningState.Enabled, CancellationToken.None);
             Assert.Equal(BucketVersioningState.Enabled,
                 await service.GetBucketVersioningAsync(profile, bucket, CancellationToken.None));
-
-            await service.PutBucketEncryptionAsync(profile, bucket,
-                new BucketEncryptionConfiguration(BucketEncryptionMode.SseS3), CancellationToken.None);
-            Assert.Equal(BucketEncryptionMode.SseS3,
-                (await service.GetBucketEncryptionAsync(profile, bucket, CancellationToken.None)).Mode);
 
             await service.PutBucketAclAsync(profile, bucket, BucketAclMode.Private, CancellationToken.None);
             var acl = await service.GetBucketAclAsync(profile, bucket, CancellationToken.None);
@@ -293,9 +273,7 @@ public sealed class MinioIntegrationTests
             Assert.True((await service.ScanBucketAsync(profile, bucket, CancellationToken.None)).IsEmpty);
 
             await service.DeleteBucketPolicyAsync(profile, bucket, CancellationToken.None);
-            await service.DeleteBucketCorsAsync(profile, bucket, CancellationToken.None);
             await service.DeleteBucketTagsAsync(profile, bucket, CancellationToken.None);
-            await service.DeleteBucketEncryptionAsync(profile, bucket, CancellationToken.None);
             Assert.Null(await service.GetBucketPolicyAsync(profile, bucket, CancellationToken.None));
             await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None);
             bucketCreated = false;
@@ -305,9 +283,7 @@ public sealed class MinioIntegrationTests
             if (service is not null && profile is not null && bucketCreated)
             {
                 try { await service.DeleteBucketPolicyAsync(profile, bucket, CancellationToken.None); } catch { }
-                try { await service.DeleteBucketCorsAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.DeleteBucketTagsAsync(profile, bucket, CancellationToken.None); } catch { }
-                try { await service.DeleteBucketEncryptionAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.EmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
             }

@@ -36,7 +36,7 @@ public static class BucketCapabilityMatrix
             BucketFeatureSupport.Yes("MinIO 支持 S3 ACL；服务端策略可能限制公开 ACL"),
             BucketFeatureSupport.No("MinIO 不提供 AWS Public Access Block API"),
             BucketFeatureSupport.No("MinIO 不提供 AWS Object Ownership API"),
-            BucketFeatureSupport.Yes("MinIO 支持 S3 Bucket CORS API"),
+            BucketFeatureSupport.No("MinIO Community 不支持 Bucket 级 CORS；请使用服务端全局 CORS，AIStor 用户可改用自定义兼容类型"),
             BucketFeatureSupport.Yes("MinIO 支持 S3 Versioning API"),
             BucketFeatureSupport.Yes("MinIO 支持 Bucket 默认加密；服务端必须已配置密钥管理"),
             BucketFeatureSupport.Yes("MinIO 支持 SSE-KMS；保存前请确认服务端 KMS 与 Key 已就绪"),
