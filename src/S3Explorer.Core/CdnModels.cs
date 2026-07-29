@@ -44,6 +44,7 @@ public sealed record CdnProfile
     public int TimeoutSeconds { get; init; } = 100;
     public bool FollowRedirects { get; init; } = true;
     public bool Enabled { get; init; } = true;
+    public CdnCertificateCheckResult? LastCertificateCheck { get; init; }
 
     public CdnCapabilities Capabilities =>
         CdnCapabilities.BuildUrl |
@@ -243,6 +244,14 @@ public static class CdnConfigurationValidator
                 errors.Add($"CDN 配置“{profile.Name}”的超时必须在 1–3600 秒之间。");
             if (profile.WarmupRangeBytes is < 1 or > 1024L * 1024 * 1024)
                 errors.Add($"CDN 配置“{profile.Name}”的预热 Range 大小必须在 1 字节到 1 GiB 之间。");
+            if (profile.LastCertificateCheck is { } certificate &&
+                (!string.Equals(certificate.Endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                 certificate.CheckedAt == default || certificate.NotAfter <= certificate.NotBefore ||
+                 !string.Equals(
+                     certificate.Endpoint.AbsoluteUri.TrimEnd('/'),
+                     profile.BaseUrl.TrimEnd('/'),
+                     StringComparison.OrdinalIgnoreCase)))
+                errors.Add($"CDN 配置“{profile.Name}”保存的 HTTPS 证书检测结果无效。");
             if (!AllowedPurgeMethods.Contains(profile.PurgeHttpMethod))
                 errors.Add($"CDN 配置“{profile.Name}”的刷新方法不受支持：{profile.PurgeHttpMethod}");
             if (!string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate))

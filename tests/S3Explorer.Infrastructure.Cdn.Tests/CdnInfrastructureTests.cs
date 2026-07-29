@@ -50,6 +50,73 @@ public sealed class CdnInfrastructureTests
     }
 
     [Fact]
+    public async Task ConfigurationStorePersistsLastCertificateCheck()
+    {
+        var path = TemporaryFile("cdn-config.json");
+        try
+        {
+            var checkedAt = DateTimeOffset.Parse("2026-07-29T12:00:00Z");
+            var result = new CdnCertificateCheckResult(
+                new Uri("https://cdn.example.com"),
+                checkedAt,
+                checkedAt.AddDays(-30),
+                checkedAt.AddDays(60),
+                "CN=cdn.example.com",
+                "CN=Example CA",
+                new string('A', 64),
+                "Tls13",
+                CdnCertificateProblems.None,
+                []);
+            var profile = new CdnProfile
+            {
+                Name = "site",
+                BaseUrl = "https://cdn.example.com",
+                LastCertificateCheck = result
+            };
+            var store = new JsonCdnConfigurationStore(path);
+
+            await store.SaveAsync(new CdnConfiguration([profile], []));
+            var loaded = Assert.Single((await store.LoadAsync()).Profiles).LastCertificateCheck;
+
+            Assert.NotNull(loaded);
+            Assert.Equal(result.Endpoint, loaded.Endpoint);
+            Assert.Equal(result.CheckedAt, loaded.CheckedAt);
+            Assert.Equal(result.NotAfter, loaded.NotAfter);
+            Assert.Equal(result.StatusText, loaded.StatusText);
+        }
+        finally
+        {
+            DeleteDirectory(path);
+        }
+    }
+
+    [Fact]
+    public void ValidatorRejectsCertificateResultFromAnotherEndpoint()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var profile = new CdnProfile
+        {
+            Name = "site",
+            BaseUrl = "https://cdn.example.com",
+            LastCertificateCheck = new CdnCertificateCheckResult(
+                new Uri("https://other.example.com"),
+                now,
+                now.AddDays(-1),
+                now.AddDays(30),
+                "CN=other.example.com",
+                "CN=CA",
+                new string('A', 64),
+                "Tls13",
+                CdnCertificateProblems.None,
+                [])
+        };
+
+        var error = Assert.Single(CdnConfigurationValidator.Validate(new CdnConfiguration([profile], [])));
+
+        Assert.Contains("证书检测结果无效", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CredentialStoreNeverWritesPlaintextSecret()
     {
         var path = TemporaryFile("cdn-credentials.json");
