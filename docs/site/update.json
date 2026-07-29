@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "tagName": "v0.6.4",
-  "version": "0.6.4",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.4",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.4/S3Explorer-v0.6.4-win-x64.zip",
-  "notes": "修复测试连接结果被裁切、S3 兼容存储默认 Region、类型切换覆盖 Endpoint，以及旧连接被错误识别为 Amazon S3 的问题；新增可直接导入 Unity 的 Contracts SDK 下载包。",
-  "publishedAt": "2026-07-29T16:24:04+08:00"
+  "tagName": "v0.6.5",
+  "version": "0.6.5",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.5",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.5/S3Explorer-v0.6.5-win-x64.zip",
+  "notes": "新增可选择安装路径和桌面快捷方式的安装向导与自动 MSI 日志；CLI 双击显示完整帮助并保留窗口，批量传输支持并发、限速、Multipart 参数和可选上传后验证；远端发布验收默认使用 SHA-256 digest 校验大型资产。",
+  "publishedAt": "2026-07-29T17:41:37+08:00"
 }

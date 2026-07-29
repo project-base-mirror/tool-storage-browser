@@ -106,7 +106,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
 面向 Unity、CI 和构建机的发布命令只接收 Profile ID/名称，不接收或保存长期密钥：
 
-    s3explorer-cli upload --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --output json --non-interactive --yes
+    s3explorer-cli upload --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --transfers 4 --upload-limit 0 --verify --output json --non-interactive
     s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
     s3explorer-cli verify --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
     s3explorer-cli cdn test --profile "cdn-dev" --path "android/1.2.3/config.bytes" --output json --non-interactive
@@ -121,7 +121,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
     s3explorer-cli sync analyze "site-backup" --output json
     s3explorer-cli sync run "site-backup" --output json
 
-交互式终端会对发布、删除传播等操作显示 `[y/N]` 确认；Unity 和 CI 应使用 `--non-interactive --yes`，缺少确认时命令会直接失败而不是等待输入。`--timeout <秒>`、`--cancel-file <路径>` 和 `--log-file <路径>` 可控制超时、外部取消和追加脱敏日志。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。
+交互式终端会对发布、删除传播等操作显示 `[y/N]` 确认；Unity 和 CI 应使用 `--non-interactive --yes`，缺少确认时命令会直接失败而不是等待输入。`--timeout <秒>`、`--cancel-file <路径>` 和 `--log-file <路径>` 可控制超时、外部取消和追加脱敏日志。批量传输可用 `--transfers`、`--multipart-concurrency`、`--upload-limit`、`--download-limit`、`--multipart-threshold` 和 `--part-size` 设置有界并发、命令级共享限速与 Multipart；`upload`/`object upload` 可用 `--verify` 回读校验。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。
 
 所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。`--output json` 提供结构化结果，旧的 `--json` 仍兼容；普通终端默认输出可读中文提示。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。源码树中可用 `cli.bat help` 查看完整命令。
 
@@ -156,15 +156,15 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.4-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.4-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.4.zip
-    artifacts/release/S3Explorer-v0.6.4-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.5-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.5-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.5.zip
+    artifacts/release/S3Explorer-v0.6.5-win-x64-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
 
-发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent ZIP 仍需要 .NET 10 Desktop Runtime；self-contained ZIP 可直接解压运行；MSI 使用 self-contained 文件安装到 Program Files，并创建开始菜单入口。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
+发布配置保持 trimming 关闭，并将 GUI 与 CLI 的托管依赖及本机运行库分别打入单文件 EXE。framework-dependent ZIP 仍需要 .NET 10 Desktop Runtime；self-contained ZIP 可直接解压运行；MSI 使用 self-contained 文件，提供安装完成页、路径选择、开始菜单入口和可选桌面快捷方式。安装失败时可在 `%TEMP%` 查找最新的 `MSI*.log`。单文件发布会在首次需要本机库时使用 .NET 的受控临时提取目录。
 
 仅重新打包而跳过验证：
 
