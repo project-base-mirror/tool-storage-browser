@@ -158,6 +158,81 @@ public sealed class ConnectionArchiveServiceTests
     }
 
     [Fact]
+    public void AssumeRoleArchiveSeparatesPortableConfigurationFromProtectedExternalId()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Audit role",
+            CredentialSource = CredentialSourceKind.AwsAssumeRole,
+            AwsSourceProfileName = "bootstrap",
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+            AwsRoleSessionName = "s3explorer-audit",
+            AwsRoleSourceIdentity = "operator-42",
+            AwsExternalId = "customer-external-secret",
+            AwsSessionDurationSeconds = 1800
+        };
+
+        var credentialFreeArchive = _service.Export([profile]);
+        var credentialFreeText = Encoding.UTF8.GetString(credentialFreeArchive);
+        var credentialFree = Assert.Single(_service.Import(credentialFreeArchive).Profiles);
+
+        Assert.Contains(profile.AwsRoleArn, credentialFreeText, StringComparison.Ordinal);
+        Assert.DoesNotContain(profile.AwsExternalId, credentialFreeText, StringComparison.Ordinal);
+        Assert.Empty(credentialFree.AwsExternalId);
+        Assert.Equal("bootstrap", credentialFree.AwsSourceProfileName);
+        Assert.Equal("operator-42", credentialFree.AwsRoleSourceIdentity);
+
+        var protectedArchive = _service.Export([profile], includeCredentials: true, password: "portable-password");
+        Assert.DoesNotContain(profile.AwsExternalId, Encoding.UTF8.GetString(protectedArchive), StringComparison.Ordinal);
+        Assert.True(_service.Inspect(protectedArchive).RequiresPassword);
+        Assert.Equal(profile.AwsExternalId,
+            Assert.Single(_service.Import(protectedArchive, "portable-password").Profiles).AwsExternalId);
+    }
+
+    [Fact]
+    public void WebIdentityArchiveContainsOnlyTokenFileReference()
+    {
+        const string tokenContents = "eyJhbGciOiJub25lIn0.private-token-content";
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "OIDC workload",
+            CredentialSource = CredentialSourceKind.AwsWebIdentity,
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Workload",
+            AwsRoleSessionName = "s3explorer-workload",
+            AwsWebIdentityTokenFile = Path.GetFullPath("workload-token.jwt"),
+            AwsSessionDurationSeconds = 1800
+        };
+
+        var archive = _service.Export([profile], includeCredentials: true);
+        var text = Encoding.UTF8.GetString(archive);
+        var imported = Assert.Single(_service.Import(archive).Profiles);
+
+        Assert.False(_service.Inspect(archive).ContainsCredentials);
+        Assert.Contains("workload-token.jwt", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(tokenContents, text, StringComparison.Ordinal);
+        Assert.Equal(profile.AwsWebIdentityTokenFile, imported.AwsWebIdentityTokenFile);
+    }
+
+    [Fact]
+    public void MergePackagePlacesNewProfilesInTheSelectedTargetGroup()
+    {
+        var package = _service.Import(_service.Export([CreateProfile()]));
+        var groupId = Guid.NewGuid();
+
+        var merged = _service.MergePackage(
+            [], CdnConfiguration.Empty, [], package,
+            new ConnectionArchiveImportSelection(package.Profiles.Select(profile => profile.Id).ToArray(), []),
+            importStorageCredentials: false,
+            importCdnCredentials: false,
+            ConnectionImportConflictStrategy.Rename,
+            targetGroupId: groupId);
+
+        var imported = Assert.Single(merged.Profiles);
+        Assert.Equal(groupId, imported.GroupId);
+        Assert.Equal(0, imported.SortOrder);
+    }
+
+    [Fact]
     public void VersionOneCredentialFreeArchiveStillImportsAsStoredKeys()
     {
         var current = JsonNode.Parse(_service.Export([CreateProfile()]))!.AsObject();

@@ -32,11 +32,11 @@ public sealed class S3ClientFactory
     public IAmazonS3 Create(ConnectionProfile profile)
         => CreateResolved(profile).Client;
 
-    public S3ClientCreation CreateResolved(ConnectionProfile profile)
+    public S3ClientCreation CreateResolved(ConnectionProfile profile, bool allowInteractiveSso = false)
     {
         profile.Validate();
         var config = CreateConfig(profile);
-        var resolution = _credentialResolver.Resolve(profile);
+        var resolution = _credentialResolver.Resolve(profile, allowInteractiveSso);
         var client = new AmazonS3Client(resolution.Credentials, config);
         if (!string.IsNullOrWhiteSpace(profile.CustomHostHeader))
         {

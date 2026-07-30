@@ -24,7 +24,7 @@ public static class FileSizeFormatter
 
 public static partial class SensitiveDataRedactor
 {
-    [GeneratedRegex(@"(?i)(secret(?:access)?key|sessiontoken|authorization)\s*[:=]\s*([^\s,;]+)")]
+    [GeneratedRegex(@"(?i)(secret(?:access)?key|sessiontoken|authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|web[_-]?identity[_-]?token|external[_-]?id|client[_-]?secret|device[_-]?code|user[_-]?code)\s*[:=]\s*([^\s,;]+)")]
     private static partial Regex SensitivePattern();
 
     [GeneratedRegex(@"(?i)(X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token)=([^&\s]+)")]

@@ -6,6 +6,9 @@
   <ItemGroup>
     <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
     <PackageReference Include="AWSSDK.S3" Version="3.7.511.8" />
+    <PackageReference Include="AWSSDK.SecurityToken" Version="3.7.504.50" />
+    <PackageReference Include="AWSSDK.SSO" Version="3.7.502.56" />
+    <PackageReference Include="AWSSDK.SSOOIDC" Version="3.7.503.59" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
   </ItemGroup>
 </Project>

@@ -20,10 +20,12 @@ public sealed class S3StorageService : IS3StorageService
     {
         var stopwatch = Stopwatch.StartNew();
         var credentialSource = profile.CredentialSourceDisplayName;
+        AwsCredentialResolution? credentialResolution = null;
         using var connectionTimeout = CreateConnectionTimeout(profile, cancellationToken);
         try
         {
-            var creation = _factory.CreateResolved(profile);
+            var creation = _factory.CreateResolved(profile, allowInteractiveSso: true);
+            credentialResolution = creation.CredentialResolution;
             credentialSource = creation.CredentialResolution.DisplayName;
             using var client = creation.Client;
             var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
@@ -35,7 +37,8 @@ public sealed class S3StorageService : IS3StorageService
                 .Count();
             return new(true, stopwatch.Elapsed, bucketCount,
                 $"连接成功，发现或配置了 {bucketCount} 个 Bucket。",
-                CredentialSource: creation.CredentialResolution.DisplayName);
+                CredentialSource: creation.CredentialResolution.DisplayName,
+                AwsIdentity: creation.CredentialResolution.GetCurrentIdentity());
         }
         catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex))
         {
@@ -45,28 +48,29 @@ public sealed class S3StorageService : IS3StorageService
                 ? $"已到达 S3 服务；当前凭据无权列出全部 Bucket，将使用已配置的 {configuredCount} 个 Bucket。"
                 : "已到达 S3 服务，但当前凭据无权列出全部 Bucket。请配置默认 Bucket 或外部 Bucket。";
             return new(true, stopwatch.Elapsed, configuredCount, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
-                credentialSource);
+                credentialSource, credentialResolution?.GetCurrentIdentity());
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && connectionTimeout.IsCancellationRequested)
         {
             stopwatch.Stop();
             return new(false, stopwatch.Elapsed, 0, $"连接超时（{profile.ConnectionTimeoutSeconds} 秒）。", null, "ConnectionTimeout",
-                CredentialSource: credentialSource);
+                CredentialSource: credentialSource, AwsIdentity: credentialResolution?.GetCurrentIdentity());
         }
         catch (AmazonS3Exception ex)
         {
             stopwatch.Stop();
             var reachedServer = ex.StatusCode != 0;
             var message = reachedServer
-                ? $"请求已到达服务器，但操作失败：{ex.ErrorCode} - {ex.Message}"
-                : ex.Message;
+                ? $"请求已到达服务器，但操作失败：{ex.ErrorCode} - {SensitiveDataRedactor.Redact(ex.Message)}"
+                : SensitiveDataRedactor.Redact(ex.Message);
             return new(false, stopwatch.Elapsed, 0, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
-                credentialSource);
+                credentialSource, credentialResolution?.GetCurrentIdentity());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             stopwatch.Stop();
-            return new(false, stopwatch.Elapsed, 0, ex.Message, CredentialSource: credentialSource);
+            return new(false, stopwatch.Elapsed, 0, SensitiveDataRedactor.Redact(ex.Message), CredentialSource: credentialSource,
+                AwsIdentity: credentialResolution?.GetCurrentIdentity());
         }
     }
 

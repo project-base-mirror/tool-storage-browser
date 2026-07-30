@@ -116,7 +116,9 @@ public sealed class ConnectionArchiveService
         EnsureArchiveRelationshipsAreComplete(profiles, cdnConfiguration);
 
         var containsStoredCredentials = includeCredentials && (
-            profiles.Any(profile => profile.HasStoredCredentials) ||
+            profiles.Any(profile => profile.HasStoredCredentials ||
+                profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
+                !string.IsNullOrWhiteSpace(profile.AwsExternalId)) ||
             cdnCredentials.Any(credential =>
                 credential.AuthenticationType != CdnAuthenticationType.None &&
                 !string.IsNullOrEmpty(credential.Secret)));
@@ -432,7 +434,8 @@ public sealed class ConnectionArchiveService
         ConnectionArchiveImportSelection selection,
         bool importStorageCredentials,
         bool importCdnCredentials,
-        ConnectionImportConflictStrategy conflictStrategy)
+        ConnectionImportConflictStrategy conflictStrategy,
+        Guid? targetGroupId = null)
     {
         ArgumentNullException.ThrowIfNull(existingProfiles);
         ArgumentNullException.ThrowIfNull(existingCdnConfiguration);
@@ -451,6 +454,11 @@ public sealed class ConnectionArchiveService
             throw new ArgumentException("所选 CDN 配置不属于当前连接包。", nameof(selection));
 
         var profiles = existingProfiles.ToList();
+        var nextTargetOrder = profiles
+            .Where(profile => profile.GroupId == targetGroupId)
+            .Select(profile => profile.SortOrder)
+            .DefaultIfEmpty(-1)
+            .Max() + 1;
         var storageIdMap = new Dictionary<Guid, Guid>();
         foreach (var source in package.Profiles.Where(profile => selectedStorageIds.Contains(profile.Id)))
         {
@@ -468,7 +476,7 @@ public sealed class ConnectionArchiveService
                 string.Equals(item.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
             if (existingIndex < 0)
             {
-                var added = imported with { Id = Guid.NewGuid() };
+                var added = imported with { Id = Guid.NewGuid(), GroupId = targetGroupId, SortOrder = nextTargetOrder++ };
                 profiles.Add(added);
                 storageIdMap[source.Id] = added.Id;
                 continue;
@@ -479,7 +487,12 @@ public sealed class ConnectionArchiveService
                 case ConnectionImportConflictStrategy.Skip:
                     break;
                 case ConnectionImportConflictStrategy.Replace:
-                    var replaced = imported with { Id = profiles[existingIndex].Id };
+                    var replaced = imported with
+                    {
+                        Id = profiles[existingIndex].Id,
+                        GroupId = targetGroupId,
+                        SortOrder = nextTargetOrder++
+                    };
                     profiles[existingIndex] = replaced;
                     storageIdMap[source.Id] = replaced.Id;
                     break;
@@ -487,7 +500,9 @@ public sealed class ConnectionArchiveService
                     var renamed = imported with
                     {
                         Id = Guid.NewGuid(),
-                        Name = CreateUniqueImportedName(imported.Name, profiles.Select(item => item.Name))
+                        Name = CreateUniqueImportedName(imported.Name, profiles.Select(item => item.Name)),
+                        GroupId = targetGroupId,
+                        SortOrder = nextTargetOrder++
                     };
                     profiles.Add(renamed);
                     storageIdMap[source.Id] = renamed.Id;
@@ -787,7 +802,8 @@ public sealed class ConnectionArchiveService
             {
                 AccessKey = string.Empty,
                 SecretKey = string.Empty,
-                SessionToken = string.Empty
+                SessionToken = string.Empty,
+                AwsExternalId = string.Empty
             };
 
     private static bool StorageProfilesEquivalent(
@@ -801,6 +817,12 @@ public sealed class ConnectionArchiveService
             string.Equals(left.EffectiveSignatureRegion, right.EffectiveSignatureRegion, StringComparison.OrdinalIgnoreCase) &&
             left.CredentialSource == right.CredentialSource &&
             string.Equals(left.AwsProfileName?.Trim(), right.AwsProfileName?.Trim(), StringComparison.Ordinal) &&
+            string.Equals(left.AwsSourceProfileName?.Trim(), right.AwsSourceProfileName?.Trim(), StringComparison.Ordinal) &&
+            string.Equals(left.AwsRoleArn?.Trim(), right.AwsRoleArn?.Trim(), StringComparison.Ordinal) &&
+            string.Equals(left.AwsRoleSessionName?.Trim(), right.AwsRoleSessionName?.Trim(), StringComparison.Ordinal) &&
+            string.Equals(left.AwsRoleSourceIdentity?.Trim(), right.AwsRoleSourceIdentity?.Trim(), StringComparison.Ordinal) &&
+            left.AwsSessionDurationSeconds == right.AwsSessionDurationSeconds &&
+            string.Equals(left.AwsWebIdentityTokenFile?.Trim(), right.AwsWebIdentityTokenFile?.Trim(), StringComparison.Ordinal) &&
             left.AddressingStyle == right.AddressingStyle &&
             left.UseHttps == right.UseHttps &&
             left.IgnoreCertificateErrors == right.IgnoreCertificateErrors &&
@@ -813,11 +835,14 @@ public sealed class ConnectionArchiveService
             left.ConnectionTimeoutSeconds == right.ConnectionTimeoutSeconds &&
             string.Equals(left.DefaultBucket?.Trim(), right.DefaultBucket?.Trim(), StringComparison.Ordinal) &&
             NormalizeBuckets(left.ExternalBuckets).SequenceEqual(NormalizeBuckets(right.ExternalBuckets), StringComparer.Ordinal);
-        if (!same || !compareStoredCredentials || left.CredentialSource != CredentialSourceKind.StoredKeys)
+        if (!same || !compareStoredCredentials)
             return same;
-        return string.Equals(left.AccessKey, right.AccessKey, StringComparison.Ordinal) &&
-               string.Equals(left.SecretKey, right.SecretKey, StringComparison.Ordinal) &&
-               string.Equals(left.SessionToken, right.SessionToken, StringComparison.Ordinal);
+        if (left.CredentialSource == CredentialSourceKind.StoredKeys)
+            return string.Equals(left.AccessKey, right.AccessKey, StringComparison.Ordinal) &&
+                   string.Equals(left.SecretKey, right.SecretKey, StringComparison.Ordinal) &&
+                   string.Equals(left.SessionToken, right.SessionToken, StringComparison.Ordinal);
+        return left.CredentialSource != CredentialSourceKind.AwsAssumeRole ||
+               string.Equals(left.AwsExternalId, right.AwsExternalId, StringComparison.Ordinal);
     }
 
     private static bool CdnCredentialsEquivalent(CdnCredential left, CdnCredential right)
@@ -997,6 +1022,13 @@ public sealed class ConnectionArchiveService
         public string? SessionToken { get; set; }
         public CredentialSourceKind CredentialSource { get; set; } = CredentialSourceKind.StoredKeys;
         public string AwsProfileName { get; set; } = string.Empty;
+        public string AwsSourceProfileName { get; set; } = string.Empty;
+        public string AwsRoleArn { get; set; } = string.Empty;
+        public string AwsRoleSessionName { get; set; } = string.Empty;
+        public string AwsRoleSourceIdentity { get; set; } = string.Empty;
+        public string? AwsExternalId { get; set; }
+        public int AwsSessionDurationSeconds { get; set; } = 3600;
+        public string AwsWebIdentityTokenFile { get; set; } = string.Empty;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
@@ -1028,8 +1060,30 @@ public sealed class ConnectionArchiveService
                 ? source.SessionToken
                 : null,
             CredentialSource = source.CredentialSource,
-            AwsProfileName = source.CredentialSource == CredentialSourceKind.AwsSharedProfile
+            AwsProfileName = source.CredentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso
                 ? (source.AwsProfileName ?? string.Empty).Trim()
+                : string.Empty,
+            AwsSourceProfileName = source.CredentialSource == CredentialSourceKind.AwsAssumeRole
+                ? (source.AwsSourceProfileName ?? string.Empty).Trim()
+                : string.Empty,
+            AwsRoleArn = source.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? (source.AwsRoleArn ?? string.Empty).Trim()
+                : string.Empty,
+            AwsRoleSessionName = source.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? (source.AwsRoleSessionName ?? string.Empty).Trim()
+                : string.Empty,
+            AwsRoleSourceIdentity = source.CredentialSource == CredentialSourceKind.AwsAssumeRole
+                ? (source.AwsRoleSourceIdentity ?? string.Empty).Trim()
+                : string.Empty,
+            AwsExternalId = includeCredentials && source.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
+                !string.IsNullOrWhiteSpace(source.AwsExternalId)
+                ? source.AwsExternalId
+                : null,
+            AwsSessionDurationSeconds = source.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? source.AwsSessionDurationSeconds
+                : 3600,
+            AwsWebIdentityTokenFile = source.CredentialSource == CredentialSourceKind.AwsWebIdentity
+                ? (source.AwsWebIdentityTokenFile ?? string.Empty).Trim()
                 : string.Empty,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
@@ -1059,6 +1113,13 @@ public sealed class ConnectionArchiveService
                 SessionToken = SessionToken ?? string.Empty,
                 CredentialSource = CredentialSource,
                 AwsProfileName = AwsProfileName ?? string.Empty,
+                AwsSourceProfileName = AwsSourceProfileName ?? string.Empty,
+                AwsRoleArn = AwsRoleArn ?? string.Empty,
+                AwsRoleSessionName = AwsRoleSessionName ?? string.Empty,
+                AwsRoleSourceIdentity = AwsRoleSourceIdentity ?? string.Empty,
+                AwsExternalId = AwsExternalId ?? string.Empty,
+                AwsSessionDurationSeconds = AwsSessionDurationSeconds <= 0 ? 3600 : AwsSessionDurationSeconds,
+                AwsWebIdentityTokenFile = AwsWebIdentityTokenFile ?? string.Empty,
                 AddressingStyle = AddressingStyle,
                 UseHttps = UseHttps,
                 IgnoreCertificateErrors = IgnoreCertificateErrors,

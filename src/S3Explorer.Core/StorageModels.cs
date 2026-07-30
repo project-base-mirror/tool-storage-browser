@@ -55,7 +55,8 @@ public sealed record ConnectionTestResult(
     int? HttpStatusCode = null,
     string? ErrorCode = null,
     string? RequestId = null,
-    string? CredentialSource = null);
+    string? CredentialSource = null,
+    AwsIdentitySummary? AwsIdentity = null);
 
 public sealed record ObjectProperties(
     string Bucket,
@@ -83,6 +84,14 @@ public interface IProfileStore
 {
     Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default);
     Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default);
+
+    async Task<ConnectionProfileConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default) =>
+        new(await LoadAsync(cancellationToken).ConfigureAwait(false), []);
+
+    Task SaveConfigurationAsync(
+        ConnectionProfileConfiguration configuration,
+        CancellationToken cancellationToken = default) =>
+        SaveAsync(configuration.Profiles, cancellationToken);
 }
 
 public interface IS3StorageService

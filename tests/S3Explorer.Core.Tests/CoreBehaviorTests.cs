@@ -54,6 +54,23 @@ public sealed class CoreBehaviorTests
         Assert.DoesNotContain("Signature=123", redacted);
     }
 
+    [Fact]
+    public void AdvancedAwsTokensAndExternalIdsAreRedacted()
+    {
+        var value = "access_token=access-value refresh_token=refresh-value id_token=id-value " +
+                    "web_identity_token=web-value externalId=external-value device_code=device-value user_code=user-value";
+
+        var redacted = SensitiveDataRedactor.Redact(value);
+
+        Assert.DoesNotContain("access-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("refresh-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("id-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("web-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("external-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("device-value", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("user-value", redacted, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("SlowDown", 503, true)]
     [InlineData("AccessDenied", 403, false)]

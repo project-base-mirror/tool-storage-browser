@@ -15,20 +15,47 @@
           "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
         }
       },
+      "AWSSDK.SecurityToken": {
+        "type": "Transitive",
+        "resolved": "3.7.504.50",
+        "contentHash": "uiGuL/3sH1mdwZvheNZwDkZaVTrMlFDrjKtT8Vq2yPkwDZvR9l/WieHluHrTwU0HG9qRlLzvA9DXwhsMu76Y1g==",
+        "dependencies": {
+          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+        }
+      },
+      "AWSSDK.SSO": {
+        "type": "Transitive",
+        "resolved": "3.7.502.56",
+        "contentHash": "oikwNz8JmBjBz+wSPm1Z6Kygxxp4NGC+GJNVe6hlLp/uqrXEPuYRlI8XZzIfMjt18MkCZWvGUL+2QN5gSJxA1g==",
+        "dependencies": {
+          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+        }
+      },
+      "AWSSDK.SSOOIDC": {
+        "type": "Transitive",
+        "resolved": "3.7.503.59",
+        "contentHash": "4l3I0qxbvCYbdRk6QZ8pG2UcxisTnZND1sSqINCaCzM/kiiUPL68VitXnvuY7x5rtiCE/gktAmly+DvPl1BLqw==",
+        "dependencies": {
+          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+        }
+      },
       "s3explorer.core": {
         "type": "Project"
       },
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.6.10, )"
+          "S3Explorer.Core": "[0.6.11, )"
         }
       },
       "s3explorer.infrastructure.s3": {
         "type": "Project",
         "dependencies": {
           "AWSSDK.S3": "[3.7.511.8, )",
-          "S3Explorer.Core": "[0.6.10, )"
+          "AWSSDK.SSO": "[3.7.502.56, )",
+          "AWSSDK.SSOOIDC": "[3.7.503.59, )",
+          "AWSSDK.SecurityToken": "[3.7.504.50, )",
+          "S3Explorer.Core": "[0.6.11, )"
         }
       }
     },

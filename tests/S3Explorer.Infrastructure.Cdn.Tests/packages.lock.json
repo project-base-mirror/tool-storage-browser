@@ -110,7 +110,7 @@
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.6.10, )",
+          "S3Explorer.Core": "[0.6.11, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }

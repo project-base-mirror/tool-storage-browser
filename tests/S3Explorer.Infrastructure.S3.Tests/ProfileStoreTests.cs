@@ -142,6 +142,53 @@ public sealed class ProfileStoreTests
         }
     }
 
+    [Fact]
+    public async Task SchemaFourRoundTripsGroupsAndProtectsAssumeRoleExternalId()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "profiles.json");
+        var store = new JsonProfileStore(new FakeProtector(), path);
+        var group = new ConnectionGroup { Name = "Production", SortOrder = 2, IsExpanded = false };
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Audit role",
+            GroupId = group.Id,
+            SortOrder = 4,
+            CredentialSource = CredentialSourceKind.AwsAssumeRole,
+            AwsSourceProfileName = "bootstrap",
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+            AwsRoleSessionName = "s3explorer-audit",
+            AwsRoleSourceIdentity = "operator-42",
+            AwsExternalId = "plain-external-id",
+            AwsSessionDurationSeconds = 1800
+        };
+
+        try
+        {
+            await store.SaveConfigurationAsync(new ConnectionProfileConfiguration([profile], [group]));
+            var json = await File.ReadAllTextAsync(path);
+
+            Assert.Contains("\"version\": 4", json, StringComparison.Ordinal);
+            Assert.Contains("Production", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("plain-external-id", json, StringComparison.Ordinal);
+
+            var loaded = await store.LoadConfigurationAsync();
+            var loadedGroup = Assert.Single(loaded.Groups);
+            var loadedProfile = Assert.Single(loaded.Profiles);
+            Assert.Equal(group.Id, loadedGroup.Id);
+            Assert.False(loadedGroup.IsExpanded);
+            Assert.Equal(group.Id, loadedProfile.GroupId);
+            Assert.Equal("plain-external-id", loadedProfile.AwsExternalId);
+            Assert.Equal("operator-42", loadedProfile.AwsRoleSourceIdentity);
+            Assert.Equal(1800, loadedProfile.AwsSessionDurationSeconds);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private sealed class FakeProtector : ICredentialProtector
     {
         public string Protect(string plaintext) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plaintext));

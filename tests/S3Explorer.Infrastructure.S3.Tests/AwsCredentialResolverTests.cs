@@ -1,4 +1,5 @@
 using Amazon.Runtime;
+using System.Reflection;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.S3;
 using Xunit;
@@ -88,6 +89,25 @@ public sealed class AwsCredentialResolverTests
     }
 
     [Fact]
+    public void CredentialFactoryDiagnosticsRedactAdvancedTokens()
+    {
+        var resolver = CreateResolver(
+            environment: () => throw new InvalidOperationException("access_token=token-secret external_id=external-secret"),
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["AWS_ACCESS_KEY_ID"] = "access",
+                ["AWS_SECRET_ACCESS_KEY"] = "secret"
+            });
+
+        var exception = Assert.Throws<AwsCredentialResolutionException>(() =>
+            resolver.Resolve(ExternalProfile(CredentialSourceKind.AwsEnvironmentVariables)));
+
+        Assert.DoesNotContain("token-secret", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("external-secret", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("***", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DefaultChainReportsTheActualResolvedSource()
     {
         var resolver = CreateResolver(defaultChain: () => new TestEnvironmentCredentials());
@@ -99,15 +119,105 @@ public sealed class AwsCredentialResolverTests
     }
 
     [Fact]
-    public void AdvancedTokenSourcesAreNotSilentlyAcceptedInThisPhase()
+    public void DefaultChainClassifiesSsoAndRequiresAnExplicitLoginTrigger()
     {
         var resolver = CreateResolver(defaultChain: () => new TestSSOCredentials());
 
-        var exception = Assert.Throws<AwsCredentialResolutionException>(() =>
-            resolver.Resolve(ExternalProfile(CredentialSourceKind.AwsDefaultChain)));
+        var result = resolver.Resolve(ExternalProfile(CredentialSourceKind.AwsDefaultChain));
 
-        Assert.Contains("SSO", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("高级身份", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(CredentialSourceKind.AwsSso, result.ActualSource);
+        Assert.True(result.Identity.UserLoginMayBeRequired);
+        Assert.Contains("SSO", result.DisplayName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExplicitSsoEnablesBrowserVerificationOnlyForInteractiveResolution()
+    {
+        var sso = new SSOAWSCredentials(
+            "123456789012", "us-east-1", "ReadOnly", "https://example.awsapps.com/start",
+            new SSOAWSCredentialsOptions());
+        var resolver = CreateResolver(sharedProfile: _ => sso);
+        var profile = ExternalProfile(CredentialSourceKind.AwsSso) with { AwsProfileName = "company" };
+
+        var background = resolver.Resolve(profile);
+        Assert.False(sso.Options.SupportsGettingNewToken);
+        Assert.Null(sso.Options.SsoVerificationCallback);
+        Assert.True(background.Identity.UserLoginMayBeRequired);
+
+        var interactive = resolver.Resolve(profile, allowInteractiveSso: true);
+        Assert.True(sso.Options.SupportsGettingNewToken);
+        Assert.NotNull(sso.Options.SsoVerificationCallback);
+        Assert.False(interactive.Identity.UserLoginMayBeRequired);
+        Assert.Contains("123456789012", interactive.Identity.SourceIdentity, StringComparison.Ordinal);
+        Assert.Contains("ReadOnly", interactive.Identity.SourceIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AssumeRoleKeepsSourceRoleAndExternalIdStateDiagnosableWithoutExposingExternalId()
+    {
+        var resolver = CreateResolver();
+        var profile = ExternalProfile(CredentialSourceKind.AwsAssumeRole) with
+        {
+            AwsSourceProfileName = "bootstrap",
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+            AwsRoleSessionName = "s3explorer-audit",
+            AwsRoleSourceIdentity = "operator-42",
+            AwsExternalId = "customer-secret-id",
+            AwsSessionDurationSeconds = 1800
+        };
+
+        var result = resolver.Resolve(profile);
+        var credentials = Assert.IsType<AssumeRoleAWSCredentials>(result.Credentials);
+
+        Assert.Equal("customer-secret-id", credentials.Options.ExternalId);
+        Assert.Equal("operator-42", credentials.Options.SourceIdentity);
+        Assert.Equal(1800, credentials.Options.DurationSeconds);
+        Assert.Equal(profile.AwsRoleArn, result.Identity.TargetRoleArn);
+        Assert.True(result.Identity.ExternalIdConfigured);
+        Assert.DoesNotContain("customer-secret-id", result.DisplayName, StringComparison.Ordinal);
+        Assert.DoesNotContain("customer-secret-id", result.Identity.SourceIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WebIdentityPassesOnlyTheTokenFileReferenceToTheSdk()
+    {
+        var resolver = CreateResolver();
+        var tokenFile = Path.GetFullPath("web-identity-token.jwt");
+        var profile = ExternalProfile(CredentialSourceKind.AwsWebIdentity) with
+        {
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Workload",
+            AwsRoleSessionName = "s3explorer-workload",
+            AwsWebIdentityTokenFile = tokenFile,
+            AwsSessionDurationSeconds = 1800
+        };
+
+        var result = resolver.Resolve(profile);
+        var credentials = Assert.IsType<AssumeRoleWithWebIdentityCredentials>(result.Credentials);
+
+        Assert.Equal(tokenFile, credentials.WebIdentityTokenFile);
+        Assert.Equal(profile.AwsRoleArn, result.Identity.TargetRoleArn);
+        Assert.DoesNotContain(tokenFile, result.Identity.SourceIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RefreshingCredentialExpirationCanBeReportedAfterTheSdkCreatesASession()
+    {
+        var credentials = new AssumeRoleAWSCredentials(
+            new BasicAWSCredentials("access", "secret"),
+            "arn:aws:iam::123456789012:role/Audit",
+            "s3explorer-audit");
+        var expiration = new DateTime(2026, 7, 30, 12, 0, 0, DateTimeKind.Utc);
+        var stateField = typeof(RefreshingAWSCredentials).GetField(
+            "currentState", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var state = Activator.CreateInstance(
+            stateField.FieldType,
+            new ImmutableCredentials("temporary", "temporary-secret", "temporary-token"),
+            expiration)!;
+        stateField.SetValue(credentials, state);
+
+        var result = AwsCredentialResolver.TryGetSessionExpiration(credentials);
+
+        Assert.Equal(new DateTimeOffset(expiration), result);
     }
 
     private static ConnectionProfile ExternalProfile(CredentialSourceKind source) =>

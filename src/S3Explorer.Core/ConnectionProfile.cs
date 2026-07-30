@@ -34,12 +34,17 @@ public enum CredentialSourceKind
     AwsEnvironmentVariables,
     AwsContainerRole,
     AwsInstanceRole,
-    AwsDefaultChain
+    AwsDefaultChain,
+    AwsSso,
+    AwsAssumeRole,
+    AwsWebIdentity
 }
 
 public sealed record ConnectionProfile
 {
     public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid? GroupId { get; init; }
+    public int SortOrder { get; init; }
     public string Name { get; init; } = string.Empty;
     public S3ServiceType ServiceType { get; init; } = S3ServiceType.AmazonS3;
     public string Endpoint { get; init; } = "https://s3.amazonaws.com";
@@ -50,6 +55,13 @@ public sealed record ConnectionProfile
     public string SessionToken { get; init; } = string.Empty;
     public CredentialSourceKind CredentialSource { get; init; } = CredentialSourceKind.StoredKeys;
     public string AwsProfileName { get; init; } = string.Empty;
+    public string AwsSourceProfileName { get; init; } = string.Empty;
+    public string AwsRoleArn { get; init; } = string.Empty;
+    public string AwsRoleSessionName { get; init; } = string.Empty;
+    public string AwsRoleSourceIdentity { get; init; } = string.Empty;
+    public string AwsExternalId { get; init; } = string.Empty;
+    public int AwsSessionDurationSeconds { get; init; } = 3600;
+    public string AwsWebIdentityTokenFile { get; init; } = string.Empty;
     public bool UsesTemporarySessionCredentials =>
         CredentialSource == CredentialSourceKind.StoredKeys &&
         !string.IsNullOrWhiteSpace(SessionToken);
@@ -60,7 +72,14 @@ public sealed record ConnectionProfile
     public bool HasCredentialConfiguration => CredentialSource switch
     {
         CredentialSourceKind.StoredKeys => HasStoredCredentials,
-        CredentialSourceKind.AwsSharedProfile => !string.IsNullOrWhiteSpace(AwsProfileName),
+        CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso =>
+            !string.IsNullOrWhiteSpace(AwsProfileName),
+        CredentialSourceKind.AwsAssumeRole =>
+            !string.IsNullOrWhiteSpace(AwsSourceProfileName) &&
+            !string.IsNullOrWhiteSpace(AwsRoleArn),
+        CredentialSourceKind.AwsWebIdentity =>
+            !string.IsNullOrWhiteSpace(AwsRoleArn) &&
+            !string.IsNullOrWhiteSpace(AwsWebIdentityTokenFile),
         _ => true
     };
     public bool UsesExternalAwsCredentials => CredentialSource != CredentialSourceKind.StoredKeys;
@@ -74,6 +93,10 @@ public sealed record ConnectionProfile
         CredentialSourceKind.AwsContainerRole => "AWS 容器角色",
         CredentialSourceKind.AwsInstanceRole => "AWS EC2 实例角色",
         CredentialSourceKind.AwsDefaultChain => "AWS 默认凭据链",
+        CredentialSourceKind.AwsSso => $"AWS SSO：{(AwsProfileName ?? string.Empty).Trim()}",
+        CredentialSourceKind.AwsAssumeRole =>
+            $"AWS AssumeRole：{(AwsSourceProfileName ?? string.Empty).Trim()} → {(AwsRoleArn ?? string.Empty).Trim()}",
+        CredentialSourceKind.AwsWebIdentity => $"AWS Web Identity：{(AwsRoleArn ?? string.Empty).Trim()}",
         _ => CredentialSource.ToString()
     };
     public AddressingStyle AddressingStyle { get; init; } = AddressingStyle.Auto;
@@ -145,13 +168,35 @@ public sealed record ConnectionProfile
             throw new ArgumentException(
                 "AWS 外部凭据来源仅适用于 Amazon S3；S3-compatible 连接必须使用明确保存的密钥。",
                 nameof(CredentialSource));
-        if (CredentialSource == CredentialSourceKind.AwsSharedProfile)
+        if (SortOrder < 0)
+            throw new ArgumentOutOfRangeException(nameof(SortOrder), "连接排序不能小于 0。");
+        if (CredentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso)
         {
             var profileName = AwsProfileName?.Trim() ?? string.Empty;
             if (profileName.Length == 0)
-                throw new ArgumentException("选择 AWS shared profile 时必须填写 Profile 名称。", nameof(AwsProfileName));
+                throw new ArgumentException("选择 AWS Profile 或 SSO 时必须填写 Profile 名称。", nameof(AwsProfileName));
             if (profileName.Any(char.IsControl))
                 throw new ArgumentException("AWS Profile 名称不能包含控制字符。", nameof(AwsProfileName));
+        }
+        if (CredentialSource == CredentialSourceKind.AwsAssumeRole)
+        {
+            ValidateAwsProfileName(AwsSourceProfileName, nameof(AwsSourceProfileName), "AssumeRole 源 Profile");
+            ValidateRoleArn(AwsRoleArn);
+            ValidateRoleSessionName(AwsRoleSessionName);
+            ValidateOptionalRoleSourceIdentity(AwsRoleSourceIdentity);
+            ValidateSessionDuration(AwsSessionDurationSeconds);
+            ValidateOptionalExternalId(AwsExternalId);
+        }
+        if (CredentialSource == CredentialSourceKind.AwsWebIdentity)
+        {
+            ValidateRoleArn(AwsRoleArn);
+            ValidateRoleSessionName(AwsRoleSessionName);
+            ValidateSessionDuration(AwsSessionDurationSeconds);
+            var tokenFile = AwsWebIdentityTokenFile?.Trim() ?? string.Empty;
+            if (tokenFile.Length == 0 || !Path.IsPathFullyQualified(tokenFile))
+                throw new ArgumentException("Web Identity Token 文件必须使用绝对路径。", nameof(AwsWebIdentityTokenFile));
+            if (tokenFile.Any(char.IsControl))
+                throw new ArgumentException("Web Identity Token 文件路径不能包含控制字符。", nameof(AwsWebIdentityTokenFile));
         }
         if (RequestTimeoutSeconds is < 5 or > 3600)
             throw new ArgumentOutOfRangeException(nameof(RequestTimeoutSeconds), "请求超时必须在 5 到 3600 秒之间。");
@@ -161,6 +206,60 @@ public sealed record ConnectionProfile
             ValidateKnownBucket(bucket);
 
         EndpointCompatibility.ValidateHostHeader(CustomHostHeader);
+    }
+
+    private static void ValidateAwsProfileName(string? value, string parameterName, string label)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        if (normalized.Length == 0)
+            throw new ArgumentException($"{label}不能为空。", parameterName);
+        if (normalized.Any(char.IsControl))
+            throw new ArgumentException($"{label}不能包含控制字符。", parameterName);
+    }
+
+    private static void ValidateRoleArn(string? value)
+    {
+        var roleArn = value?.Trim() ?? string.Empty;
+        if (!roleArn.StartsWith("arn:", StringComparison.Ordinal) ||
+            !roleArn.Contains(":iam::", StringComparison.Ordinal) ||
+            !roleArn.Contains(":role/", StringComparison.Ordinal))
+            throw new ArgumentException("Role ARN 必须是有效的 IAM Role ARN。", nameof(AwsRoleArn));
+        if (roleArn.Any(char.IsControl) || roleArn.Any(char.IsWhiteSpace))
+            throw new ArgumentException("Role ARN 不能包含空白或控制字符。", nameof(AwsRoleArn));
+    }
+
+    private static void ValidateRoleSessionName(string? value)
+    {
+        var sessionName = value?.Trim() ?? string.Empty;
+        if (sessionName.Length is < 2 or > 64 ||
+            sessionName.Any(character => !(char.IsLetterOrDigit(character) || character is '_' or '=' or ',' or '.' or '@' or '-')))
+            throw new ArgumentException("角色会话名称必须为 2–64 个字母、数字或 _ = , . @ - 字符。", nameof(AwsRoleSessionName));
+    }
+
+    private static void ValidateSessionDuration(int seconds)
+    {
+        if (seconds is < 900 or > 43200)
+            throw new ArgumentOutOfRangeException(nameof(AwsSessionDurationSeconds), "角色会话时长必须在 900–43200 秒之间。");
+    }
+
+    private static void ValidateOptionalRoleSourceIdentity(string? value)
+    {
+        var sourceIdentity = value?.Trim() ?? string.Empty;
+        if (sourceIdentity.Length == 0) return;
+        if (sourceIdentity.Length is < 2 or > 64 ||
+            sourceIdentity.Any(character => !(char.IsLetterOrDigit(character) || character is '_' or '=' or ',' or '.' or '@' or '-')))
+            throw new ArgumentException("Source Identity 必须为 2–64 个字母、数字或 _ = , . @ - 字符。", nameof(AwsRoleSourceIdentity));
+        if (sourceIdentity.StartsWith("aws:", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Source Identity 不能以 aws: 开头。", nameof(AwsRoleSourceIdentity));
+    }
+
+    private static void ValidateOptionalExternalId(string? value)
+    {
+        var externalId = value?.Trim() ?? string.Empty;
+        if (externalId.Length == 0) return;
+        if (externalId.Length is < 2 or > 1224 ||
+            externalId.Any(character => !(char.IsLetterOrDigit(character) || character is '_' or '=' or ',' or '.' or '@' or ':' or '/' or '-')))
+            throw new ArgumentException("External ID 必须为 2–1224 个字母、数字或 _ = , . @ : / - 字符。", nameof(AwsExternalId));
     }
 
     private static string NormalizeKnownBucket(string? bucket) => bucket?.Trim() ?? string.Empty;
