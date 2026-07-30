@@ -31,6 +31,35 @@ public sealed class GitHubUpdateCheckerTests
         Assert.EndsWith("/S3Explorer-v0.5.5-win-x64.zip", release.PreferredDownload!.AbsoluteUri);
     }
 
+    [Theory]
+    [InlineData(0, "S3Explorer-v0.6.10-win-x64.zip")]
+    [InlineData(1, "S3Explorer-v0.6.10-win-x64-self-contained.zip")]
+    [InlineData(2, "S3Explorer-v0.6.10-win-x64-framework-dependent-setup.msi")]
+    [InlineData(3, "S3Explorer-v0.6.10-win-x64-setup.msi")]
+    public void SelectsMatchingPackageFromVersionTwoManifest(int kindValue, string expectedName)
+    {
+        var kind = (UpdatePackageKind)kindValue;
+        const string payload = """
+        {
+          "schemaVersion": 2,
+          "tagName": "v0.6.10",
+          "version": "0.6.10",
+          "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.10",
+          "downloads": {
+            "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64.zip",
+            "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-self-contained.zip",
+            "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-framework-dependent-setup.msi",
+            "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-setup.msi"
+          }
+        }
+        """;
+
+        var release = GitHubUpdateChecker.ParseManifest(payload, kind);
+
+        Assert.Equal(kind, release.RecommendedPackage);
+        Assert.EndsWith(expectedName, release.PreferredDownload!.AbsoluteUri);
+    }
+
     [Fact]
     public void RejectsManifestWhenVersionAndTagDiffer()
     {
@@ -183,6 +212,53 @@ public sealed class GitHubUpdateCheckerTests
         Assert.EndsWith("/S3Explorer-v0.5.3-win-x64.zip", release.PreferredDownload!.AbsoluteUri);
         Assert.True(release.IsNewerThan(new Version(0, 5, 0, 0)));
         Assert.False(release.IsNewerThan(new Version(0, 5, 3, 0)));
+    }
+
+    [Theory]
+    [InlineData(3, "S3Explorer-v0.6.10-win-x64-setup.msi")]
+    [InlineData(2, "S3Explorer-v0.6.10-win-x64-framework-dependent-setup.msi")]
+    public void SelectsMatchingInstallerFromGitHubRelease(int kindValue, string expectedName)
+    {
+        var kind = (UpdatePackageKind)kindValue;
+        var payload = $$"""
+        {
+          "tag_name": "v0.6.10",
+          "html_url": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.10",
+          "assets": [
+            {
+              "name": "S3Explorer-v0.6.10-win-x64.zip",
+              "browser_download_url": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64.zip"
+            },
+            {
+              "name": "{{expectedName}}",
+              "browser_download_url": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/{{expectedName}}"
+            }
+          ]
+        }
+        """;
+
+        var release = GitHubUpdateChecker.ParseRelease(payload, kind);
+
+        Assert.Equal(kind, release.RecommendedPackage);
+        Assert.EndsWith(expectedName, release.PreferredDownload!.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("self-contained", 3)]
+    [InlineData("framework-dependent", 2)]
+    [InlineData("unknown", 0)]
+    public void MapsInstallerFlavor(string value, int expectedValue) =>
+        Assert.Equal((UpdatePackageKind)expectedValue, UpdatePackageDetector.FromInstallerFlavor(value));
+
+    [Fact]
+    public void LegacyInstallerIsRecognizedByProgramFilesLocation()
+    {
+        Assert.True(UpdatePackageDetector.IsUnderDirectory(
+            @"C:\Program Files\S3 Explorer\S3Explorer.exe",
+            @"C:\Program Files"));
+        Assert.False(UpdatePackageDetector.IsUnderDirectory(
+            @"D:\Portable\S3Explorer.exe",
+            @"C:\Program Files"));
     }
 
     [Fact]

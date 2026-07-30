@@ -71,12 +71,25 @@ internal sealed class UpdateDialog : Form
             Padding = new Padding(12, 10, 12, 8),
             BackColor = Color.FromArgb(248, 250, 252)
         };
-        var download = new Button { Text = release.PreferredDownload is null ? "打开下载页面" : "下载推荐版本", Width = 124, Height = 32 };
+        var download = new Button
+        {
+            Text = release.PreferredDownload is null ? "打开下载页面" : "下载匹配版本",
+            Width = 124,
+            Height = 32,
+            AccessibleDescription = UpdatePackageDetector.DisplayName(release.RecommendedPackage)
+        };
         download.Click += (_, _) => SelectAndClose(release.PreferredDownload ?? release.ReleasePage);
         var openRelease = new Button { Text = "查看 Release", Width = 108, Height = 32 };
         openRelease.Click += (_, _) => SelectAndClose(release.ReleasePage);
         var later = new Button { Text = "稍后提醒", DialogResult = DialogResult.Cancel, Width = 96, Height = 32 };
-        buttons.Controls.AddRange([download, openRelease, later]);
+        var packageHint = new Label
+        {
+            Text = $"推荐：{UpdatePackageDetector.DisplayName(release.RecommendedPackage)}",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(90, 103, 120),
+            Margin = new Padding(8, 8, 10, 0)
+        };
+        buttons.Controls.AddRange([download, openRelease, later, packageHint]);
 
         Controls.Add(notesHost);
         Controls.Add(notesLabel);

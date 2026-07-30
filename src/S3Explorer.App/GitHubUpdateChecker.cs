@@ -19,6 +19,7 @@ internal sealed record GitHubReleaseInfo(
     Uri? PreferredDownload,
     string Notes,
     DateTimeOffset? PublishedAt,
+    UpdatePackageKind RecommendedPackage = UpdatePackageKind.PortableFrameworkDependent,
     UpdateReleaseSource Source = UpdateReleaseSource.GitHubApi,
     DateTimeOffset? CachedAtUtc = null)
 {
@@ -37,6 +38,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
     private readonly bool _ownsClient;
     private readonly string _cachePath;
     private readonly TimeSpan _checkTimeout;
+    private readonly UpdatePackageKind _packageKind;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -46,7 +48,8 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
     public GitHubUpdateChecker(
         HttpClient? client = null,
         string? cachePath = null,
-        TimeSpan? checkTimeout = null)
+        TimeSpan? checkTimeout = null,
+        UpdatePackageKind? packageKind = null)
     {
         _ownsClient = client is null;
         _client = client ?? new HttpClient
@@ -59,6 +62,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             "S3Explorer",
             "update-cache.json");
         _checkTimeout = checkTimeout ?? DefaultCheckTimeout;
+        _packageKind = packageKind ?? UpdatePackageDetector.Detect();
         if (_checkTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(checkTimeout));
     }
@@ -122,7 +126,9 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         using var response = await _client.SendAsync(
             request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
         ThrowForUnsuccessfulResponse(response, "Pages 更新清单");
-        return ParseManifest(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        return ParseManifest(
+            await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false),
+            _packageKind);
     }
 
     private async Task<GitHubReleaseInfo> GetGitHubReleaseAsync(CancellationToken cancellationToken)
@@ -134,18 +140,22 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         using var response = await _client.SendAsync(
             request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
         ThrowForUnsuccessfulResponse(response, "GitHub Release API");
-        return ParseRelease(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        return ParseRelease(
+            await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false),
+            _packageKind);
     }
 
-    internal static GitHubReleaseInfo ParseManifest(string payload)
+    internal static GitHubReleaseInfo ParseManifest(
+        string payload,
+        UpdatePackageKind packageKind = UpdatePackageKind.PortableFrameworkDependent)
     {
         using var document = ParseJson(payload, "Pages 更新清单");
         var root = document.RootElement;
         if (!root.TryGetProperty("schemaVersion", out var schemaVersion) ||
             schemaVersion.ValueKind != JsonValueKind.Number ||
             !schemaVersion.TryGetInt32(out var parsedSchemaVersion) ||
-            parsedSchemaVersion != 1)
-            throw new InvalidDataException("Pages 更新清单 schemaVersion 必须为 1。");
+            parsedSchemaVersion is not (1 or 2))
+            throw new InvalidDataException("Pages 更新清单 schemaVersion 必须为 1 或 2。");
 
         var tagName = RequiredString(root, "tagName");
         if (!TryParseReleaseVersion(tagName, out var version))
@@ -156,17 +166,23 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             throw new InvalidDataException("Pages 更新清单的 version 与 tagName 不一致。");
 
         var notes = OptionalNotes(root);
+        var preferredDownload = parsedSchemaVersion == 2
+            ? RequiredPackageDownload(root, packageKind)
+            : OptionalHttpsUri(root, "downloadUrl");
         return new GitHubReleaseInfo(
             tagName,
             version!,
             RequiredHttpsUri(root, "releasePage"),
-            OptionalHttpsUri(root, "downloadUrl"),
+            preferredDownload,
             notes,
             OptionalDate(root, "publishedAt"),
+            packageKind,
             UpdateReleaseSource.PagesManifest);
     }
 
-    internal static GitHubReleaseInfo ParseRelease(string payload)
+    internal static GitHubReleaseInfo ParseRelease(
+        string payload,
+        UpdatePackageKind packageKind = UpdatePackageKind.PortableFrameworkDependent)
     {
         using var document = ParseJson(payload, "GitHub Release 响应");
         var root = document.RootElement;
@@ -188,11 +204,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         Uri? preferredDownload = null;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
-            var preferredNames = new[]
-            {
-                $"S3Explorer-{tagName}-win-x64.zip",
-                "S3Explorer-win-x64.zip"
-            };
+            var preferredNames = PreferredAssetNames(tagName, packageKind);
             foreach (var preferredName in preferredNames)
             {
                 foreach (var asset in assets.EnumerateArray())
@@ -219,7 +231,33 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             preferredDownload,
             notes,
             publishedAt,
+            packageKind,
             UpdateReleaseSource.GitHubApi);
+    }
+
+    private static string[] PreferredAssetNames(string tagName, UpdatePackageKind packageKind) => packageKind switch
+    {
+        UpdatePackageKind.InstallerSelfContained =>
+            [$"S3Explorer-{tagName}-win-x64-setup.msi"],
+        UpdatePackageKind.InstallerFrameworkDependent =>
+            [$"S3Explorer-{tagName}-win-x64-framework-dependent-setup.msi"],
+        UpdatePackageKind.PortableSelfContained =>
+            [$"S3Explorer-{tagName}-win-x64-self-contained.zip"],
+        _ => [$"S3Explorer-{tagName}-win-x64.zip", "S3Explorer-win-x64.zip"]
+    };
+
+    private static Uri RequiredPackageDownload(JsonElement root, UpdatePackageKind packageKind)
+    {
+        if (!root.TryGetProperty("downloads", out var downloads) || downloads.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Pages 更新清单缺少 downloads。");
+        var property = packageKind switch
+        {
+            UpdatePackageKind.InstallerSelfContained => "installerSelfContained",
+            UpdatePackageKind.InstallerFrameworkDependent => "installerFrameworkDependent",
+            UpdatePackageKind.PortableSelfContained => "portableSelfContained",
+            _ => "portableFrameworkDependent"
+        };
+        return RequiredHttpsUri(downloads, property);
     }
 
     private async Task TrySaveCacheAsync(GitHubReleaseInfo release, CancellationToken cancellationToken)
@@ -421,6 +459,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         public string? DownloadUrl { get; set; }
         public string Notes { get; set; } = string.Empty;
         public DateTimeOffset? PublishedAt { get; set; }
+        public UpdatePackageKind RecommendedPackage { get; set; }
         public DateTimeOffset CachedAtUtc { get; set; }
 
         public static CachedReleaseDocument FromRelease(GitHubReleaseInfo release, DateTimeOffset cachedAtUtc) => new()
@@ -431,6 +470,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             DownloadUrl = release.PreferredDownload?.AbsoluteUri,
             Notes = release.Notes,
             PublishedAt = release.PublishedAt,
+            RecommendedPackage = release.RecommendedPackage,
             CachedAtUtc = cachedAtUtc
         };
 
@@ -458,6 +498,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
                 downloadUrl,
                 NormalizeNotes(Notes),
                 PublishedAt,
+                RecommendedPackage,
                 UpdateReleaseSource.Cache,
                 CachedAtUtc);
         }
