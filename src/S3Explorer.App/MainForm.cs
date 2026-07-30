@@ -968,13 +968,26 @@ internal sealed partial class MainForm : Form
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
+        var affectedBindings = _cdnConfiguration.Bindings
+            .Count(binding => binding.StorageProfileId == profile.Id);
+        var associationWarning = affectedBindings == 0
+            ? string.Empty
+            : $"\n\n同时会删除引用该连接的 {affectedBindings} 个本地 CDN Bucket/前缀关联。";
         if (MessageBox.Show(this,
-                $"确定删除连接“{profile.Name}”吗？\n\n这只删除本地配置，不会删除任何远程 Bucket 或对象。",
+                $"确定删除连接“{profile.Name}”吗？{associationWarning}\n\n这只删除本地配置，不会删除任何远程 Bucket、对象或 CDN 内容。",
                 "删除连接", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
-        var proposed = _profiles.Where(item => item.Id != profile.Id).ToArray();
-        await _profileStore.SaveAsync(proposed);
-        _profiles = proposed;
+        var proposedProfiles = _profiles.Where(item => item.Id != profile.Id).ToArray();
+        var proposedCdnConfiguration = new CdnConfiguration(
+            _cdnConfiguration.Profiles,
+            _cdnConfiguration.Bindings
+                .Where(binding => binding.StorageProfileId != profile.Id)
+                .ToArray());
+        await _configurationTransactions.SaveAsync(
+            new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials),
+            new ConfigurationSnapshot(proposedProfiles, proposedCdnConfiguration, _cdnCredentials));
+        _profiles = proposedProfiles;
+        _cdnConfiguration = proposedCdnConfiguration;
         if (_currentProfile?.Id == profile.Id) Disconnect();
         PopulateProfiles();
     }

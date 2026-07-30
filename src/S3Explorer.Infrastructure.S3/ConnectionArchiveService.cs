@@ -113,6 +113,7 @@ public sealed class ConnectionArchiveService
         foreach (var profile in profiles)
             profile.ValidateConfiguration();
         CdnConfigurationValidator.EnsureValid(cdnConfiguration, cdnCredentials);
+        EnsureArchiveRelationshipsAreComplete(profiles, cdnConfiguration);
 
         var containsStoredCredentials = includeCredentials && (
             profiles.Any(profile => profile.HasStoredCredentials) ||
@@ -256,6 +257,7 @@ public sealed class ConnectionArchiveService
             profile.ValidateConfiguration();
         var cdnConfiguration = new CdnConfiguration(payload.CdnProfiles, payload.CdnBindings);
         CdnConfigurationValidator.EnsureValid(cdnConfiguration, payload.CdnCredentials);
+        EnsureArchiveRelationshipsAreComplete(profiles, cdnConfiguration);
 
         return new(
             profiles,
@@ -818,17 +820,29 @@ public sealed class ConnectionArchiveService
                string.Equals(left.SessionToken, right.SessionToken, StringComparison.Ordinal);
     }
 
-    private static bool CdnCredentialsEquivalent(CdnCredential left, CdnCredential right) =>
-        left.AuthenticationType == right.AuthenticationType &&
-        string.Equals(left.HeaderName?.Trim(), right.HeaderName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(left.Secret, right.Secret, StringComparison.Ordinal);
+    private static bool CdnCredentialsEquivalent(CdnCredential left, CdnCredential right)
+    {
+        if (left.AuthenticationType != right.AuthenticationType) return false;
+        return left.AuthenticationType switch
+        {
+            CdnAuthenticationType.None => true,
+            CdnAuthenticationType.BearerToken =>
+                string.Equals(left.Secret, right.Secret, StringComparison.Ordinal),
+            CdnAuthenticationType.CustomHeader =>
+                string.Equals(
+                    left.HeaderName?.Trim(),
+                    right.HeaderName?.Trim(),
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(left.Secret, right.Secret, StringComparison.Ordinal),
+            _ => false
+        };
+    }
 
     private static bool CdnProfilesEquivalent(
         CdnProfile left,
         CdnProfile right,
         bool compareCredential) =>
         string.Equals(NormalizeCdnUrl(left.BaseUrl), NormalizeCdnUrl(right.BaseUrl), StringComparison.Ordinal) &&
-        string.Equals(left.Notes, right.Notes, StringComparison.Ordinal) &&
         string.Equals(left.ProviderId?.Trim(), right.ProviderId?.Trim(), StringComparison.OrdinalIgnoreCase) &&
         (!compareCredential || left.CredentialId == right.CredentialId) &&
         left.WarmupMode == right.WarmupMode &&
@@ -840,6 +854,29 @@ public sealed class ConnectionArchiveService
         left.TimeoutSeconds == right.TimeoutSeconds &&
         left.FollowRedirects == right.FollowRedirects &&
         left.Enabled == right.Enabled;
+
+    private static void EnsureArchiveRelationshipsAreComplete(
+        IReadOnlyCollection<ConnectionProfile> profiles,
+        CdnConfiguration cdnConfiguration)
+    {
+        var storageIds = new HashSet<Guid>();
+        foreach (var profile in profiles)
+        {
+            if (profile.Id == Guid.Empty)
+                throw new InvalidDataException($"对象存储连接“{profile.Name}”的 ID 不能为空。");
+            if (!storageIds.Add(profile.Id))
+                throw new InvalidDataException($"对象存储连接 ID 重复：{profile.Id}");
+        }
+
+        foreach (var binding in cdnConfiguration.Bindings)
+        {
+            if (!storageIds.Contains(binding.StorageProfileId))
+            {
+                throw new InvalidDataException(
+                    $"Bucket“{binding.Bucket}”的 CDN 关联引用了不在连接包内的对象存储连接：{binding.StorageProfileId}");
+            }
+        }
+    }
 
     private static string NormalizeEndpoint(ConnectionProfile profile)
     {

@@ -538,6 +538,191 @@ public sealed class ConnectionArchiveServiceTests
             Assert.Single(withSecrets.StorageProfiles).Status);
     }
 
+    [Fact]
+    public void PackageMergeReusesEquivalentCdnRuntimeConfigurationAcrossRenamedDisplayMetadata()
+    {
+        var archivedStorage = CreateAliyunProfile("archived-oss", "game-assets");
+        var localStorage = archivedStorage with
+        {
+            Id = Guid.NewGuid(),
+            Name = "local-oss-renamed",
+            HealthStatus = ConnectionHealthStatus.Healthy,
+            LastConnectionCheckedAtUtc = DateTimeOffset.UtcNow,
+            LastConnectionSucceededAtUtc = DateTimeOffset.UtcNow
+        };
+        var archivedCredential = CreateCdnCredential() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archived-token",
+            HeaderName = string.Empty
+        };
+        var localCredential = archivedCredential with
+        {
+            Id = Guid.NewGuid(),
+            Name = "local-token-renamed",
+            HeaderName = "X-Ignored-For-Bearer"
+        };
+        var archivedCdn = CreateCdnProfile(archivedCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archived-cdn",
+            Notes = "archive note"
+        };
+        var localCdn = archivedCdn with
+        {
+            Id = Guid.NewGuid(),
+            Name = "local-cdn-renamed",
+            Notes = "local note",
+            CredentialId = localCredential.Id,
+            LastCertificateCheck = CreateCertificateCheck(archivedCdn.BaseUrl)
+        };
+        var archivedBinding = CreateCdnBinding(archivedStorage.Id, archivedCdn.Id);
+        var package = new ConnectionArchivePackage(
+            [archivedStorage],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([archivedCdn], [archivedBinding]),
+            [archivedCredential]);
+
+        var merged = _service.MergePackage(
+            [localStorage],
+            new CdnConfiguration([localCdn], []),
+            [localCredential],
+            package,
+            new ConnectionArchiveImportSelection([archivedStorage.Id], [archivedCdn.Id]),
+            importStorageCredentials: true,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Equal(localStorage.Id, Assert.Single(merged.Profiles).Id);
+        Assert.Equal(localCredential.Id, Assert.Single(merged.CdnCredentials).Id);
+        Assert.Equal(localCdn.Id, Assert.Single(merged.CdnConfiguration.Profiles).Id);
+        var binding = Assert.Single(merged.CdnConfiguration.Bindings);
+        Assert.Equal(localStorage.Id, binding.StorageProfileId);
+        Assert.Equal(localCdn.Id, binding.CdnProfileId);
+    }
+
+    [Fact]
+    public void PartialOssCdnImportPreservesOnlySelectedRenamedRelationshipAndIsIdempotent()
+    {
+        var archivedHangzhou = CreateAliyunProfile("archive-hangzhou", "game-assets");
+        var archivedShanghai = CreateAliyunProfile(
+            "archive-shanghai",
+            "patch-assets",
+            "https://oss-cn-shanghai.aliyuncs.com",
+            "oss-cn-shanghai");
+        var localHangzhou = archivedHangzhou with { Id = Guid.NewGuid(), Name = "local-hangzhou" };
+        var localShanghai = archivedShanghai with { Id = Guid.NewGuid(), Name = "local-shanghai" };
+        var selectedCredential = CreateCdnCredential() with { Id = Guid.NewGuid(), Name = "archive-selected-token" };
+        var ignoredCredential = CreateCdnCredential() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archive-ignored-token",
+            Secret = "ignored-secret"
+        };
+        var localCredential = selectedCredential with
+        {
+            Id = Guid.NewGuid(),
+            Name = "local-selected-token",
+            HeaderName = "Legacy-Bearer-Header"
+        };
+        var selectedCdn = CreateCdnProfile(selectedCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archive-selected-cdn",
+            Notes = "archive selected note"
+        };
+        var ignoredCdn = CreateCdnProfile(ignoredCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archive-ignored-cdn",
+            BaseUrl = "https://ignored-cdn.example.test"
+        };
+        var localCdn = selectedCdn with
+        {
+            Id = Guid.NewGuid(),
+            Name = "local-selected-cdn",
+            Notes = "local selected note",
+            CredentialId = localCredential.Id
+        };
+        var archive = _service.Export(
+            [archivedHangzhou, archivedShanghai],
+            includeCredentials: true,
+            password: "portable-password",
+            cdnConfiguration: new CdnConfiguration(
+                [selectedCdn, ignoredCdn],
+                [
+                    CreateCdnBinding(archivedHangzhou.Id, selectedCdn.Id),
+                    CreateCdnBinding(archivedShanghai.Id, ignoredCdn.Id)
+                ]),
+            cdnCredentials: [selectedCredential, ignoredCredential]);
+        var package = _service.Import(archive, "portable-password");
+        var selection = new ConnectionArchiveImportSelection([], [selectedCdn.Id]);
+
+        var first = _service.MergePackage(
+            [localHangzhou, localShanghai],
+            new CdnConfiguration([localCdn], []),
+            [localCredential],
+            package,
+            selection,
+            importStorageCredentials: false,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+        var second = _service.MergePackage(
+            first.Profiles,
+            first.CdnConfiguration,
+            first.CdnCredentials,
+            package,
+            selection,
+            importStorageCredentials: false,
+            importCdnCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        Assert.Equal(2, first.Profiles.Count);
+        Assert.Equal(localCredential.Id, Assert.Single(first.CdnCredentials).Id);
+        Assert.Equal(localCdn.Id, Assert.Single(first.CdnConfiguration.Profiles).Id);
+        var binding = Assert.Single(first.CdnConfiguration.Bindings);
+        Assert.Equal(localHangzhou.Id, binding.StorageProfileId);
+        Assert.Equal(localCdn.Id, binding.CdnProfileId);
+        Assert.Equal(first.Profiles, second.Profiles);
+        Assert.Equal(first.CdnCredentials, second.CdnCredentials);
+        Assert.Equal(first.CdnConfiguration.Profiles, second.CdnConfiguration.Profiles);
+        Assert.Equal(first.CdnConfiguration.Bindings, second.CdnConfiguration.Bindings);
+    }
+
+    [Fact]
+    public void ExportRejectsCdnBindingWhoseStorageConnectionIsOutsideArchive()
+    {
+        var storage = CreateProfile();
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var orphan = CreateCdnBinding(Guid.NewGuid(), cdn.Id);
+
+        var exception = Assert.Throws<InvalidDataException>(() => _service.Export(
+            [storage],
+            cdnConfiguration: new CdnConfiguration([cdn], [orphan])));
+
+        Assert.Contains("不在连接包内", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ImportRejectsTamperedCdnBindingWhoseStorageConnectionIsMissing()
+    {
+        var storage = CreateProfile();
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var archive = _service.Export(
+            [storage],
+            cdnConfiguration: new CdnConfiguration(
+                [cdn],
+                [CreateCdnBinding(storage.Id, cdn.Id)]));
+        var envelope = JsonNode.Parse(archive)!.AsObject();
+        envelope["cdnBindings"]!.AsArray()[0]!["storageProfileId"] = Guid.NewGuid();
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            _service.Import(JsonSerializer.SerializeToUtf8Bytes(envelope)));
+
+        Assert.Contains("不在连接包内", exception.Message, StringComparison.Ordinal);
+    }
+
     private static ConnectionProfile CreateProfile() => new()
     {
         Name = "Portable",
@@ -575,4 +760,37 @@ public sealed class ConnectionArchiveServiceTests
         CdnProfileId = cdnProfileId,
         CdnPathPrefix = "static/"
     };
+
+    private static ConnectionProfile CreateAliyunProfile(
+        string name,
+        string bucket,
+        string endpoint = "https://oss-cn-hangzhou.aliyuncs.com",
+        string region = "oss-cn-hangzhou") =>
+        ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with
+        {
+            Name = name,
+            Endpoint = endpoint,
+            Region = region,
+            SignatureRegion = region,
+            AccessKey = $"access-{bucket}",
+            SecretKey = $"secret-{bucket}",
+            DefaultBucket = bucket,
+            ExternalBuckets = [$"{bucket}-backup"]
+        };
+
+    private static CdnCertificateCheckResult CreateCertificateCheck(string endpoint)
+    {
+        var checkedAt = DateTimeOffset.UtcNow;
+        return new CdnCertificateCheckResult(
+            new Uri(endpoint),
+            checkedAt,
+            checkedAt.AddDays(-1),
+            checkedAt.AddDays(90),
+            "CN=cdn.example.test",
+            "CN=Test CA",
+            "AABBCC",
+            "TLS 1.3",
+            CdnCertificateProblems.None,
+            []);
+    }
 }

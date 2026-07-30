@@ -4,6 +4,6 @@
   "version": "0.6.9",
   "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.9",
   "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.9/S3Explorer-v0.6.9-win-x64.zip",
-  "notes": "新增隔离本地 MinIO 真实回归门禁；统一配置原子写入、备份恢复与事务一致性；启动可从损坏存储降级恢复；日志脱敏轮换，退出持久化具备超时保护。",
+  "notes": "新增隔离本地 MinIO 真实回归门禁；统一配置原子写入、备份恢复与事务一致性；加固 OSS/CDN 连接包的等价复用、部分导入和关联完整性；启动可从损坏存储降级恢复；日志脱敏轮换，退出持久化具备超时保护。",
   "publishedAt": "2026-07-30T04:19:12+08:00"
 }
