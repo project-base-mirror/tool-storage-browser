@@ -148,6 +148,8 @@ $installerIcon = Get-MsiQueryValue -Query "SELECT ``Name`` FROM ``Icon`` WHERE `
 $startMenuIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='StartMenuShortcut'"
 $desktopIcon = Get-MsiQueryValue -Query "SELECT ``Icon_`` FROM ``Shortcut`` WHERE ``Shortcut``='DesktopShortcut'"
 $installerFlavor = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='INSTALLERFLAVOR'"
+$installerFlavorMarker = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Registry`` WHERE ``Name``='InstallerFlavor'"
+$installLocationMarker = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Registry`` WHERE ``Name``='InstallLocation'"
 $selfContainedFileCount = Get-MsiQueryRowCount -Query "SELECT ``File`` FROM ``File``"
 $selfContainedFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``File``")
 $selfContainedManagedAssembly = @($selfContainedFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
@@ -166,6 +168,8 @@ Assert-True -Condition ($installerIcon -ceq "S3ExplorerIcon.exe") -Message "MSI 
 Assert-True -Condition ($startMenuIcon -ceq "S3ExplorerIcon.exe") -Message "Start menu shortcut does not use the application icon."
 Assert-True -Condition ($desktopIcon -ceq "S3ExplorerIcon.exe") -Message "Desktop shortcut does not use the application icon."
 Assert-True -Condition ($installerFlavor -ceq "self-contained") -Message "Primary MSI is not marked self-contained."
+Assert-True -Condition ($installerFlavorMarker -ceq "[INSTALLERFLAVOR]") -Message "Primary MSI does not persist its installer flavor for update selection."
+Assert-True -Condition ($installLocationMarker -ceq "[APPLICATIONFOLDER]") -Message "Primary MSI does not persist its install location for update selection."
 Assert-True -Condition ($selfContainedFileCount -gt 2) -Message "Primary MSI still contains only bundled single-file executables."
 Assert-True -Condition ($selfContainedManagedAssembly.Count -gt 0) -Message "Primary MSI does not contain the unpacked application assemblies."
 Assert-True -Condition ($selfContainedRuntime.Count -gt 0) -Message "Primary MSI does not contain the self-contained .NET runtime."
@@ -175,6 +179,8 @@ $msiDatabase = $windowsInstaller.GetType().InvokeMember(
     "OpenDatabase", "InvokeMethod", $null, $windowsInstaller, @($frameworkMsiPath, 0))
 $frameworkVersion = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'"
 $frameworkFlavor = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='INSTALLERFLAVOR'"
+$frameworkFlavorMarker = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Registry`` WHERE ``Name``='InstallerFlavor'"
+$frameworkInstallLocationMarker = Get-MsiQueryValue -Query "SELECT ``Value`` FROM ``Registry`` WHERE ``Name``='InstallLocation'"
 $frameworkFileCount = Get-MsiQueryRowCount -Query "SELECT ``File`` FROM ``File``"
 $frameworkFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``File``")
 $frameworkManagedAssembly = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
@@ -182,6 +188,8 @@ $frameworkRuntime = @($frameworkFileNames | Where-Object { $_ -match '(?i)corecl
 $frameworkRuntimeConfig = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.runtimeconfig\.json$' })
 Assert-True -Condition ($frameworkVersion -ceq $version) -Message "Framework-dependent MSI ProductVersion $frameworkVersion does not match $version."
 Assert-True -Condition ($frameworkFlavor -ceq "framework-dependent") -Message "Additional MSI is not marked framework-dependent."
+Assert-True -Condition ($frameworkFlavorMarker -ceq "[INSTALLERFLAVOR]") -Message "Framework-dependent MSI does not persist its installer flavor for update selection."
+Assert-True -Condition ($frameworkInstallLocationMarker -ceq "[APPLICATIONFOLDER]") -Message "Framework-dependent MSI does not persist its install location for update selection."
 Assert-True -Condition ($frameworkFileCount -gt 2) -Message "Framework-dependent MSI still contains only bundled single-file executables."
 Assert-True -Condition ($frameworkManagedAssembly.Count -gt 0) -Message "Framework-dependent MSI does not contain the unpacked application assemblies."
 Assert-True -Condition ($frameworkRuntimeConfig.Count -gt 0) -Message "Framework-dependent MSI does not contain the runtime configuration."

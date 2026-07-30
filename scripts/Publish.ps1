@@ -49,6 +49,10 @@ $selfContainedInstallerIntermediate = Join-Path (Split-Path -Parent $installerPr
 $frameworkInstallerIntermediate = Join-Path (Split-Path -Parent $installerProject) "obj\release-framework-dependent\"
 $metricsPath = Join-Path $outputRoot "release-metrics.json"
 
+if ($Runtime -cne "win-x64") {
+    throw "S3 Explorer currently publishes only win-x64; requested runtime: $Runtime"
+}
+
 function Invoke-DotNet {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
@@ -123,7 +127,7 @@ function Publish-Package {
         "publish",
         $appProject,
         "-c", $Configuration,
-        "-r", $Runtime,
+        "--no-restore",
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
@@ -139,7 +143,7 @@ function Publish-Package {
         "publish",
         $cliProject,
         "-c", $Configuration,
-        "-r", $Runtime,
+        "--no-restore",
         "--self-contained", $selfContainedValue,
         "-o", $Destination,
         "-p:PublishTrimmed=false",
