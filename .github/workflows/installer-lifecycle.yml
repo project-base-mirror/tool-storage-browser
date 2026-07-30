@@ -29,7 +29,10 @@ jobs:
 
       - name: Restore locked dependencies
         shell: pwsh
-        run: dotnet restore S3Explorer.sln --locked-mode --nologo
+        run: |
+          dotnet restore S3Explorer.sln --locked-mode --nologo
+          dotnet restore src/S3Explorer.App/S3Explorer.App.csproj --runtime win-x64 --locked-mode --no-dependencies --nologo
+          dotnet restore src/S3Explorer.Cli/S3Explorer.Cli.csproj --runtime win-x64 --locked-mode --no-dependencies --nologo
 
       - name: Build release packages
         shell: pwsh

@@ -63,6 +63,8 @@ jobs:
         shell: pwsh
         run: |
           dotnet restore S3Explorer.sln --locked-mode --nologo
+          dotnet restore src/S3Explorer.App/S3Explorer.App.csproj --runtime win-x64 --locked-mode --no-dependencies --nologo
+          dotnet restore src/S3Explorer.Cli/S3Explorer.Cli.csproj --runtime win-x64 --locked-mode --no-dependencies --nologo
           ./scripts/Test-FocusedCoverage.ps1
 
       - name: Test and build release packages
