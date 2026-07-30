@@ -27,6 +27,20 @@ internal sealed class ConnectionDialog : Form
         DropDownStyle = ComboBoxStyle.DropDownList
     };
     private readonly TextBox _awsProfileName = new() { Name = "AwsProfileNameTextBox" };
+    private readonly TextBox _awsSourceProfileName = new() { Name = "AwsSourceProfileNameTextBox" };
+    private readonly TextBox _awsRoleArn = new() { Name = "AwsRoleArnTextBox" };
+    private readonly TextBox _awsRoleSessionName = new() { Name = "AwsRoleSessionNameTextBox" };
+    private readonly TextBox _awsRoleSourceIdentity = new() { Name = "AwsRoleSourceIdentityTextBox" };
+    private readonly TextBox _awsExternalId = new() { Name = "AwsExternalIdTextBox", UseSystemPasswordChar = true };
+    private readonly NumericUpDown _awsSessionDuration = new()
+    {
+        Name = "AwsSessionDurationNumericUpDown",
+        Minimum = 900,
+        Maximum = 43200,
+        Increment = 900,
+        Value = 3600
+    };
+    private readonly TextBox _awsWebIdentityTokenFile = new() { Name = "AwsWebIdentityTokenFileTextBox" };
     private readonly TextBox _accessKey = new() { Name = "AccessKeyTextBox" };
     private readonly TextBox _secretKey = new() { Name = "SecretKeyTextBox", UseSystemPasswordChar = true };
     private readonly CheckBox _useSessionToken = new() { Name = "UseSessionTokenCheckBox", Text = "使用临时 Session Token", AutoSize = true };
@@ -76,6 +90,13 @@ internal sealed class ConnectionDialog : Form
     private readonly Label _accessKeyLabel = FieldLabel("Access Key：");
     private readonly Label _secretKeyLabel = FieldLabel("Secret Key：");
     private readonly Label _awsProfileLabel = FieldLabel("AWS Profile：");
+    private readonly Label _awsSourceProfileLabel = FieldLabel("源 AWS Profile：");
+    private readonly Label _awsRoleArnLabel = FieldLabel("目标 Role ARN：");
+    private readonly Label _awsRoleSessionNameLabel = FieldLabel("角色会话名称：");
+    private readonly Label _awsRoleSourceIdentityLabel = FieldLabel("Source Identity：");
+    private readonly Label _awsExternalIdLabel = FieldLabel("External ID：");
+    private readonly Label _awsSessionDurationLabel = FieldLabel("会话时长（秒）：");
+    private readonly Label _awsWebIdentityTokenFileLabel = FieldLabel("Token 文件：");
     private readonly Label _credentialHint = HintLabel("选择凭据的实际来源；环境和角色凭据不会保存到连接文件。");
     private readonly TableLayoutPanel _secretPanel = new() { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };
     private readonly Dictionary<S3ServiceType, ConnectionDraft> _connectionDrafts = [];
@@ -114,7 +135,10 @@ internal sealed class ConnectionDialog : Form
             new Choice<CredentialSourceKind>(CredentialSourceKind.AwsEnvironmentVariables, "AWS 环境变量"),
             new Choice<CredentialSourceKind>(CredentialSourceKind.AwsContainerRole, "AWS 容器角色（ECS/EKS）"),
             new Choice<CredentialSourceKind>(CredentialSourceKind.AwsInstanceRole, "AWS EC2 实例角色"),
-            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsDefaultChain, "AWS SDK 默认凭据链")
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsDefaultChain, "AWS SDK 默认凭据链"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsSso, "AWS IAM Identity Center（SSO Profile）"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsAssumeRole, "AWS AssumeRole（源 Profile → Role）"),
+            new Choice<CredentialSourceKind>(CredentialSourceKind.AwsWebIdentity, "AWS Web Identity（Token 文件 → Role）")
         ]);
 
         BuildLayout();
@@ -199,6 +223,13 @@ internal sealed class ConnectionDialog : Form
         AddField(basicTable, ref row, FieldLabel("凭据来源："), _credentialSource);
         AddHint(basicTable, ref row, _credentialHint);
         AddField(basicTable, ref row, _awsProfileLabel, _awsProfileName);
+        AddField(basicTable, ref row, _awsSourceProfileLabel, _awsSourceProfileName);
+        AddField(basicTable, ref row, _awsRoleArnLabel, _awsRoleArn);
+        AddField(basicTable, ref row, _awsRoleSessionNameLabel, _awsRoleSessionName);
+        AddField(basicTable, ref row, _awsRoleSourceIdentityLabel, _awsRoleSourceIdentity);
+        AddField(basicTable, ref row, _awsExternalIdLabel, _awsExternalId);
+        AddField(basicTable, ref row, _awsSessionDurationLabel, _awsSessionDuration);
+        AddField(basicTable, ref row, _awsWebIdentityTokenFileLabel, _awsWebIdentityTokenFile);
         AddField(basicTable, ref row, _accessKeyLabel, _accessKey);
 
         _secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -344,6 +375,13 @@ internal sealed class ConnectionDialog : Form
             _sessionToken.Text = profile.SessionToken;
             SelectChoice(_credentialSource, profile.CredentialSource);
             _awsProfileName.Text = profile.AwsProfileName;
+            _awsSourceProfileName.Text = profile.AwsSourceProfileName;
+            _awsRoleArn.Text = profile.AwsRoleArn;
+            _awsRoleSessionName.Text = profile.AwsRoleSessionName;
+            _awsRoleSourceIdentity.Text = profile.AwsRoleSourceIdentity;
+            _awsExternalId.Text = profile.AwsExternalId;
+            _awsSessionDuration.Value = Math.Clamp(profile.AwsSessionDurationSeconds, 900, 43200);
+            _awsWebIdentityTokenFile.Text = profile.AwsWebIdentityTokenFile;
             _useSessionToken.Checked = profile.UsesTemporarySessionCredentials;
             _defaultBucket.Text = profile.DefaultBucket;
             _externalBuckets.Lines = profile.ExternalBuckets.ToArray();
@@ -480,9 +518,19 @@ internal sealed class ConnectionDialog : Form
             ? SelectedValue(_credentialSource, CredentialSourceKind.StoredKeys)
             : CredentialSourceKind.StoredKeys;
         var storedKeys = source == CredentialSourceKind.StoredKeys;
-        var sharedProfile = source == CredentialSourceKind.AwsSharedProfile;
+        var sharedProfile = source is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso;
+        var assumeRole = source == CredentialSourceKind.AwsAssumeRole;
+        var webIdentity = source == CredentialSourceKind.AwsWebIdentity;
+        var roleSession = assumeRole || webIdentity;
 
         _awsProfileLabel.Visible = _awsProfileName.Visible = sharedProfile;
+        _awsSourceProfileLabel.Visible = _awsSourceProfileName.Visible = assumeRole;
+        _awsRoleArnLabel.Visible = _awsRoleArn.Visible = roleSession;
+        _awsRoleSessionNameLabel.Visible = _awsRoleSessionName.Visible = roleSession;
+        _awsRoleSourceIdentityLabel.Visible = _awsRoleSourceIdentity.Visible = assumeRole;
+        _awsExternalIdLabel.Visible = _awsExternalId.Visible = assumeRole;
+        _awsSessionDurationLabel.Visible = _awsSessionDuration.Visible = roleSession;
+        _awsWebIdentityTokenFileLabel.Visible = _awsWebIdentityTokenFile.Visible = webIdentity;
         _accessKeyLabel.Visible = _accessKey.Visible = storedKeys;
         _secretKeyLabel.Visible = _secretPanel.Visible = storedKeys;
         _useSessionToken.Visible = storedKeys;
@@ -495,6 +543,9 @@ internal sealed class ConnectionDialog : Form
             CredentialSourceKind.AwsContainerRole => "锁定容器凭据端点；缺少 AWS_CONTAINER_CREDENTIALS_* 时会直接报错，不回退到其他身份。",
             CredentialSourceKind.AwsInstanceRole => "锁定 EC2 Instance Metadata 角色；不会回退到本机 Profile。",
             CredentialSourceKind.AwsDefaultChain => "按 AWS SDK 顺序解析并在连接测试中显示实际来源；需要固定身份时请选择上面的明确来源。",
+            CredentialSourceKind.AwsSso => "只保存 SSO Profile 名称；测试连接可由用户触发登录，浏览器令牌由 AWS SDK 独立缓存且不会进入连接包。",
+            CredentialSourceKind.AwsAssumeRole => "源 Profile 与角色配置分开保存；External ID 使用 DPAPI 加密，仅显示是否已配置。",
+            CredentialSourceKind.AwsWebIdentity => "只保存 Token 文件的绝对路径；令牌内容由 AWS SDK 按需读取，不写入连接配置或日志。",
             _ => string.Empty
         };
         UpdateSessionTokenVisibility();
@@ -538,6 +589,8 @@ internal sealed class ConnectionDialog : Form
         return new ConnectionProfile
         {
             Id = _id,
+            GroupId = Profile.GroupId,
+            SortOrder = Profile.SortOrder,
             Name = _name.Text.Trim(),
             ServiceType = serviceType,
             Endpoint = endpoint,
@@ -547,7 +600,28 @@ internal sealed class ConnectionDialog : Form
             SecretKey = storedKeys ? _secretKey.Text : string.Empty,
             SessionToken = storedKeys && _useSessionToken.Checked ? _sessionToken.Text : string.Empty,
             CredentialSource = credentialSource,
-            AwsProfileName = credentialSource == CredentialSourceKind.AwsSharedProfile ? _awsProfileName.Text.Trim() : string.Empty,
+            AwsProfileName = credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso
+                ? _awsProfileName.Text.Trim()
+                : string.Empty,
+            AwsSourceProfileName = credentialSource == CredentialSourceKind.AwsAssumeRole
+                ? _awsSourceProfileName.Text.Trim()
+                : string.Empty,
+            AwsRoleArn = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? _awsRoleArn.Text.Trim()
+                : string.Empty,
+            AwsRoleSessionName = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? _awsRoleSessionName.Text.Trim()
+                : string.Empty,
+            AwsRoleSourceIdentity = credentialSource == CredentialSourceKind.AwsAssumeRole
+                ? _awsRoleSourceIdentity.Text.Trim()
+                : string.Empty,
+            AwsExternalId = credentialSource == CredentialSourceKind.AwsAssumeRole ? _awsExternalId.Text : string.Empty,
+            AwsSessionDurationSeconds = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                ? (int)_awsSessionDuration.Value
+                : 3600,
+            AwsWebIdentityTokenFile = credentialSource == CredentialSourceKind.AwsWebIdentity
+                ? _awsWebIdentityTokenFile.Text.Trim()
+                : string.Empty,
             DefaultBucket = _defaultBucket.Text.Trim(),
             ExternalBuckets = externalBuckets,
             AddressingStyle = _path.Checked ? AddressingStyle.PathStyle : _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto,
@@ -670,13 +744,30 @@ internal static class ConnectionTestResultFormatter
 
         if (result.Success)
         {
+            var identity = FormatIdentity(result.AwsIdentity);
             return $"{result.Message}{Environment.NewLine}" +
                 $"凭据：{result.CredentialSource ?? profile.CredentialSourceDisplayName}；" +
-                $"Bucket：{result.BucketCount:N0}；耗时：{result.Elapsed.TotalMilliseconds:N0} ms";
+                $"Bucket：{result.BucketCount:N0}；耗时：{result.Elapsed.TotalMilliseconds:N0} ms" +
+                (identity.Length == 0 ? string.Empty : $"{Environment.NewLine}{identity}");
         }
 
         return $"连接失败：{result.Message}{Environment.NewLine}" +
             $"错误代码：{result.ErrorCode ?? "—"}；HTTP：{result.HttpStatusCode?.ToString() ?? "—"}；" +
             $"Request ID：{result.RequestId ?? "—"}；耗时：{result.Elapsed.TotalMilliseconds:N0} ms";
+    }
+
+    private static string FormatIdentity(AwsIdentitySummary? identity)
+    {
+        if (identity is null) return string.Empty;
+        var parts = new List<string> { $"源身份：{identity.SourceIdentity}" };
+        if (!string.IsNullOrWhiteSpace(identity.TargetRoleArn))
+            parts.Add($"目标 Role：{identity.TargetRoleArn}");
+        if (identity.Source == CredentialSourceKind.AwsAssumeRole)
+            parts.Add($"External ID：{(identity.ExternalIdConfigured ? "已配置" : "未配置")}");
+        if (identity.SessionExpiresAtUtc is { } expiration)
+            parts.Add($"会话到期：{expiration.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}");
+        if (identity.UserLoginMayBeRequired)
+            parts.Add("需要用户触发 SSO 登录或刷新");
+        return string.Join("；", parts);
     }
 }

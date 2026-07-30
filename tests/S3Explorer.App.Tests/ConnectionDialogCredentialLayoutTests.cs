@@ -75,6 +75,39 @@ public sealed class ConnectionDialogCredentialLayoutTests
     }
 
     [Fact]
+    public void AssumeRoleShowsRoleChainFieldsAndKeepsExternalIdMasked()
+    {
+        RunSta(() =>
+        {
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+            {
+                Name = "Audit role",
+                CredentialSource = CredentialSourceKind.AwsAssumeRole,
+                AwsSourceProfileName = "bootstrap",
+                AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+                AwsRoleSessionName = "s3explorer-audit",
+                AwsRoleSourceIdentity = "operator-42",
+                AwsExternalId = "external-secret",
+                AwsSessionDurationSeconds = 1800
+            };
+            using var dialog = new ConnectionDialog(null!, profile);
+            dialog.Show();
+            Application.DoEvents();
+
+            Assert.True(Find(dialog, "AwsSourceProfileNameTextBox").Visible);
+            Assert.True(Find(dialog, "AwsRoleArnTextBox").Visible);
+            Assert.True(Find(dialog, "AwsRoleSessionNameTextBox").Visible);
+            Assert.True(Find(dialog, "AwsRoleSourceIdentityTextBox").Visible);
+            var externalId = Assert.IsType<TextBox>(Find(dialog, "AwsExternalIdTextBox"));
+            Assert.True(externalId.Visible);
+            Assert.True(externalId.UseSystemPasswordChar);
+            Assert.Equal("external-secret", externalId.Text);
+            Assert.False(Find(dialog, "AwsWebIdentityTokenFileTextBox").Visible);
+            Assert.False(Find(dialog, "AccessKeyTextBox").Visible);
+        });
+    }
+
+    [Fact]
     public void NewCompatibleConnectionUsesAutoRegion()
     {
         RunSta(() =>
@@ -178,6 +211,37 @@ public sealed class ConnectionDialogCredentialLayoutTests
             Assert.True(bounds.Right <= dialog.ClientSize.Width, $"Result right edge {bounds.Right}px exceeded {dialog.ClientSize.Width}px.");
             Assert.True(bounds.Bottom <= dialog.ClientSize.Height, $"Result bottom edge {bounds.Bottom}px exceeded {dialog.ClientSize.Height}px.");
         });
+    }
+
+    [Fact]
+    public void ConnectionTestFormatterReportsRoleDiagnosticsWithoutExternalIdValue()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Name = "Audit role",
+            CredentialSource = CredentialSourceKind.AwsAssumeRole,
+            AwsSourceProfileName = "bootstrap",
+            AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+            AwsRoleSessionName = "s3explorer-audit",
+            AwsExternalId = "external-secret"
+        };
+        var result = new ConnectionTestResult(
+            true, TimeSpan.FromMilliseconds(80), 3, "连接成功。",
+            CredentialSource: profile.CredentialSourceDisplayName,
+            AwsIdentity: new AwsIdentitySummary(
+                CredentialSourceKind.AwsAssumeRole,
+                "shared profile bootstrap / SourceIdentity operator-42",
+                profile.AwsRoleArn,
+                ExternalIdConfigured: true,
+                new DateTimeOffset(2026, 7, 30, 12, 0, 0, TimeSpan.Zero)));
+
+        var text = ConnectionTestResultFormatter.Format(result, profile);
+
+        Assert.Contains("源身份", text, StringComparison.Ordinal);
+        Assert.Contains(profile.AwsRoleArn, text, StringComparison.Ordinal);
+        Assert.Contains("External ID：已配置", text, StringComparison.Ordinal);
+        Assert.Contains("会话到期", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(profile.AwsExternalId, text, StringComparison.Ordinal);
     }
 
     private static void SelectByText(ComboBox comboBox, string text)

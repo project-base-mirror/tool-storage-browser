@@ -59,6 +59,7 @@ internal sealed partial class MainForm : Form
     };
     private readonly ImageList _smallImages = UiIcons.CreateSmallImageList();
     private readonly ContextMenuStrip _accountMenu = new();
+    private readonly ContextMenuStrip _groupMenu = new();
     private readonly ContextMenuStrip _bucketMenu = new();
     private readonly ContextMenuStrip _objectMenu = new();
     private readonly PersistentTransferQueue _transferQueue;
@@ -85,6 +86,7 @@ internal sealed partial class MainForm : Form
     private readonly CancellationTokenSource _updateCancellation = new();
 
     private IReadOnlyList<ConnectionProfile> _profiles = [];
+    private IReadOnlyList<ConnectionGroup> _profileGroups = [];
     private AppSettings _settings = new();
     private ConnectionProfile? _currentProfile;
     private string? _currentBucket;
@@ -98,6 +100,7 @@ internal sealed partial class MainForm : Form
     private long _navigationRevision;
     private bool _closing;
     private bool _suppressTreeSelection;
+    private bool _populatingProfiles;
     private ObjectClipboardPayload? _objectClipboard;
     private bool _updateCheckInProgress;
 
@@ -149,6 +152,7 @@ internal sealed partial class MainForm : Form
         BuildAddressBar();
         BuildBody();
         BuildAccountContextMenu();
+        BuildGroupContextMenu();
         BuildBucketContextMenu();
         BuildObjectContextMenu();
         BuildStatus();
@@ -186,6 +190,7 @@ internal sealed partial class MainForm : Form
     {
         var file = new ToolStripMenuItem("文件(&F)");
         file.DropDownItems.Add(Command("new-connection", "新建连接...", async (_, _) => await RunUiCommandAsync("新建连接", NewConnectionAsync), Keys.Control | Keys.N));
+        file.DropDownItems.Add(Command("new-connection-group", "新建连接分组...", async (_, _) => await RunUiCommandAsync("新建连接分组", NewConnectionGroupAsync)));
         file.DropDownItems.Add(Command("edit-connection", "编辑当前连接...", async (_, _) => await RunUiCommandAsync("编辑连接", EditCurrentConnectionAsync)));
         file.DropDownItems.Add(Command("copy-connection", "复制当前连接", async (_, _) => await RunUiCommandAsync("复制连接", CopyCurrentConnectionAsync)));
         file.DropDownItems.Add(Command("delete-connection", "删除当前连接", async (_, _) => await RunUiCommandAsync("删除连接", DeleteCurrentConnectionAsync)));
@@ -381,18 +386,65 @@ internal sealed partial class MainForm : Form
         copy.Click += async (_, _) => await RunUiCommandAsync("复制连接", CopyCurrentConnectionAsync);
         var export = new ToolStripMenuItem("导出此连接...", UiIcons.Create(UiIconKind.Download, 16));
         export.Click += async (_, _) => await ExportConnectionsAsync(exportAll: false);
+        var moveToGroup = new ToolStripMenuItem("移动到分组");
+        var moveUp = new ToolStripMenuItem("上移");
+        moveUp.Click += async (_, _) => await MoveSelectedProfileAsync(-1);
+        var moveDown = new ToolStripMenuItem("下移");
+        moveDown.Click += async (_, _) => await MoveSelectedProfileAsync(1);
         var delete = new ToolStripMenuItem("删除", UiIcons.Create(UiIconKind.Delete, 16));
         delete.Click += async (_, _) => await DeleteCurrentConnectionAsync();
-        _accountMenu.Items.AddRange([connect, edit, copy, export, new ToolStripSeparator(), delete]);
+        _accountMenu.Items.AddRange([connect, edit, copy, export, new ToolStripSeparator(), moveToGroup, moveUp, moveDown, new ToolStripSeparator(), delete]);
         _accountMenu.Opening += (_, args) =>
         {
-            var accountSelected = _tree.SelectedNode?.Tag is ConnectionProfile;
+            var profile = SelectedTreeProfile();
+            var accountSelected = profile is not null && _tree.SelectedNode?.Tag is not BucketNodeTag;
             args.Cancel = !accountSelected;
             connect.Enabled = accountSelected;
             edit.Enabled = accountSelected;
             copy.Enabled = accountSelected;
             export.Enabled = accountSelected;
             delete.Enabled = accountSelected;
+            moveToGroup.DropDownItems.Clear();
+            if (profile is not null)
+            {
+                moveToGroup.DropDownItems.Add(CreateMoveToGroupItem("未分组", null, profile));
+                if (_profileGroups.Count > 0) moveToGroup.DropDownItems.Add(new ToolStripSeparator());
+                foreach (var group in _profileGroups.OrderBy(group => group.SortOrder))
+                    moveToGroup.DropDownItems.Add(CreateMoveToGroupItem(group.Name, group.Id, profile));
+                var members = _profiles.Where(item => item.GroupId == profile.GroupId).OrderBy(item => item.SortOrder).ToArray();
+                var index = Array.FindIndex(members, item => item.Id == profile.Id);
+                moveUp.Enabled = index > 0;
+                moveDown.Enabled = index >= 0 && index < members.Length - 1;
+            }
+        };
+    }
+
+    private ToolStripMenuItem CreateMoveToGroupItem(string text, Guid? groupId, ConnectionProfile profile)
+    {
+        var item = new ToolStripMenuItem(text) { Checked = profile.GroupId == groupId };
+        item.Click += async (_, _) => await MoveProfileToGroupAsync(profile, groupId);
+        return item;
+    }
+
+    private void BuildGroupContextMenu()
+    {
+        _groupMenu.Items.Add("新建连接...", UiIcons.Create(UiIconKind.NewConnection, 16),
+            async (_, _) => await RunUiCommandAsync("新建连接", NewConnectionAsync));
+        _groupMenu.Items.Add("重命名...", null, async (_, _) => await RenameSelectedGroupAsync());
+        _groupMenu.Items.Add(new ToolStripSeparator());
+        _groupMenu.Items.Add("上移", null, async (_, _) => await MoveSelectedGroupAsync(-1));
+        _groupMenu.Items.Add("下移", null, async (_, _) => await MoveSelectedGroupAsync(1));
+        _groupMenu.Items.Add(new ToolStripSeparator());
+        _groupMenu.Items.Add("删除分组", UiIcons.Create(UiIconKind.Delete, 16), async (_, _) => await DeleteSelectedGroupAsync());
+        _groupMenu.Opening += (_, args) =>
+        {
+            var group = _tree.SelectedNode?.Tag as ConnectionGroup;
+            args.Cancel = group is null;
+            if (group is null) return;
+            var ordered = _profileGroups.OrderBy(item => item.SortOrder).ToArray();
+            var index = Array.FindIndex(ordered, item => item.Id == group.Id);
+            _groupMenu.Items[3].Enabled = index > 0;
+            _groupMenu.Items[4].Enabled = index >= 0 && index < ordered.Length - 1;
         };
     }
 
@@ -524,6 +576,7 @@ internal sealed partial class MainForm : Form
             _tree.ContextMenuStrip = node.Tag switch
             {
                 ConnectionProfile => _accountMenu,
+                ConnectionGroup => _groupMenu,
                 BucketNodeTag => _bucketMenu,
                 _ => null
             };
@@ -542,6 +595,7 @@ internal sealed partial class MainForm : Form
             _tree.ContextMenuStrip = args.Node?.Tag switch
             {
                 ConnectionProfile => _accountMenu,
+                ConnectionGroup => _groupMenu,
                 BucketNodeTag => _bucketMenu,
                 _ => null
             };
@@ -553,6 +607,14 @@ internal sealed partial class MainForm : Form
                 ShowConnectionSummary(profile, node);
             else if (node.Tag is BucketNodeTag bucket)
                 await NavigateAsync(bucket.Profile, bucket.Bucket, string.Empty, true);
+        };
+        _tree.AfterExpand += async (_, args) =>
+        {
+            if (args.Node is not null) await PersistGroupExpansionAsync(args.Node, true);
+        };
+        _tree.AfterCollapse += async (_, args) =>
+        {
+            if (args.Node is not null) await PersistGroupExpansionAsync(args.Node, false);
         };
 
         _objects.MouseDown += (_, args) =>
@@ -699,13 +761,16 @@ internal sealed partial class MainForm : Form
 
         try
         {
-            _profiles = await _profileStore.LoadAsync();
+            var configuration = await _profileStore.LoadConfigurationAsync();
+            _profiles = configuration.Profiles;
+            _profileGroups = configuration.Groups;
             AddRecoveryWarning(warnings, "对象存储连接", _profileStore as IRecoveryAwareStore);
         }
         catch (Exception exception)
         {
             _logger.Error("Failed to load storage profiles", exception);
             _profiles = [];
+            _profileGroups = [];
             warnings.Add($"对象存储连接：{exception.GetType().Name}: {exception.Message}；原文件已保留，当前以空列表启动。");
         }
         PopulateProfiles();
@@ -857,26 +922,56 @@ internal sealed partial class MainForm : Form
 
     private void PopulateProfiles()
     {
-        var root = _tree.Nodes[0];
-        root.Nodes.Clear();
-        foreach (var profile in _profiles.OrderBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase))
+        _populatingProfiles = true;
+        try
         {
-            var node = new TreeNode(profile.Name)
+            var root = _tree.Nodes[0];
+            root.Nodes.Clear();
+            foreach (var group in _profileGroups.OrderBy(group => group.SortOrder))
             {
-                Tag = profile,
-                ImageKey = "account",
-                SelectedImageKey = "account"
-            };
-            ApplyProfileNodePresentation(profile, node);
-            node.Nodes.Add(new TreeNode("(双击连接)")
-            {
-                ForeColor = SystemColors.GrayText,
-                ImageKey = "connect",
-                SelectedImageKey = "connect"
-            });
-            root.Nodes.Add(node);
+                var groupNode = new TreeNode(group.Name)
+                {
+                    Tag = group,
+                    ImageKey = "folder",
+                    SelectedImageKey = "folder",
+                    ToolTipText = "删除分组只会把连接移到未分组，不会删除连接。"
+                };
+                foreach (var profile in _profiles
+                             .Where(profile => profile.GroupId == group.Id)
+                             .OrderBy(profile => profile.SortOrder))
+                    groupNode.Nodes.Add(CreateProfileNode(profile));
+                root.Nodes.Add(groupNode);
+                if (group.IsExpanded) groupNode.Expand();
+            }
+
+            foreach (var profile in _profiles
+                         .Where(profile => profile.GroupId is null)
+                         .OrderBy(profile => profile.SortOrder))
+                root.Nodes.Add(CreateProfileNode(profile));
+            root.Expand();
         }
-        root.Expand();
+        finally
+        {
+            _populatingProfiles = false;
+        }
+    }
+
+    private static TreeNode CreateProfileNode(ConnectionProfile profile)
+    {
+        var node = new TreeNode(profile.Name)
+        {
+            Tag = profile,
+            ImageKey = "account",
+            SelectedImageKey = "account"
+        };
+        ApplyProfileNodePresentation(profile, node);
+        node.Nodes.Add(new TreeNode("(双击连接)")
+        {
+            ForeColor = SystemColors.GrayText,
+            ImageKey = "connect",
+            SelectedImageKey = "connect"
+        });
+        return node;
     }
 
     private static void ApplyProfileNodePresentation(ConnectionProfile profile, TreeNode node)
@@ -916,9 +1011,109 @@ internal sealed partial class MainForm : Form
 
     private async Task NewConnectionAsync()
     {
+        var groupId = SelectedTargetGroupId();
         using var dialog = new ConnectionDialog(_storage);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        await SaveProfilesAndRefreshAsync(_profiles.Append(dialog.Profile).ToArray());
+        var profile = dialog.Profile with
+        {
+            GroupId = groupId,
+            SortOrder = NextProfileSortOrder(groupId)
+        };
+        await SaveProfilesAndRefreshAsync(_profiles.Append(profile).ToArray());
+        SelectProfileNode(profile);
+    }
+
+    private async Task NewConnectionGroupAsync()
+    {
+        using var dialog = new ConnectionGroupDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (_profileGroups.Any(group => string.Equals(group.Name, dialog.GroupName, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"连接分组“{dialog.GroupName}”已存在。");
+        var group = new ConnectionGroup
+        {
+            Name = dialog.GroupName,
+            SortOrder = _profileGroups.Count,
+            IsExpanded = true
+        };
+        await SaveConfigurationAndRefreshAsync(new ConnectionProfileConfiguration(
+            _profiles, _profileGroups.Append(group).ToArray()));
+        SelectGroupNode(group.Id);
+    }
+
+    private async Task RenameSelectedGroupAsync()
+    {
+        if (_tree.SelectedNode?.Tag is not ConnectionGroup group) return;
+        using var dialog = new ConnectionGroupDialog(group);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (_profileGroups.Any(item => item.Id != group.Id &&
+            string.Equals(item.Name, dialog.GroupName, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"连接分组“{dialog.GroupName}”已存在。");
+        var proposed = _profileGroups.Select(item => item.Id == group.Id
+            ? item with { Name = dialog.GroupName }
+            : item).ToArray();
+        await SaveConfigurationAndRefreshAsync(new ConnectionProfileConfiguration(_profiles, proposed));
+        SelectGroupNode(group.Id);
+    }
+
+    private async Task DeleteSelectedGroupAsync()
+    {
+        if (_tree.SelectedNode?.Tag is not ConnectionGroup group) return;
+        var count = _profiles.Count(profile => profile.GroupId == group.Id);
+        if (MessageBox.Show(this,
+                $"确定删除分组“{group.Name}”吗？\n\n其中 {count} 个连接会移到未分组；连接本身不会被删除。",
+                "删除连接分组", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+        var configuration = new ConnectionProfileConfiguration(_profiles, _profileGroups).RemoveGroup(group.Id);
+        await SaveConfigurationAndRefreshAsync(configuration);
+    }
+
+    private async Task MoveSelectedGroupAsync(int offset)
+    {
+        if (_tree.SelectedNode?.Tag is not ConnectionGroup group) return;
+        var configuration = new ConnectionProfileConfiguration(_profiles, _profileGroups).MoveGroup(group.Id, offset);
+        await SaveConfigurationAndRefreshAsync(configuration);
+        SelectGroupNode(group.Id);
+    }
+
+    private async Task MoveProfileToGroupAsync(ConnectionProfile profile, Guid? groupId)
+    {
+        if (profile.GroupId == groupId) return;
+        var configuration = new ConnectionProfileConfiguration(_profiles, _profileGroups)
+            .PlaceProfile(profile.Id, groupId, int.MaxValue);
+        await SaveConfigurationAndRefreshAsync(configuration);
+        SelectProfileNode(configuration.Profiles.First(item => item.Id == profile.Id));
+    }
+
+    private async Task MoveSelectedProfileAsync(int offset)
+    {
+        var profile = SelectedTreeProfile();
+        if (profile is null) return;
+        var members = _profiles.Where(item => item.GroupId == profile.GroupId)
+            .OrderBy(item => item.SortOrder).ToArray();
+        var index = Array.FindIndex(members, item => item.Id == profile.Id);
+        if (index < 0) return;
+        var configuration = new ConnectionProfileConfiguration(_profiles, _profileGroups)
+            .PlaceProfile(profile.Id, profile.GroupId, index + offset);
+        await SaveConfigurationAndRefreshAsync(configuration);
+        SelectProfileNode(configuration.Profiles.First(item => item.Id == profile.Id));
+    }
+
+    private async Task PersistGroupExpansionAsync(TreeNode node, bool expanded)
+    {
+        if (_populatingProfiles || node.Tag is not ConnectionGroup group || group.IsExpanded == expanded) return;
+        var groups = _profileGroups.Select(item => item.Id == group.Id
+            ? item with { IsExpanded = expanded }
+            : item).ToArray();
+        try
+        {
+            await _profileStore.SaveConfigurationAsync(new ConnectionProfileConfiguration(_profiles, groups));
+            _profileGroups = groups;
+            node.Tag = group with { IsExpanded = expanded };
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Failed to persist connection group expansion: {exception.GetType().Name}: {exception.Message}");
+        }
     }
 
     private async Task EditCurrentConnectionAsync()
@@ -940,6 +1135,7 @@ internal sealed partial class MainForm : Form
         {
             Id = Guid.NewGuid(),
             Name = CreateUniqueCopyName(profile.Name),
+            SortOrder = NextProfileSortOrder(profile.GroupId),
             HealthStatus = ConnectionHealthStatus.Unknown,
             LastConnectionCheckedAtUtc = null,
             LastConnectionSucceededAtUtc = null
@@ -984,8 +1180,8 @@ internal sealed partial class MainForm : Form
                 .Where(binding => binding.StorageProfileId != profile.Id)
                 .ToArray());
         await _configurationTransactions.SaveAsync(
-            new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials),
-            new ConfigurationSnapshot(proposedProfiles, proposedCdnConfiguration, _cdnCredentials));
+            new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials, _profileGroups),
+            new ConfigurationSnapshot(proposedProfiles, proposedCdnConfiguration, _cdnCredentials, _profileGroups));
         _profiles = proposedProfiles;
         _cdnConfiguration = proposedCdnConfiguration;
         if (_currentProfile?.Id == profile.Id) Disconnect();
@@ -994,8 +1190,16 @@ internal sealed partial class MainForm : Form
 
     private async Task SaveProfilesAndRefreshAsync(IReadOnlyList<ConnectionProfile> proposed)
     {
-        await _profileStore.SaveAsync(proposed);
-        _profiles = proposed;
+        await SaveConfigurationAndRefreshAsync(new ConnectionProfileConfiguration(proposed, _profileGroups));
+    }
+
+    private async Task SaveConfigurationAndRefreshAsync(ConnectionProfileConfiguration proposed)
+    {
+        var normalized = proposed.Normalize();
+        normalized.Validate();
+        await _profileStore.SaveConfigurationAsync(normalized);
+        _profiles = normalized.Profiles;
+        _profileGroups = normalized.Groups;
         PopulateProfiles();
     }
 
@@ -1015,7 +1219,7 @@ internal sealed partial class MainForm : Form
             .ToArray();
         try
         {
-            await _profileStore.SaveAsync(proposed);
+            await _profileStore.SaveConfigurationAsync(new ConnectionProfileConfiguration(proposed, _profileGroups));
             _profiles = proposed;
             if (_currentProfile?.Id == updated.Id)
                 _currentProfile = updated;
@@ -1044,7 +1248,9 @@ internal sealed partial class MainForm : Form
 
         using var options = new ConnectionExportOptionsDialog(
             profiles.Length,
-            profiles.Count(profile => profile.HasStoredCredentials),
+            profiles.Count(profile => profile.HasStoredCredentials ||
+                profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
+                !string.IsNullOrWhiteSpace(profile.AwsExternalId)),
             cdnConfiguration.Profiles.Count,
             cdnCredentials.Count(credential =>
                 credential.AuthenticationType != CdnAuthenticationType.None &&
@@ -1140,7 +1346,8 @@ internal sealed partial class MainForm : Form
                 _profiles,
                 _cdnConfiguration,
                 _cdnCredentials,
-                _connectionArchive);
+                _connectionArchive,
+                _profileGroups);
             if (preview.ShowDialog(this) != DialogResult.OK) return;
             var selectedStorage = preview.SelectedProfiles;
             var selectedCdn = preview.SelectedCdnProfiles;
@@ -1157,17 +1364,20 @@ internal sealed partial class MainForm : Form
                     selectedCdn.Select(profile => profile.Id).ToArray()),
                 preview.ImportStorageCredentials,
                 preview.ImportCdnCredentials,
-                preview.ConflictStrategy);
+                preview.ConflictStrategy,
+                preview.TargetGroupId);
 
             await _configurationTransactions.SaveAsync(
                 new ConfigurationSnapshot(
                     previousProfiles,
                     previousCdnConfiguration,
-                    previousCdnCredentials),
+                    previousCdnCredentials,
+                    _profileGroups),
                 new ConfigurationSnapshot(
                     merged.Profiles,
                     merged.CdnConfiguration,
-                    merged.CdnCredentials));
+                    merged.CdnCredentials,
+                    _profileGroups));
 
             _profiles = merged.Profiles;
             _cdnConfiguration = merged.CdnConfiguration;
@@ -1615,8 +1825,50 @@ internal sealed partial class MainForm : Form
     }
 
     private TreeNode? FindProfileNode(ConnectionProfile profile) =>
-        _tree.Nodes[0].Nodes.Cast<TreeNode>()
+        EnumerateTreeNodes(_tree.Nodes[0].Nodes)
             .FirstOrDefault(item => item.Tag is ConnectionProfile candidate && candidate.Id == profile.Id);
+
+    private static IEnumerable<TreeNode> EnumerateTreeNodes(TreeNodeCollection nodes)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            yield return node;
+            foreach (var child in EnumerateTreeNodes(node.Nodes))
+                yield return child;
+        }
+    }
+
+    private Guid? SelectedTargetGroupId() => _tree.SelectedNode?.Tag switch
+    {
+        ConnectionGroup group => group.Id,
+        ConnectionProfile profile => profile.GroupId,
+        BucketNodeTag bucket => bucket.Profile.GroupId,
+        _ => null
+    };
+
+    private int NextProfileSortOrder(Guid? groupId) =>
+        _profiles.Where(profile => profile.GroupId == groupId)
+            .Select(profile => profile.SortOrder)
+            .DefaultIfEmpty(-1)
+            .Max() + 1;
+
+    private void SelectProfileNode(ConnectionProfile profile)
+    {
+        var node = FindProfileNode(profile);
+        if (node is null) return;
+        node.Parent?.Expand();
+        _tree.SelectedNode = node;
+        node.EnsureVisible();
+    }
+
+    private void SelectGroupNode(Guid groupId)
+    {
+        var node = _tree.Nodes[0].Nodes.Cast<TreeNode>()
+            .FirstOrDefault(item => item.Tag is ConnectionGroup group && group.Id == groupId);
+        if (node is null) return;
+        _tree.SelectedNode = node;
+        node.EnsureVisible();
+    }
 
     private async Task NavigateUpAsync()
     {

@@ -8,7 +8,7 @@ internal sealed class ConnectionExportOptionsDialog : Form
     private readonly CheckBox _includeCredentials = new()
     {
         Name = "IncludeStoredCredentialsCheckBox",
-        Text = "包含已保存凭据（S3 密钥及 CDN Token/Header 密钥）",
+        Text = "包含已保存凭据（S3 密钥、AssumeRole External ID 及 CDN Token/Header 密钥）",
         AutoSize = true
     };
     private readonly TextBox _password = new() { UseSystemPasswordChar = true, Dock = DockStyle.Fill };
@@ -327,6 +327,12 @@ internal sealed class ConnectionImportPreviewDialog : Form
         DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 180
     };
+    private readonly ComboBox _targetGroup = new()
+    {
+        Name = "ConnectionImportTargetGroupComboBox",
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 180
+    };
     private readonly Label _selectionSummary = new() { AutoSize = true };
     private readonly Label _dependencySummary = new()
     {
@@ -364,6 +370,9 @@ internal sealed class ConnectionImportPreviewDialog : Form
     public ConnectionImportConflictStrategy ConflictStrategy =>
         ((ConflictOption)_conflictStrategy.SelectedItem!).Strategy;
 
+    public Guid? TargetGroupId =>
+        (_targetGroup.SelectedItem as TargetGroupOption)?.GroupId;
+
     private readonly ConnectionArchivePackage _package;
     private readonly IReadOnlyCollection<ConnectionProfile> _existingProfiles;
     private readonly CdnConfiguration _existingCdnConfiguration;
@@ -376,7 +385,8 @@ internal sealed class ConnectionImportPreviewDialog : Form
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration? existingCdnConfiguration = null,
         IReadOnlyCollection<CdnCredential>? existingCdnCredentials = null,
-        ConnectionArchiveService? archiveService = null)
+        ConnectionArchiveService? archiveService = null,
+        IReadOnlyCollection<ConnectionGroup>? groups = null)
     {
         _package = package;
         _existingProfiles = existingProfiles;
@@ -443,7 +453,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
             _cdnProfiles.Items.Add(item);
         }
 
-        var storageCredentialCount = package.Profiles.Count(profile => profile.HasStoredCredentials);
+        var storageCredentialCount = package.Profiles.Count(profile =>
+            profile.HasStoredCredentials ||
+            profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
+            !string.IsNullOrWhiteSpace(profile.AwsExternalId));
         _importStorageCredentials.Enabled = package.ContainsCredentials && storageCredentialCount > 0;
         _importStorageCredentials.Checked = false;
         _importStorageCredentials.Text = _importStorageCredentials.Enabled
@@ -462,6 +475,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
             new ConflictOption("跳过同名连接", ConnectionImportConflictStrategy.Skip)
         ]);
         _conflictStrategy.SelectedIndex = 0;
+        _targetGroup.Items.Add(new TargetGroupOption("未分组", null));
+        foreach (var group in (groups ?? []).OrderBy(group => group.SortOrder))
+            _targetGroup.Items.Add(new TargetGroupOption(group.Name, group.Id));
+        _targetGroup.SelectedIndex = 0;
 
         var header = new TableLayoutPanel
         {
@@ -528,6 +545,13 @@ internal sealed class ConnectionImportPreviewDialog : Form
             Margin = new Padding(0, 8, 0, 0)
         };
         _conflictStrategy.Margin = new Padding(8, 3, 0, 0);
+        var targetGroupLabel = new Label
+        {
+            Text = "目标分组：",
+            AutoSize = true,
+            Margin = new Padding(18, 8, 0, 0)
+        };
+        _targetGroup.Margin = new Padding(8, 3, 0, 0);
         var cancel = new Button
         {
             Name = "CancelConnectionImportButton",
@@ -560,7 +584,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
             WrapContents = false,
             Margin = new Padding(0, 8, 0, 0)
         };
-        conflictOptions.Controls.AddRange([conflictLabel, _conflictStrategy]);
+        conflictOptions.Controls.AddRange([conflictLabel, _conflictStrategy, targetGroupLabel, _targetGroup]);
 
         var importActions = new FlowLayoutPanel
         {
@@ -731,6 +755,11 @@ internal sealed class ConnectionImportPreviewDialog : Form
     };
 
     private sealed record ConflictOption(string Label, ConnectionImportConflictStrategy Strategy)
+    {
+        public override string ToString() => Label;
+    }
+
+    private sealed record TargetGroupOption(string Label, Guid? GroupId)
     {
         public override string ToString() => Label;
     }

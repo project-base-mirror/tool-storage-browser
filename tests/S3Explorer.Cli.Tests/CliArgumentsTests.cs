@@ -80,4 +80,39 @@ public sealed class CliArgumentsTests
 
         Program.ValidateCommandOptions("cdn", "cache-test", parsed);
     }
+
+    [Fact]
+    public void AssumeRoleProfileAcceptsOnlyDeclaredAdvancedIdentityOptions()
+    {
+        var parsed = CliArguments.Parse([
+            "profile", "add", "--name", "audit", "--type", "amazon",
+            "--credential-source", "assume-role", "--source-profile", "bootstrap",
+            "--role-arn", "arn:aws:iam::123456789012:role/Audit",
+            "--role-session-name", "s3explorer-audit", "--source-identity", "operator-42",
+            "--external-id-env", "AUDIT_EXTERNAL_ID", "--session-duration", "1800",
+            "--group", "Production"]);
+
+        Program.ValidateCommandOptions("profile", "add", parsed);
+        Assert.Equal("assume-role", parsed.Optional("credential-source"));
+        Assert.Equal("AUDIT_EXTERNAL_ID", parsed.Optional("external-id-env"));
+    }
+
+    [Theory]
+    [InlineData("groups")]
+    [InlineData("group-add")]
+    [InlineData("group-delete")]
+    [InlineData("move")]
+    public void ProfileGroupCommandsHaveAnExplicitOptionSurface(string verb)
+    {
+        var arguments = verb switch
+        {
+            "group-add" => new[] { "profile", verb, "--name", "Production" },
+            "group-delete" => new[] { "profile", verb, "Production", "--yes" },
+            "move" => new[] { "profile", verb, "audit", "--group", "Production" },
+            _ => new[] { "profile", verb }
+        };
+        var parsed = CliArguments.Parse(arguments);
+
+        Program.ValidateCommandOptions("profile", verb, parsed);
+    }
 }

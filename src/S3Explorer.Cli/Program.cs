@@ -170,14 +170,19 @@ internal static class Program
     {
         string[]? commandOptions = (command, verb) switch
         {
-            ("profile" or "profiles", "list" or "show") => [],
+            ("profile" or "profiles", "list" or "show" or "groups") => [],
             ("profile" or "profiles", "add") =>
             [
                 "name", "type", "endpoint", "region", "credential-source", "aws-profile",
                 "access-key", "secret-key", "secret-key-env", "session-token", "session-token-env",
+                "source-profile", "role-arn", "role-session-name", "source-identity",
+                "external-id", "external-id-env", "session-duration", "web-identity-token-file", "group",
                 "default-bucket", "path-style", "ignore-certificate-errors"
             ],
             ("profile" or "profiles", "delete") => ["yes"],
+            ("profile" or "profiles", "group-add") => ["name"],
+            ("profile" or "profiles", "group-delete") => ["yes"],
+            ("profile" or "profiles", "move") => ["group"],
             ("connection", "test") => ["profile"],
             ("bucket" or "buckets", "list") => ["profile"],
             ("object" or "objects", "list") => ["profile", "bucket", "prefix", "recursive"],
@@ -213,22 +218,30 @@ internal static class Program
         bool json,
         CancellationToken cancellationToken)
     {
-        var profiles = (await store.LoadAsync(cancellationToken)).ToList();
+        var configuration = await store.LoadConfigurationAsync(cancellationToken);
+        var profiles = configuration.Profiles.ToList();
+        var groups = configuration.Groups.ToList();
         switch (verb)
         {
             case "list":
-                var list = profiles.Select(ProfileView).ToArray();
+                var list = profiles.Select(profile => ProfileView(profile, GroupName(groups, profile.GroupId))).ToArray();
                 WriteSuccess(json, list, list.Length == 0
                     ? "没有已保存的连接。"
-                    : string.Join(Environment.NewLine, profiles.Select(item =>
-                        $"{item.Name}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.CredentialSourceDisplayName}\t{item.Endpoint}\t{item.Id}")));
+                    : string.Join(Environment.NewLine, profiles
+                        .OrderBy(item => item.GroupId is null ? int.MaxValue : groups.First(group => group.Id == item.GroupId).SortOrder)
+                        .ThenBy(item => item.SortOrder)
+                        .Select(item =>
+                            $"{item.Name}\t{GroupName(groups, item.GroupId) ?? "未分组"}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.CredentialSourceDisplayName}\t{item.Endpoint}\t{item.Id}")));
                 return 0;
 
             case "show":
                 var shown = ResolveProfile(profiles, RequirePositional(args, 2, "profile show <name-or-id>"));
-                WriteSuccess(json, ProfileView(shown),
+                WriteSuccess(json, ProfileView(shown, GroupName(groups, shown.GroupId)),
                     $"名称: {shown.Name}\n类型: {S3ProviderCatalog.Get(shown.ServiceType).DisplayName}\nEndpoint: {shown.Endpoint}\nRegion: {shown.EffectiveSignatureRegion}\n凭据来源: {shown.CredentialSourceDisplayName}" +
+                    $"\n分组: {GroupName(groups, shown.GroupId) ?? "未分组"}" +
                     (shown.CredentialSource == CredentialSourceKind.StoredKeys ? $"\nAccess Key: {Mask(shown.AccessKey)}" : string.Empty) +
+                    (shown.CredentialSource == CredentialSourceKind.AwsAssumeRole
+                        ? $"\n源身份: {shown.AwsSourceProfileName}{(string.IsNullOrWhiteSpace(shown.AwsRoleSourceIdentity) ? string.Empty : $" / {shown.AwsRoleSourceIdentity}")}\n目标 Role: {shown.AwsRoleArn}\nExternal ID: {(string.IsNullOrWhiteSpace(shown.AwsExternalId) ? "未配置" : "已配置")}" : string.Empty) +
                     $"\nID: {shown.Id}");
                 return 0;
 
@@ -243,8 +256,8 @@ internal static class Program
                 if (credentialSource != CredentialSourceKind.StoredKeys && serviceType != S3ServiceType.AmazonS3)
                     throw new CliUsageException("AWS 外部凭据来源仅适用于 --type amazon；S3-compatible 连接必须使用 stored。");
                 var awsProfileName = args.Optional("aws-profile")?.Trim() ?? string.Empty;
-                if (credentialSource == CredentialSourceKind.AwsSharedProfile && awsProfileName.Length == 0)
-                    throw new CliUsageException("--credential-source profile 需要 --aws-profile <name>。");
+                if (credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso && awsProfileName.Length == 0)
+                    throw new CliUsageException("--credential-source profile|sso 需要 --aws-profile <name>。");
                 if (credentialSource != CredentialSourceKind.StoredKeys &&
                     (args.Optional("access-key") is not null || args.Optional("secret-key") is not null ||
                      args.Optional("secret-key-env") is not null || args.Optional("session-token") is not null ||
@@ -263,8 +276,12 @@ internal static class Program
                 if (string.IsNullOrWhiteSpace(region))
                     region = definition.DefaultRegion;
                 var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, region);
+                var groupId = ResolveOptionalGroup(groups, args.Optional("group"));
+                var sessionDuration = ParseRoleSessionDuration(args.Optional("session-duration"));
                 var profile = preset with
                 {
+                    GroupId = groupId,
+                    SortOrder = profiles.Where(item => item.GroupId == groupId).Select(item => item.SortOrder).DefaultIfEmpty(-1).Max() + 1,
                     Name = name.Trim(),
                     Endpoint = args.Optional("endpoint") ?? definition.DefaultEndpoint,
                     Region = region,
@@ -273,27 +290,84 @@ internal static class Program
                     SecretKey = secretKey,
                     SessionToken = sessionToken,
                     CredentialSource = credentialSource,
-                    AwsProfileName = credentialSource == CredentialSourceKind.AwsSharedProfile ? awsProfileName : string.Empty,
+                    AwsProfileName = credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso ? awsProfileName : string.Empty,
+                    AwsSourceProfileName = credentialSource == CredentialSourceKind.AwsAssumeRole
+                        ? args.Optional("source-profile")?.Trim() ?? string.Empty
+                        : string.Empty,
+                    AwsRoleArn = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                        ? args.Optional("role-arn")?.Trim() ?? string.Empty
+                        : string.Empty,
+                    AwsRoleSessionName = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
+                        ? args.Optional("role-session-name")?.Trim() ?? string.Empty
+                        : string.Empty,
+                    AwsRoleSourceIdentity = credentialSource == CredentialSourceKind.AwsAssumeRole
+                        ? args.Optional("source-identity")?.Trim() ?? string.Empty
+                        : string.Empty,
+                    AwsExternalId = credentialSource == CredentialSourceKind.AwsAssumeRole
+                        ? ResolveSecret(args, "external-id", "S3EXPLORER_AWS_EXTERNAL_ID", required: false)
+                        : string.Empty,
+                    AwsSessionDurationSeconds = sessionDuration,
+                    AwsWebIdentityTokenFile = credentialSource == CredentialSourceKind.AwsWebIdentity
+                        ? RequireAbsolutePath(args.Optional("web-identity-token-file") ?? string.Empty, "--web-identity-token-file")
+                        : string.Empty,
                     DefaultBucket = args.Optional("default-bucket") ?? string.Empty,
                     AddressingStyle = args.Flag("path-style") ? AddressingStyle.PathStyle : preset.AddressingStyle,
                     IgnoreCertificateErrors = args.Flag("ignore-certificate-errors")
                 };
                 profile.Validate();
                 profiles.Add(profile);
-                await store.SaveAsync(profiles, cancellationToken);
-                WriteSuccess(json, ProfileView(profile), $"已添加连接：{profile.Name} ({profile.Id})");
+                await store.SaveConfigurationAsync(new ConnectionProfileConfiguration(profiles, groups).Normalize(), cancellationToken);
+                WriteSuccess(json, ProfileView(profile, GroupName(groups, profile.GroupId)), $"已添加连接：{profile.Name} ({profile.Id})");
                 return 0;
 
             case "delete":
                 RequireConfirmation(args, "删除连接必须提供 --yes。");
                 var deleted = ResolveProfile(profiles, RequirePositional(args, 2, "profile delete <name-or-id> --yes"));
                 profiles.RemoveAll(item => item.Id == deleted.Id);
-                await store.SaveAsync(profiles, cancellationToken);
+                await store.SaveConfigurationAsync(new ConnectionProfileConfiguration(profiles, groups).Normalize(), cancellationToken);
                 WriteSuccess(json, new { deleted.Id, deleted.Name }, $"已删除连接：{deleted.Name}");
                 return 0;
 
+            case "groups":
+                var groupList = groups.OrderBy(group => group.SortOrder)
+                    .Select(group => new { group.Id, group.Name, group.SortOrder, connectionCount = profiles.Count(profile => profile.GroupId == group.Id) })
+                    .ToArray();
+                WriteSuccess(json, groupList, groupList.Length == 0
+                    ? "没有连接分组。"
+                    : string.Join(Environment.NewLine, groupList.Select(group => $"{group.Name}\t{group.connectionCount}\t{group.Id}")));
+                return 0;
+
+            case "group-add":
+                var groupName = args.Require("name").Trim();
+                if (groups.Any(group => string.Equals(group.Name, groupName, StringComparison.OrdinalIgnoreCase)))
+                    throw new CliUsageException($"连接分组已存在：{groupName}");
+                var addedGroup = new ConnectionGroup { Name = groupName, SortOrder = groups.Count };
+                addedGroup.Validate();
+                groups.Add(addedGroup);
+                await store.SaveConfigurationAsync(new ConnectionProfileConfiguration(profiles, groups).Normalize(), cancellationToken);
+                WriteSuccess(json, addedGroup, $"已添加连接分组：{addedGroup.Name} ({addedGroup.Id})");
+                return 0;
+
+            case "group-delete":
+                RequireConfirmation(args, "删除连接分组必须提供 --yes。");
+                var deletedGroup = ResolveGroup(groups, RequirePositional(args, 2, "profile group-delete <name-or-id> --yes"));
+                var withoutGroup = new ConnectionProfileConfiguration(profiles, groups).RemoveGroup(deletedGroup.Id);
+                await store.SaveConfigurationAsync(withoutGroup, cancellationToken);
+                WriteSuccess(json, new { deletedGroup.Id, deletedGroup.Name }, $"已删除连接分组：{deletedGroup.Name}；其中连接已移到未分组。");
+                return 0;
+
+            case "move":
+                var moved = ResolveProfile(profiles, RequirePositional(args, 2, "profile move <name-or-id> --group <name-or-id|->"));
+                var targetGroup = ResolveOptionalGroup(groups, args.Require("group"));
+                var movedConfiguration = new ConnectionProfileConfiguration(profiles, groups)
+                    .PlaceProfile(moved.Id, targetGroup, int.MaxValue);
+                await store.SaveConfigurationAsync(movedConfiguration, cancellationToken);
+                WriteSuccess(json, ProfileView(movedConfiguration.Profiles.First(profile => profile.Id == moved.Id), GroupName(groups, targetGroup)),
+                    $"已移动连接“{moved.Name}”到 {GroupName(groups, targetGroup) ?? "未分组"}。");
+                return 0;
+
             default:
-                throw new CliUsageException("用法：profile list | show <name-or-id> | add --name ... --type ... | delete <name-or-id> --yes");
+                throw new CliUsageException("用法：profile list | show | add | delete | groups | group-add | group-delete | move");
         }
     }
 
@@ -316,8 +390,15 @@ internal static class Program
             WriteOperationFailure(json, result.Message, OperationFailed, result);
             return OperationFailed;
         }
+        var identityText = result.AwsIdentity is null
+            ? string.Empty
+            : $"\n源身份: {result.AwsIdentity.SourceIdentity}" +
+              (string.IsNullOrWhiteSpace(result.AwsIdentity.TargetRoleArn) ? string.Empty : $"\n目标 Role: {result.AwsIdentity.TargetRoleArn}") +
+              (result.AwsIdentity.Source == CredentialSourceKind.AwsAssumeRole ? $"\nExternal ID: {(result.AwsIdentity.ExternalIdConfigured ? "已配置" : "未配置")}" : string.Empty) +
+              (result.AwsIdentity.SessionExpiresAtUtc is { } expiration ? $"\n会话到期: {expiration.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}" : string.Empty) +
+              (result.AwsIdentity.UserLoginMayBeRequired ? "\nSSO: 需要用户触发登录或刷新" : string.Empty);
         WriteSuccess(json, result,
-            $"{result.Message}\n凭据来源: {result.CredentialSource ?? profile.CredentialSourceDisplayName}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms\nBucket: {result.BucketCount}\nHTTP: {result.HttpStatusCode?.ToString() ?? "-"}");
+            $"{result.Message}\n凭据来源: {result.CredentialSource ?? profile.CredentialSourceDisplayName}{identityText}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms\nBucket: {result.BucketCount}\nHTTP: {result.HttpStatusCode?.ToString() ?? "-"}");
         return 0;
     }
 
@@ -832,9 +913,39 @@ internal static class Program
         "container" or "container-role" or "ecs" => CredentialSourceKind.AwsContainerRole,
         "instance" or "instance-role" or "ec2" => CredentialSourceKind.AwsInstanceRole,
         "default" or "default-chain" or "chain" => CredentialSourceKind.AwsDefaultChain,
+        "sso" or "iam-identity-center" => CredentialSourceKind.AwsSso,
+        "assume-role" or "role" => CredentialSourceKind.AwsAssumeRole,
+        "web-identity" or "oidc" => CredentialSourceKind.AwsWebIdentity,
         _ => throw new CliUsageException(
-            $"不支持的凭据来源：{value}。可选 stored|profile|environment|container|instance|default。")
+            $"不支持的凭据来源：{value}。可选 stored|profile|environment|container|instance|default|sso|assume-role|web-identity。")
     };
+
+    private static int ParseRoleSessionDuration(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 3600;
+        if (!int.TryParse(value, out var seconds) || seconds is < 900 or > 43200)
+            throw new CliUsageException("--session-duration 必须是 900–43200 的整数秒数。");
+        return seconds;
+    }
+
+    private static Guid? ResolveOptionalGroup(IReadOnlyCollection<ConnectionGroup> groups, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Trim() == "-") return null;
+        return ResolveGroup(groups, value).Id;
+    }
+
+    private static ConnectionGroup ResolveGroup(IEnumerable<ConnectionGroup> groups, string nameOrId)
+    {
+        var values = groups.ToArray();
+        if (Guid.TryParse(nameOrId, out var id))
+            return values.FirstOrDefault(item => item.Id == id)
+                ?? throw new CliNotFoundException($"找不到连接分组：{nameOrId}");
+        return values.FirstOrDefault(item => string.Equals(item.Name, nameOrId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new CliNotFoundException($"找不到连接分组：{nameOrId}");
+    }
+
+    private static string? GroupName(IEnumerable<ConnectionGroup> groups, Guid? groupId) =>
+        groupId is null ? null : groups.FirstOrDefault(group => group.Id == groupId)?.Name;
 
     private static string ResolveSecret(CliArguments args, string option, string environmentName, bool required = true)
     {
@@ -848,7 +959,7 @@ internal static class Program
         return value ?? string.Empty;
     }
 
-    private static object ProfileView(ConnectionProfile profile) => new
+    private static object ProfileView(ConnectionProfile profile, string? groupName = null) => new
     {
         profile.Id,
         profile.Name,
@@ -856,7 +967,15 @@ internal static class Program
         profile.Endpoint,
         region = profile.EffectiveSignatureRegion,
         credentialSource = profile.CredentialSourceDisplayName,
-        awsProfile = profile.CredentialSource == CredentialSourceKind.AwsSharedProfile ? profile.AwsProfileName : null,
+        group = groupName,
+        awsProfile = profile.CredentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso ? profile.AwsProfileName : null,
+        sourceProfile = profile.CredentialSource == CredentialSourceKind.AwsAssumeRole ? profile.AwsSourceProfileName : null,
+        roleArn = profile.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity ? profile.AwsRoleArn : null,
+        roleSessionName = profile.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity ? profile.AwsRoleSessionName : null,
+        sourceIdentity = profile.CredentialSource == CredentialSourceKind.AwsAssumeRole ? profile.AwsRoleSourceIdentity : null,
+        externalIdConfigured = profile.CredentialSource == CredentialSourceKind.AwsAssumeRole && !string.IsNullOrWhiteSpace(profile.AwsExternalId),
+        sessionDurationSeconds = profile.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity ? (int?)profile.AwsSessionDurationSeconds : null,
+        webIdentityTokenFile = profile.CredentialSource == CredentialSourceKind.AwsWebIdentity ? profile.AwsWebIdentityTokenFile : null,
         accessKey = profile.CredentialSource == CredentialSourceKind.StoredKeys ? Mask(profile.AccessKey) : null,
         hasSessionToken = profile.UsesTemporarySessionCredentials,
         profile.DefaultBucket
@@ -957,9 +1076,16 @@ internal static class Program
           s3explorer-cli profile show <name-or-id> [--output json]
           s3explorer-cli profile add --name <name> --type <amazon|compatible|google|minio|r2|b2|aliyun|tencent|supabase>
               [--endpoint <url>] [--region <region>]
-              [--credential-source <stored|profile|environment|container|instance|default>]
-              [--aws-profile <name>] [--access-key <key>] [--secret-key-env <ENV_NAME>]
+              [--credential-source <stored|profile|environment|container|instance|default|sso|assume-role|web-identity>]
+              [--aws-profile <name>] [--source-profile <name>] [--role-arn <arn>] [--role-session-name <name>]
+              [--source-identity <value>] [--external-id-env <ENV_NAME>] [--session-duration <seconds>]
+              [--web-identity-token-file <absolute-path>] [--group <name-or-id>]
+              [--access-key <key>] [--secret-key-env <ENV_NAME>]
           s3explorer-cli profile delete <name-or-id> --yes
+          s3explorer-cli profile groups
+          s3explorer-cli profile group-add --name <name>
+          s3explorer-cli profile group-delete <name-or-id> --yes
+          s3explorer-cli profile move <name-or-id> --group <name-or-id|->
           s3explorer-cli connection test --profile <name-or-id> [--output json]
           s3explorer-cli bucket list --profile <name-or-id> [--output json]
           s3explorer-cli objects list --profile <name> --bucket <bucket> [--prefix <prefix>] [--recursive]
@@ -1012,7 +1138,8 @@ internal static class Program
 
         凭据建议:
           优先使用 --secret-key-env <变量名> 或 S3EXPLORER_SECRET_KEY，避免密钥进入命令历史。
-          AWS 外部来源只适用于 Amazon S3；profile 名称会保存，但环境和角色凭据不会写入连接文件。
+          AWS 外部来源只适用于 Amazon S3；SSO 浏览器令牌和 Web Identity token 内容不会写入连接文件。
+          AssumeRole External ID 使用 --external-id-env 最安全；保存时使用 Windows DPAPI CurrentUser 加密。
         """);
 }
 
@@ -1029,7 +1156,9 @@ internal sealed class CliArguments
         "output", "data-dir", "timeout", "cancel-file", "log-file",
         "profile", "bucket", "prefix", "name", "type", "endpoint", "region",
         "credential-source", "aws-profile", "access-key", "secret-key", "secret-key-env",
-        "session-token", "session-token-env", "default-bucket", "direction", "local", "remote",
+        "session-token", "session-token-env", "source-profile", "role-arn", "role-session-name",
+        "source-identity", "external-id", "external-id-env", "session-duration", "web-identity-token-file", "group",
+        "default-bucket", "direction", "local", "remote",
         "exclude", "page-size", "key-marker", "version-id-marker", "version-id", "source",
         "project", "product", "version", "manifest", "delete-mode", "access", "cdn-profile", "path",
         "transfers", "multipart-concurrency", "upload-limit", "download-limit",

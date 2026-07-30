@@ -242,6 +242,52 @@ public sealed class ConnectionTransferDialogLayoutTests
         });
     }
 
+    [Fact]
+    public void ImportPreviewLetsTheUserChooseATargetConnectionGroup()
+    {
+        RunSta(() =>
+        {
+            var package = new ConnectionArchivePackage(
+                [new ConnectionProfile { Name = "example", Endpoint = "https://s3.amazonaws.com" }],
+                ContainsCredentials: false,
+                ExportedAtUtc: DateTimeOffset.UtcNow);
+            var group = new ConnectionGroup { Name = "Production" };
+            using var dialog = new ConnectionImportPreviewDialog(package, [], groups: [group]);
+            var target = Assert.IsType<ComboBox>(Assert.Single(
+                dialog.Controls.Find("ConnectionImportTargetGroupComboBox", searchAllChildren: true)));
+
+            Assert.Equal("未分组", target.Text);
+            target.SelectedIndex = 1;
+
+            Assert.Equal("Production", target.Text);
+            Assert.Equal(group.Id, dialog.TargetGroupId);
+        });
+    }
+
+    [Fact]
+    public void ImportPreviewRecognizesProtectedAssumeRoleExternalIdAsStorageCredential()
+    {
+        RunSta(() =>
+        {
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+            {
+                Name = "Audit role",
+                CredentialSource = CredentialSourceKind.AwsAssumeRole,
+                AwsSourceProfileName = "bootstrap",
+                AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
+                AwsRoleSessionName = "s3explorer-audit",
+                AwsExternalId = "external-secret"
+            };
+            var package = new ConnectionArchivePackage([profile], true, DateTimeOffset.UtcNow);
+            using var dialog = new ConnectionImportPreviewDialog(package, []);
+            var importCredentials = Assert.IsType<CheckBox>(Assert.Single(
+                dialog.Controls.Find("ImportStorageCredentialsCheckBox", searchAllChildren: true)));
+
+            Assert.True(importCredentials.Enabled);
+            Assert.False(importCredentials.Checked);
+        });
+    }
+
     private static Button FindButton(Control root, string name) =>
         Assert.IsType<Button>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
 

@@ -7,7 +7,8 @@ namespace S3Explorer.App;
 internal sealed record ConfigurationSnapshot(
     IReadOnlyList<ConnectionProfile> Profiles,
     CdnConfiguration CdnConfiguration,
-    IReadOnlyList<CdnCredential> CdnCredentials);
+    IReadOnlyList<CdnCredential> CdnCredentials,
+    IReadOnlyList<ConnectionGroup>? ProfileGroups = null);
 
 internal sealed class ConfigurationTransactionInterruptedException(string message) : Exception(message);
 
@@ -103,7 +104,9 @@ internal sealed class ConfigurationTransactionCoordinator
 
     private async Task ApplyAsync(ConfigurationSnapshot snapshot, CancellationToken cancellationToken)
     {
-        await _profileStore.SaveAsync(snapshot.Profiles, cancellationToken).ConfigureAwait(false);
+        await _profileStore.SaveConfigurationAsync(
+            new ConnectionProfileConfiguration(snapshot.Profiles, snapshot.ProfileGroups ?? []),
+            cancellationToken).ConfigureAwait(false);
         _afterCommitStep?.Invoke(1);
         await _cdnCredentialStore.SaveAsync(snapshot.CdnCredentials, cancellationToken).ConfigureAwait(false);
         _afterCommitStep?.Invoke(2);
@@ -148,8 +151,7 @@ internal sealed class ConfigurationTransactionCoordinator
     {
         if (snapshot.Profiles is null || snapshot.CdnConfiguration is null || snapshot.CdnCredentials is null)
             throw new InvalidDataException("配置事务快照包含空集合。");
-        foreach (var profile in snapshot.Profiles)
-            profile.Validate();
+        new ConnectionProfileConfiguration(snapshot.Profiles, snapshot.ProfileGroups ?? []).Validate();
         CdnConfigurationValidator.EnsureValid(snapshot.CdnConfiguration, snapshot.CdnCredentials);
     }
 
