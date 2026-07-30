@@ -48,8 +48,10 @@ pwsh .\scripts\Test-UpdateManifest.ps1
 按以下顺序执行，不以旧提交的测试结果代替当前发布提交：
 
 ```powershell
+dotnet restore .\S3Explorer.sln --locked-mode
 dotnet test .\S3Explorer.sln -c Release --no-restore
 pwsh .\scripts\Test-LocalMinio.ps1
+pwsh .\scripts\Test-FocusedCoverage.ps1
 dotnet build .\S3Explorer.sln -c Release --no-restore
 & .\src\S3Explorer.Cli\bin\Release\net10.0-windows\win-x64\s3explorer-cli.exe version --output json
 pwsh .\scripts\AppAutomation.ps1 Smoke
@@ -58,6 +60,8 @@ pwsh .\scripts\Publish.ps1 -NoOpen
 pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
+
+MSI 安装、上一版本覆盖升级、已安装 GUI/CLI 启动和卸载使用手动工作流 `Installer lifecycle (manual)`；它不绑定 PR 或 `main` 推送。安装器或升级逻辑变化时，在正式 tag 前至少执行一次，并保留两个安装类型的日志产物。
 
 `Test-LocalMinio.ps1` 是上传下载等真实 S3 行为的本地门禁。默认启动名称唯一、版本固定的隔离 MinIO 容器，测试结束后只删除自己创建的容器；也可同时传入 `-Endpoint`、`-AccessKey`、`-SecretKey` 使用已有测试实例。缺少 Docker 或连接参数时必须让门禁失败，不能把“未执行”报告成通过。普通 `dotnet test` 中未配置的集成用例显示为 `Skipped`。
 

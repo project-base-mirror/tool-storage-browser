@@ -57,4 +57,4 @@ S3 Explorer v0.5.6 起不再用空 Access Key 暗示“可能由外部提供凭�
 
 ## 当前边界
 
-当前版本不接管 AWS SSO、AssumeRole、Web Identity、浏览器登录或它们的令牌缓存。如果 shared profile 或默认链解析到这些高级身份类型，客户端会说明该能力计划在 v0.6.10 高级身份阶段接入，而不是把令牌混入长期密钥存储或连接包。
+当前版本不接管 AWS SSO、AssumeRole、Web Identity、浏览器登录或它们的令牌缓存。如果 shared profile 或默认链解析到这些高级身份类型，客户端会说明该能力计划在 v0.6.11 高级身份阶段接入，而不是把令牌混入长期密钥存储或连接包。
