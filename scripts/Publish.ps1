@@ -241,7 +241,7 @@ New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $installerPayloadRoot -Force | Out-Null
 
 if (-not $SkipValidation) {
-    Invoke-DotNet -Arguments @("restore", $solution)
+    Invoke-DotNet -Arguments @("restore", $solution, "--locked-mode")
     Invoke-DotNet -Arguments @("test", $solution, "-c", $Configuration, "--no-restore")
     Invoke-DotNet -Arguments @("build", $solution, "-c", $Configuration, "--no-restore")
 }

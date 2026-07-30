@@ -34,6 +34,7 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 Invoke-DotNet -Arguments @(
     "restore",
     $solution,
+    "--locked-mode",
     "--artifacts-path", $buildRoot
 )
 Invoke-DotNet -Arguments @(

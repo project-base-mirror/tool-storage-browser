@@ -31,10 +31,10 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
-      - name: Set up .NET 10 SDK
+      - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Validate tag, project version, and release notes
         shell: pwsh
@@ -58,6 +58,12 @@ jobs:
       - name: Validate Pages update manifest
         shell: pwsh
         run: ./scripts/Test-UpdateManifest.ps1
+
+      - name: Restore locked dependencies and enforce focused coverage
+        shell: pwsh
+        run: |
+          dotnet restore S3Explorer.sln --locked-mode --nologo
+          ./scripts/Test-FocusedCoverage.ps1
 
       - name: Test and build release packages
         shell: pwsh
@@ -101,6 +107,7 @@ jobs:
             artifacts/release/S3Explorer-${{ env.RELEASE_TAG }}-win-x64-framework-dependent-setup.msi
             artifacts/release/release-metrics.json
             artifacts/release/SHA256SUMS.txt
+            artifacts/coverage/**
 
       - name: Create or update GitHub Release
         shell: pwsh
