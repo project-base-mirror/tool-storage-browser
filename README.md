@@ -10,7 +10,8 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 
 - Amazon S3 与兼容服务连接配置、连接测试和 Bucket 浏览。
 - Windows DPAPI CurrentUser 凭据保护。
-- Amazon S3 显式凭据来源：已保存密钥、AWS shared profile、环境变量、容器角色、EC2 实例角色和 AWS SDK 默认链。
+- Amazon S3 显式凭据来源：已保存密钥、AWS shared profile、环境变量、容器角色、EC2 实例角色、AWS SDK 默认链、IAM Identity Center (SSO)、AssumeRole 和 Web Identity。
+- 账户分组、折叠与组内排序；删除分组只会把连接移到未分组，导入预览可指定目标分组。
 - Bucket 创建、空 Bucket 删除和对象分页浏览。
 - 文件/文件夹上传、下载、复制、移动、重命名和批量删除。
 - 大文件 multipart upload、传输队列、取消与失败状态。
@@ -105,6 +106,10 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 
     s3explorer-cli profiles list --output json
     s3explorer-cli profile add --name "aws-audit" --type amazon --credential-source profile --aws-profile readonly
+    s3explorer-cli profile add --name "aws-sso" --type amazon --credential-source sso --aws-profile company-readonly --group "Production"
+    s3explorer-cli profile add --name "aws-role" --type amazon --credential-source assume-role --source-profile bootstrap --role-arn "arn:aws:iam::123456789012:role/Audit" --role-session-name s3explorer-audit --external-id-env AWS_AUDIT_EXTERNAL_ID
+    s3explorer-cli profile groups
+    s3explorer-cli profile move "aws-audit" --group "Production"
     s3explorer-cli connection test --profile "my-account" --output json
     s3explorer-cli bucket list --profile "my-account" --output json
     s3explorer-cli objects list --profile "my-account" --bucket "my-bucket" --prefix "path/" --recursive --output json
@@ -131,7 +136,7 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
     s3explorer-cli sync analyze "site-backup" --output json
     s3explorer-cli sync run "site-backup" --output json
 
-交互式终端会对发布、删除传播等操作显示 `[y/N]` 确认；Unity 和 CI 应使用 `--non-interactive --yes`，缺少确认时命令会直接失败而不是等待输入。`--timeout <秒>`、`--cancel-file <路径>` 和 `--log-file <路径>` 可控制超时、外部取消和追加脱敏日志。批量传输可用 `--transfers`、`--multipart-concurrency`、`--upload-limit`、`--download-limit`、`--multipart-threshold` 和 `--part-size` 设置有界并发、命令级共享限速与 Multipart；`upload`/`object upload` 可用 `--verify` 回读校验。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default` 锁定外部来源；S3-compatible 连接不会读取 AWS 默认链。
+交互式终端会对发布、删除传播等操作显示 `[y/N]` 确认；Unity 和 CI 应使用 `--non-interactive --yes`，缺少确认时命令会直接失败而不是等待输入。`--timeout <秒>`、`--cancel-file <路径>` 和 `--log-file <路径>` 可控制超时、外部取消和追加脱敏日志。批量传输可用 `--transfers`、`--multipart-concurrency`、`--upload-limit`、`--download-limit`、`--multipart-threshold` 和 `--part-size` 设置有界并发、命令级共享限速与 Multipart；`upload`/`object upload` 可用 `--verify` 回读校验。创建保存密钥的连接时建议用 `--secret-key-env <变量名>` 或 `S3EXPLORER_SECRET_KEY`，避免密钥进入命令历史。Amazon S3 还可通过 `--credential-source profile|environment|container|instance|default|sso|assume-role|web-identity` 锁定外部来源；AssumeRole External ID 建议通过 `--external-id-env` 提供。S3-compatible 连接不会读取 AWS 默认链。
 
 所有 CLI 命令都支持 `--data-dir <绝对路径>`，可让自动化使用隔离配置，不读取真实账户。`--output json` 提供结构化结果，旧的 `--json` 仍兼容；普通终端默认输出可读中文提示。成功返回 `0`，参数错误返回 `2`，目标不存在返回 `3`，远端或本地操作失败返回 `4`，取消返回 `130`。源码树中可用 `cli.bat help` 查看完整命令。
 
@@ -167,11 +172,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.10-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.10-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.10.zip
-    artifacts/release/S3Explorer-v0.6.10-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.6.10-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.6.11-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.11-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.11.zip
+    artifacts/release/S3Explorer-v0.6.11-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.11-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -209,8 +214,8 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 - CDN 非敏感配置：`%APPDATA%\S3Explorer\cdn-config.json`
 - CDN 独立凭据：`%APPDATA%\S3Explorer\cdn-credentials.json`
 - 日志目录：`%LOCALAPPDATA%\S3Explorer\logs`
-- SecretKey 和 SessionToken 使用 DPAPI CurrentUser 加密后保存。
-- AWS Profile 连接只保存非敏感 Profile 名称；环境、容器和实例角色凭据不写入 `profiles.json`、连接包或日志。
+- SecretKey、SessionToken 和 AssumeRole External ID 使用 DPAPI CurrentUser 加密后保存。
+- AWS Profile/SSO 连接只保存 Profile 名称；SSO 浏览器令牌、Web Identity token 内容、环境/容器/实例角色凭据和短期角色会话不写入 `profiles.json`、连接包或日志。
 - CDN Secret 使用独立 DPAPI entropy 加密，不复用 S3 SecretKey，也不写入普通 CDN 配置文件。
 - 导出配置默认不包含 S3 或 CDN 秘密值；显式选择后使用迁移密码重新加密，不复制本机 DPAPI 密文。
 - 日志不得记录 SecretKey、SessionToken、Authorization Header 或完整预签名 URL。

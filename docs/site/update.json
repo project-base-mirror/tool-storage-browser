@@ -1,15 +1,15 @@
 {
   "schemaVersion": 2,
-  "tagName": "v0.6.10",
-  "version": "0.6.10",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.10",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64.zip",
+  "tagName": "v0.6.11",
+  "version": "0.6.11",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.11",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/S3Explorer-v0.6.10-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-setup.msi"
   },
-  "notes": "稳定性第二阶段：真实 MinIO 队列恢复与远端变化回归，网络和磁盘故障注入，安装升级生命周期门禁，关键模块覆盖率，固定 SDK 与 NuGet 锁文件；安装版更新推荐匹配原安装类型；对象可选择任一已关联 CDN 执行打开、复制、检测、预热和刷新。",
-  "publishedAt": "2026-07-30T15:30:00+08:00"
+  "notes": "账户组织与高级 AWS 身份：连接分组、折叠和组内排序，导入目标分组；IAM Identity Center (SSO)、AssumeRole 与 Web Identity，角色链、External ID 状态和会话到期诊断；SSO token、短期角色会话和 Web Identity token 内容不进入连接配置、连接包或日志。",
+  "publishedAt": "2026-07-30T23:18:43+08:00"
 }
