@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+
 namespace S3Explorer.Core;
 
 public interface ITransferTaskExecutionContext
@@ -831,6 +834,12 @@ public static class TransferFailureClassifier
         var category = exception switch
         {
             TimeoutException => TransferFailureCategory.Timeout,
+            TaskCanceledException => TransferFailureCategory.Timeout,
+            HttpRequestException request when request.StatusCode is { } status && (int)status >= 500 =>
+                TransferFailureCategory.Service,
+            HttpRequestException => TransferFailureCategory.Network,
+            SocketException => TransferFailureCategory.Network,
+            IOException io when io.InnerException is SocketException => TransferFailureCategory.Network,
             UnauthorizedAccessException => TransferFailureCategory.LocalIo,
             FileNotFoundException or DirectoryNotFoundException => TransferFailureCategory.NotFound,
             IOException => TransferFailureCategory.LocalIo,

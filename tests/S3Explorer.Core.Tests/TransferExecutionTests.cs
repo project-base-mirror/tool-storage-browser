@@ -1,4 +1,6 @@
 using S3Explorer.Core;
+using System.Net;
+using System.Net.Sockets;
 using Xunit;
 
 namespace S3Explorer.Core.Tests;
@@ -156,6 +158,67 @@ public sealed class TransferExecutionTests
         Assert.Equal(40, saved.DownloadCheckpoint!.CompletedBytes);
     }
 
+    [Theory]
+    [InlineData("timeout", TransferFailureCategory.Timeout, true)]
+    [InlineData("http500", TransferFailureCategory.Service, true)]
+    [InlineData("disconnect", TransferFailureCategory.Network, true)]
+    [InlineData("disk", TransferFailureCategory.LocalIo, false)]
+    public void FaultInjectionIsClassifiedForSafeRetry(
+        string fault,
+        TransferFailureCategory expectedCategory,
+        bool expectedRetryable)
+    {
+        var failure = TransferFailureClassifier.Classify(CreateFault(fault));
+
+        Assert.Equal(expectedCategory, failure.Category);
+        Assert.Equal(expectedRetryable, failure.Retryable);
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("http500")]
+    [InlineData("disconnect")]
+    public async Task TransientFaultInjectionRetriesAndCompletes(string fault)
+    {
+        var executor = new FaultOnceExecutor(CreateFault(fault));
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+
+        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 2, RetryBaseDelaySeconds = 0 });
+        await WaitUntilAsync(() => queue.ActiveCount == 0);
+
+        var result = Assert.Single(queue.Snapshot.Tasks);
+        Assert.Equal(TransferTaskState.Completed, result.State);
+        Assert.Equal(2, result.AttemptCount);
+    }
+
+    [Fact]
+    public async Task DiskWriteFailureIsNotRetried()
+    {
+        var executor = new FaultOnceExecutor(CreateFault("disk"));
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync();
+
+        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 4, RetryBaseDelaySeconds = 0 });
+        await WaitUntilAsync(() => queue.ActiveCount == 0);
+
+        var result = Assert.Single(queue.Snapshot.Tasks);
+        Assert.Equal(TransferTaskState.Failed, result.State);
+        Assert.Equal(1, result.AttemptCount);
+        Assert.Equal(TransferFailureCategory.LocalIo, result.Failure!.Category);
+    }
+
+    private static Exception CreateFault(string fault) => fault switch
+    {
+        "timeout" => new TaskCanceledException("simulated network timeout"),
+        "http500" => new HttpRequestException(
+            "simulated HTTP 500", null, HttpStatusCode.InternalServerError),
+        "disconnect" => new IOException(
+            "simulated connection reset", new SocketException((int)SocketError.ConnectionReset)),
+        "disk" => new IOException("simulated disk write failure"),
+        _ => throw new ArgumentOutOfRangeException(nameof(fault))
+    };
+
     private static TransferTaskRecord CreateTask() => new()
     {
         Id = Guid.NewGuid(),
@@ -219,6 +282,19 @@ public sealed class TransferExecutionTests
             await context.UpdateCheckpointAsync(40, checkpoint, null, cancellationToken);
             CheckpointWritten.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
+    private sealed class FaultOnceExecutor(Exception fault) : ITransferTaskExecutor
+    {
+        private int _count;
+
+        public Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _count) == 1)
+                throw fault;
+            context.ReportProgress(new TransferProgress(context.Task.TotalBytes, context.Task.TotalBytes));
+            return Task.CompletedTask;
         }
     }
 }

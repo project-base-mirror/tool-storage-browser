@@ -142,8 +142,12 @@ try {
     $env:S3EXPLORER_MINIO_SECRET_KEY = $SecretKey
     $env:S3EXPLORER_MINIO_REGION = "us-east-1"
 
-    Write-Host "正在执行真实 MinIO 集成测试（上传、下载、复制、移动、多段上传和 Bucket 管理）..."
-    & dotnet test $testProject -c $Configuration --nologo `
+    Write-Host "正在校验锁定依赖并执行真实 MinIO 集成测试（CRUD、队列暂停/取消、重启续传及远端变化）..."
+    & dotnet restore $testProject --locked-mode --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw "本地 MinIO 测试依赖还原失败，dotnet restore exit code: $LASTEXITCODE。"
+    }
+    & dotnet test $testProject -c $Configuration --nologo --no-restore `
         --filter "Category=Integration" `
         --logger "console;verbosity=normal"
     $result.exitCode = $LASTEXITCODE
