@@ -13,6 +13,7 @@ internal sealed class CdnConfigurationDialog : Form
     private readonly ICdnCertificateInspector? _certificateInspector;
     private readonly IS3StorageService? _storage;
     private readonly ICdnDeliveryService? _deliveryService;
+    private readonly Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? _persistCertificateResult;
     private readonly List<CdnProfile> _profiles;
     private readonly List<CdnCredential> _credentials;
     private readonly List<CdnBinding> _bindings;
@@ -89,12 +90,14 @@ internal sealed class CdnConfigurationDialog : Form
         string? initialBucket = null,
         ICdnCertificateInspector? certificateInspector = null,
         IS3StorageService? storage = null,
-        ICdnDeliveryService? deliveryService = null)
+        ICdnDeliveryService? deliveryService = null,
+        Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? persistCertificateResult = null)
     {
         _storageProfiles = storageProfiles;
         _certificateInspector = certificateInspector;
         _storage = storage;
         _deliveryService = deliveryService;
+        _persistCertificateResult = persistCertificateResult;
         _profiles = [.. configuration.Profiles];
         _credentials = [.. credentials];
         _bindings = [.. configuration.Bindings];
@@ -682,7 +685,7 @@ internal sealed class CdnConfigurationDialog : Form
     {
         _save.Enabled = _isDirty && _certificateCancellation is null && _bindingCancellation is null;
         _dirtyStatus.Text = _isDirty
-            ? "有未保存的更改：新增、编辑、复制、删除和证书检测结果将在此统一写入磁盘。"
+            ? "有未保存的更改：新增、编辑、复制和删除将在此统一写入磁盘。"
             : "没有未保存的更改";
         _dirtyStatus.ForeColor = _isDirty ? Color.DarkOrange : SystemColors.GrayText;
     }
@@ -692,13 +695,8 @@ internal sealed class CdnConfigurationDialog : Form
         _certificateCancellation?.Cancel();
         _bindingCancellation?.Cancel();
         if (_accepting || !_isDirty) return;
-        if (MessageBox.Show(
-                this,
-                "当前有未保存的 CDN 配置更改。关闭后，新增、编辑、复制、删除和证书检测结果都会丢失。\n\n确定放弃更改吗？",
-                "放弃未保存的更改",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        using var confirmation = new DiscardCdnChangesDialog();
+        if (confirmation.ShowDialog(this) != DialogResult.Yes)
             args.Cancel = true;
     }
 
@@ -823,10 +821,11 @@ internal sealed class CdnConfigurationDialog : Form
                     if (IsDisposed || Disposing) return;
                     var profileIndex = _profiles.FindIndex(item => item.Id == profile.Id);
                     if (profileIndex < 0) continue;
+                    if (_persistCertificateResult is not null)
+                        await _persistCertificateResult(profile.Id, result, manualCancellation.Token);
                     _profiles[profileIndex] = _profiles[profileIndex] with { LastCertificateCheck = result };
                     _certificateStatuses.Remove(profile.Id);
                     SetCertificateStatus(profile.Id, CertificateStatus(_profiles[profileIndex]));
-                    MarkDirty();
                     completed++;
                     singleResult = result;
                 }
@@ -849,7 +848,7 @@ internal sealed class CdnConfigurationDialog : Form
             else if (!IsDisposed && !Disposing)
             {
                 MessageBox.Show(this,
-                    $"HTTPS 证书批量检测完成：成功 {completed:N0}，失败 {failed:N0}。\n\n成功结果将在点击“保存全部更改”后持久化。",
+                    $"HTTPS 证书批量检测完成：成功 {completed:N0}，失败 {failed:N0}。\n\n成功结果已直接保存。",
                     "证书检测完成", MessageBoxButtons.OK,
                     failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             }
@@ -977,6 +976,60 @@ internal sealed class CdnConfigurationDialog : Form
         CdnAuthenticationType.CustomHeader => "自定义 Header",
         _ => "无"
     };
+}
+
+internal sealed class DiscardCdnChangesDialog : Form
+{
+    public DiscardCdnChangesDialog()
+    {
+        Name = "DiscardCdnChangesDialog";
+        Text = "放弃未保存的更改";
+        StartPosition = FormStartPosition.CenterParent;
+        ClientSize = new Size(520, 210);
+        MinimumSize = new Size(480, 200);
+        ShowInTaskbar = false;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        Icon = UiIcons.CreateApplicationIcon();
+
+        var message = new Label
+        {
+            Name = "DiscardCdnChangesMessage",
+            Text = "当前有未保存的 CDN 配置更改。关闭后，新增、编辑、复制和删除的更改都会丢失。\n\n确定放弃更改吗？",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(28, 28, 28, 12),
+            AutoSize = false
+        };
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 58,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(12, 10, 12, 8)
+        };
+        var no = new Button
+        {
+            Name = "KeepCdnChangesButton",
+            Text = "否(&N)",
+            DialogResult = DialogResult.No,
+            MinimumSize = new Size(96, 36),
+            AutoSize = true
+        };
+        var yes = new Button
+        {
+            Name = "DiscardCdnChangesButton",
+            Text = "是(&Y)",
+            DialogResult = DialogResult.Yes,
+            MinimumSize = new Size(96, 36),
+            AutoSize = true
+        };
+        buttons.Controls.AddRange([no, yes]);
+        Controls.Add(message);
+        Controls.Add(buttons);
+        AcceptButton = no;
+        CancelButton = no;
+    }
 }
 
 internal sealed class CdnCertificateResultDialog : Form

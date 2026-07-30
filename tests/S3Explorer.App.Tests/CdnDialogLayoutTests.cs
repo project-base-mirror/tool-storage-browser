@@ -8,6 +8,79 @@ namespace S3Explorer.App.Tests;
 public sealed class CdnDialogLayoutTests
 {
     [Fact]
+    public void DiscardConfirmationIsCenteredOnItsOwnerAndDefaultsToKeepChanges()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new DiscardCdnChangesDialog();
+
+            Assert.Equal(FormStartPosition.CenterParent, dialog.StartPosition);
+            Assert.Equal(DialogResult.No, Assert.IsType<Button>(dialog.AcceptButton).DialogResult);
+            Assert.Equal(DialogResult.No, Assert.IsType<Button>(dialog.CancelButton).DialogResult);
+            AssertButtonIsReadable(dialog, FindButton(dialog, "DiscardCdnChangesButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "KeepCdnChangesButton"));
+        });
+    }
+
+    [Fact]
+    public void CertificatePersistenceUpdatesOnlyTheSavedMatchingEndpoint()
+    {
+        var checkedAt = DateTimeOffset.Parse("2026-07-30T08:00:00Z");
+        var first = new CdnProfile { Name = "first", BaseUrl = "https://cdn.example.com/" };
+        var second = new CdnProfile { Name = "second", BaseUrl = "https://other.example.com" };
+        var result = new CdnCertificateCheckResult(
+            new Uri("https://cdn.example.com"), checkedAt, checkedAt.AddDays(-1), checkedAt.AddDays(60),
+            "CN=cdn.example.com", "CN=CA", new string('A', 64), "Tls13",
+            CdnCertificateProblems.None, []);
+
+        var updated = CdnCertificatePersistence.Apply(new CdnConfiguration([first, second], []), first.Id, result);
+
+        Assert.Equal(result, updated.Profiles.Single(profile => profile.Id == first.Id).LastCertificateCheck);
+        Assert.Null(updated.Profiles.Single(profile => profile.Id == second.Id).LastCertificateCheck);
+        Assert.Throws<InvalidOperationException>(() => CdnCertificatePersistence.Apply(
+            new CdnConfiguration([first with { BaseUrl = "https://changed.example.com" }], []),
+            first.Id,
+            result));
+    }
+
+    [Fact]
+    public void SpecifiedCdnChoicesKeepEveryMatchingTargetAndMarkTheDefault()
+    {
+        var first = new CdnProfile { Name = "cdn-a", BaseUrl = "https://a.example.com" };
+        var second = new CdnProfile { Name = "cdn-b", BaseUrl = "https://b.example.com" };
+        var storageId = Guid.NewGuid();
+        var configuration = new CdnConfiguration(
+            [first, second],
+            [
+                new CdnBinding
+                {
+                    StorageProfileId = storageId,
+                    Bucket = "assets",
+                    SourcePrefix = "deploy/",
+                    CdnProfileId = first.Id,
+                    IsDefault = true
+                },
+                new CdnBinding
+                {
+                    StorageProfileId = storageId,
+                    Bucket = "assets",
+                    SourcePrefix = "deploy/",
+                    CdnProfileId = second.Id,
+                    IsDefault = false
+                }
+            ]);
+
+        var choices = CdnSpecifiedTargetMenu.Build(
+            CdnUrlMapper.ResolveAll(configuration, storageId, "assets", "deploy/game.bin"));
+
+        Assert.Equal(2, choices.Count);
+        Assert.Equal("cdn-a（默认）", choices[0].Label);
+        Assert.Equal("cdn-b", choices[1].Label);
+        Assert.Equal("https://a.example.com/game.bin", choices[0].ToolTip);
+        Assert.Equal("https://b.example.com/game.bin", choices[1].ToolTip);
+    }
+
+    [Fact]
     public void ConfigurationCenterKeepsPrimaryActionsReadableAtLargeText()
     {
         RunSta(() =>

@@ -19,6 +19,7 @@ internal sealed partial class MainForm
     private ToolStripMenuItem? _cdnObjectContextProbe;
     private ToolStripMenuItem? _cdnObjectContextWarmup;
     private ToolStripMenuItem? _cdnObjectContextPurge;
+    private readonly List<ToolStripMenuItem> _cdnSpecifiedMenus = [];
 
     private ToolStripMenuItem BuildCdnMenu()
     {
@@ -33,20 +34,45 @@ internal sealed partial class MainForm
             (_, _) => ShowCdnJobs()));
         menu.DropDownItems.Add(new ToolStripSeparator());
         menu.DropDownItems.Add(Command("cdn-copy-url", "复制 CDN URL", (_, _) => CopySelectedCdnUrl()));
+        menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
+            "复制指定 CDN URL", "CdnCopySpecifiedMenu", target =>
+            {
+                CopyCdnUrl(target);
+                return Task.CompletedTask;
+            }));
         menu.DropDownItems.Add(Command("cdn-open-url", "使用 CDN 打开", (_, _) => OpenSelectedCdnUrl()));
+        menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
+            "使用指定 CDN 打开", "CdnOpenSpecifiedMenu", target =>
+            {
+                OpenCdnUrl(target);
+                return Task.CompletedTask;
+            }));
         menu.DropDownItems.Add(Command(
             "cdn-download-test",
             "CDN 下载测试...",
             (_, _) => ShowSelectedCdnDownloadTest()));
+        menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
+            "使用指定 CDN 下载测试", "CdnProbeSpecifiedMenu", target =>
+            {
+                ShowCdnDownloadTest(target);
+                return Task.CompletedTask;
+            }));
         menu.DropDownItems.Add(new ToolStripSeparator());
         menu.DropDownItems.Add(Command(
             "cdn-warmup",
             "HTTP 预热",
             async (_, _) => await EnqueueSelectedCdnOperationAsync(CdnJobAction.Warmup)));
+        menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
+            "使用指定 CDN 预热", "CdnWarmupSpecifiedMenu",
+            target => EnqueueCdnOperationAsync(CdnJobAction.Warmup, target)));
         menu.DropDownItems.Add(Command(
             "cdn-purge",
             "刷新 CDN 缓存",
             async (_, _) => await EnqueueSelectedCdnOperationAsync(CdnJobAction.PurgeUrl)));
+        menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
+            "使用指定 CDN 刷新缓存", "CdnPurgeSpecifiedMenu",
+            target => EnqueueCdnOperationAsync(CdnJobAction.PurgeUrl, target)));
+        menu.DropDownOpening += (_, _) => PopulateSpecifiedCdnMenus();
         return menu;
     }
 
@@ -60,24 +86,48 @@ internal sealed partial class MainForm
         {
             Name = "CdnObjectContextCopy"
         };
+        var copySpecified = CreateSpecifiedCdnMenu(
+            "复制指定 CDN URL", "CdnObjectContextCopySpecified", target =>
+            {
+                CopyCdnUrl(target);
+                return Task.CompletedTask;
+            });
         _cdnObjectContextOpen = new ToolStripMenuItem("使用 CDN 打开", null, (_, _) => OpenSelectedCdnUrl())
         {
             Name = "CdnObjectContextOpen"
         };
+        var openSpecified = CreateSpecifiedCdnMenu(
+            "使用指定 CDN 打开", "CdnObjectContextOpenSpecified", target =>
+            {
+                OpenCdnUrl(target);
+                return Task.CompletedTask;
+            });
         _cdnObjectContextProbe = new ToolStripMenuItem("下载测试...", null, (_, _) => ShowSelectedCdnDownloadTest())
         {
             Name = "CdnObjectContextProbe"
         };
+        var probeSpecified = CreateSpecifiedCdnMenu(
+            "使用指定 CDN 下载测试", "CdnObjectContextProbeSpecified", target =>
+            {
+                ShowCdnDownloadTest(target);
+                return Task.CompletedTask;
+            });
         _cdnObjectContextWarmup = new ToolStripMenuItem("HTTP 预热", null, async (_, _) =>
             await EnqueueSelectedCdnOperationAsync(CdnJobAction.Warmup))
         {
             Name = "CdnObjectContextWarmup"
         };
+        var warmupSpecified = CreateSpecifiedCdnMenu(
+            "使用指定 CDN 预热", "CdnObjectContextWarmupSpecified",
+            target => EnqueueCdnOperationAsync(CdnJobAction.Warmup, target));
         _cdnObjectContextPurge = new ToolStripMenuItem("刷新缓存", null, async (_, _) =>
             await EnqueueSelectedCdnOperationAsync(CdnJobAction.PurgeUrl))
         {
             Name = "CdnObjectContextPurge"
         };
+        var purgeSpecified = CreateSpecifiedCdnMenu(
+            "使用指定 CDN 刷新缓存", "CdnObjectContextPurgeSpecified",
+            target => EnqueueCdnOperationAsync(CdnJobAction.PurgeUrl, target));
         var jobs = new ToolStripMenuItem("查看 CDN 任务...", null, (_, _) => ShowCdnJobs())
         {
             Name = "CdnObjectContextJobs"
@@ -90,16 +140,58 @@ internal sealed partial class MainForm
 
         _cdnObjectContextMenu.DropDownItems.AddRange([
             _cdnObjectContextCopy,
+            copySpecified,
             _cdnObjectContextOpen,
+            openSpecified,
             _cdnObjectContextProbe,
+            probeSpecified,
             new ToolStripSeparator(),
             _cdnObjectContextWarmup,
+            warmupSpecified,
             _cdnObjectContextPurge,
+            purgeSpecified,
             new ToolStripSeparator(),
             jobs,
             configure
         ]);
+        _cdnObjectContextMenu.DropDownOpening += (_, _) => PopulateSpecifiedCdnMenus();
         return _cdnObjectContextMenu;
+    }
+
+    private ToolStripMenuItem CreateSpecifiedCdnMenu(
+        string text,
+        string name,
+        Func<CdnResolvedTarget, Task> action)
+    {
+        var menu = new ToolStripMenuItem(text) { Name = name, Tag = action };
+        _cdnSpecifiedMenus.Add(menu);
+        return menu;
+    }
+
+    private void PopulateSpecifiedCdnMenus()
+    {
+        var targets = ResolveSelectedCdnTargets();
+        foreach (var menu in _cdnSpecifiedMenus)
+        {
+            menu.DropDownItems.Clear();
+            menu.Enabled = targets.Count > 0;
+            if (menu.Tag is not Func<CdnResolvedTarget, Task> action)
+                continue;
+            foreach (var choice in CdnSpecifiedTargetMenu.Build(targets))
+            {
+                var target = choice.Target;
+                var item = new ToolStripMenuItem(choice.Label)
+                {
+                    ToolTipText = choice.ToolTip,
+                    Name = $"{menu.Name}_{target.Profile.Id:N}"
+                };
+                if (menu.Name?.Contains("Purge", StringComparison.Ordinal) == true &&
+                    !target.Profile.Capabilities.HasFlag(CdnCapabilities.Purge))
+                    item.Enabled = false;
+                item.Click += async (_, _) => await action(target);
+                menu.DropDownItems.Add(item);
+            }
+        }
     }
 
     private ToolStripMenuItem BuildBucketCdnContextMenu()
@@ -171,7 +263,8 @@ internal sealed partial class MainForm
             initialBucket ?? _currentBucket,
             _cdnCertificateInspector,
             _storage,
-            _cdnDeliveryService);
+            _cdnDeliveryService,
+            PersistCdnCertificateResultAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -196,6 +289,18 @@ internal sealed partial class MainForm
             _logger.Error("Failed to save CDN configuration", exception);
             ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和独立凭据", exception);
         }
+    }
+
+    private async Task PersistCdnCertificateResultAsync(
+        Guid profileId,
+        CdnCertificateCheckResult result,
+        CancellationToken cancellationToken)
+    {
+        var profile = _cdnConfiguration.Profiles.FirstOrDefault(value => value.Id == profileId);
+        var updated = CdnCertificatePersistence.Apply(_cdnConfiguration, profileId, result);
+        await _cdnConfigurationStore.SaveAsync(updated, cancellationToken);
+        _cdnConfiguration = updated;
+        _logger.Info($"CDN certificate result saved immediately. Profile={profile!.Name}; CheckedAt={result.CheckedAt:O}");
     }
 
     private void ShowCdnJobs()
@@ -228,47 +333,48 @@ internal sealed partial class MainForm
     {
         target = null;
         credential = null;
-        var selected = SelectedEntries();
-        if (_currentProfile is null || _currentBucket is null || selected.Count != 1 || selected[0].IsDirectory)
+        var targets = ResolveSelectedCdnTargets();
+        if (targets.Count == 0)
         {
             if (showMessage)
             {
                 MessageBox.Show(
                     this,
-                    "请选择当前 Bucket 中的一个文件对象。",
-                    "CDN / 分发",
+                    "请选择当前 Bucket 中已配置 CDN 关联的一个文件对象。",
+                    "没有可用的 CDN 关联",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             }
             return false;
         }
 
-        target = CdnUrlMapper.ResolveDefault(
+        target = targets[0];
+        return TryResolveCdnCredential(target, out credential, showMessage);
+    }
+
+    private IReadOnlyList<CdnResolvedTarget> ResolveSelectedCdnTargets()
+    {
+        var selected = SelectedEntries();
+        if (_currentProfile is null || _currentBucket is null || selected.Count != 1 || selected[0].IsDirectory)
+            return [];
+        return CdnUrlMapper.ResolveAll(
             _cdnConfiguration,
             _currentProfile.Id,
             _currentBucket,
             selected[0].Key);
-        if (target is null)
-        {
-            if (showMessage)
-            {
-                MessageBox.Show(
-                    this,
-                    "当前对象没有匹配的 CDN 关联。请在“CDN 配置中心”中为对象存储连接、Bucket 和前缀建立关联。",
-                    "没有 CDN 关联",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-            return false;
-        }
+    }
 
+    private bool TryResolveCdnCredential(
+        CdnResolvedTarget target,
+        out CdnCredential? credential,
+        bool showMessage)
+    {
+        credential = null;
         if (target.Profile.CredentialId is not Guid credentialId)
             return true;
-
         credential = _cdnCredentials.FirstOrDefault(value => value.Id == credentialId);
         if (credential is not null)
             return true;
-
         if (showMessage)
         {
             MessageBox.Show(
@@ -278,7 +384,6 @@ internal sealed partial class MainForm
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
-        target = null;
         return false;
     }
 
@@ -287,6 +392,11 @@ internal sealed partial class MainForm
         if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
             return;
 
+        CopyCdnUrl(target);
+    }
+
+    private void CopyCdnUrl(CdnResolvedTarget target)
+    {
         Clipboard.SetText(target.Url.AbsoluteUri);
         _requestStatus.Text = $"已复制 CDN URL：{target.Profile.Name}";
     }
@@ -296,14 +406,28 @@ internal sealed partial class MainForm
         if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
             return;
 
-        OpenExternalUrl(target.Url.AbsoluteUri);
+        OpenCdnUrl(target);
     }
+
+    private void OpenCdnUrl(CdnResolvedTarget target) => OpenExternalUrl(target.Url.AbsoluteUri);
 
     private void ShowSelectedCdnDownloadTest()
     {
         if (!TryResolveSelectedCdnTarget(out var target, out var credential, showMessage: true) || target is null)
             return;
 
+        ShowCdnDownloadTest(target, credential);
+    }
+
+    private void ShowCdnDownloadTest(CdnResolvedTarget target)
+    {
+        if (!TryResolveCdnCredential(target, out var credential, showMessage: true))
+            return;
+        ShowCdnDownloadTest(target, credential);
+    }
+
+    private void ShowCdnDownloadTest(CdnResolvedTarget target, CdnCredential? credential)
+    {
         using var dialog = new CdnDownloadTestDialog(
             _cdnDeliveryService,
             target.Profile,
@@ -315,6 +439,14 @@ internal sealed partial class MainForm
     private async Task EnqueueSelectedCdnOperationAsync(CdnJobAction action)
     {
         if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
+            return;
+
+        await EnqueueCdnOperationAsync(action, target);
+    }
+
+    private async Task EnqueueCdnOperationAsync(CdnJobAction action, CdnResolvedTarget target)
+    {
+        if (!TryResolveCdnCredential(target, out _, showMessage: true))
             return;
 
         var purge = action is CdnJobAction.PurgeUrl or CdnJobAction.PurgeThenWarmup;
