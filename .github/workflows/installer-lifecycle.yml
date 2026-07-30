@@ -1,0 +1,64 @@
+name: Installer lifecycle (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_tag:
+        description: Previous vX.Y.Z release used for the upgrade test
+        required: true
+        default: v0.6.9
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  installer-lifecycle:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [self-contained, framework-dependent]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore locked dependencies
+        shell: pwsh
+        run: dotnet restore S3Explorer.sln --locked-mode --nologo
+
+      - name: Build release packages
+        shell: pwsh
+        run: ./scripts/Publish.ps1 -SkipValidation -NoOpen
+
+      - name: Download previous installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path ./artifacts/installer-previous -Force | Out-Null
+          $suffix = if ('${{ matrix.flavor }}' -eq 'self-contained') { 'win-x64-setup.msi' } else { 'win-x64-framework-dependent-setup.msi' }
+          gh release download '${{ inputs.previous_tag }}' --pattern "S3Explorer-${{ inputs.previous_tag }}-$suffix" --dir ./artifacts/installer-previous
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to download the previous installer.' }
+
+      - name: Install, upgrade, smoke and uninstall
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content -Raw ./Directory.Build.props
+          $tag = "v$([string]$props.Project.PropertyGroup.Version)"
+          $suffix = if ('${{ matrix.flavor }}' -eq 'self-contained') { 'win-x64-setup.msi' } else { 'win-x64-framework-dependent-setup.msi' }
+          $current = "./artifacts/release/S3Explorer-$tag-$suffix"
+          $previous = Get-ChildItem ./artifacts/installer-previous/*.msi | Select-Object -First 1 -ExpandProperty FullName
+          ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $current -PreviousMsi $previous
+
+      - name: Upload lifecycle logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-lifecycle-${{ matrix.flavor }}
+          if-no-files-found: warn
+          path: artifacts/installer-lifecycle/**

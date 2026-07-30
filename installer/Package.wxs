@@ -94,6 +94,18 @@
                 Icon="S3ExplorerIcon.exe"
                 Advertise="yes" />
           </File>
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\project-base-mirror\S3 Explorer"
+              Name="InstallerFlavor"
+              Type="string"
+              Value="[INSTALLERFLAVOR]" />
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\project-base-mirror\S3 Explorer"
+              Name="InstallLocation"
+              Type="string"
+              Value="[APPLICATIONFOLDER]" />
           <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
         </Component>
         <Component Id="CliFiles" Guid="*">
