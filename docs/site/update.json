@@ -11,5 +11,5 @@
     "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-setup.msi"
   },
   "notes": "账户组织与高级 AWS 身份：连接分组、折叠和组内排序，导入目标分组；IAM Identity Center (SSO)、AssumeRole 与 Web Identity，角色链、External ID 状态和会话到期诊断；SSO token、短期角色会话和 Web Identity token 内容不进入连接配置、连接包或日志。",
-  "publishedAt": "2026-07-30T23:18:43+08:00"
+  "publishedAt": "2026-07-31T19:23:07+08:00"
 }
