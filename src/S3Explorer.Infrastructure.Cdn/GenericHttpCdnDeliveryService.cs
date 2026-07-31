@@ -99,6 +99,53 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             headers);
     }
 
+    public async Task<CdnDownloadResult> DownloadAsync(
+        CdnProfile profile,
+        CdnCredential? credential,
+        Uri url,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        ValidateUrl(url);
+        ArgumentNullException.ThrowIfNull(destination);
+        if (!destination.CanWrite)
+            throw new ArgumentException("CDN 下载目标流不可写。", nameof(destination));
+
+        using var client = CreateClient(profile);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        ApplyCredential(request, credential);
+        using var response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"CDN 下载失败：{(int)response.StatusCode} {response.ReasonPhrase}",
+                null,
+                response.StatusCode);
+        }
+
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var buffer = new byte[128 * 1024];
+        long bytesWritten = 0;
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken);
+            if (read == 0) break;
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            bytesWritten += read;
+        }
+        await destination.FlushAsync(cancellationToken);
+
+        return new CdnDownloadResult(
+            url,
+            response.RequestMessage?.RequestUri ?? url,
+            (int)response.StatusCode,
+            bytesWritten,
+            response.Content.Headers.ContentType?.ToString());
+    }
+
     public async Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
         CdnCredential? credential,

@@ -2161,15 +2161,7 @@ internal sealed partial class MainForm : Form
         string targetRoot;
         if (selected.Count == 1 && !selected[0].IsDirectory)
         {
-            using var save = new SaveFileDialog
-            {
-                FileName = selected[0].Name,
-                InitialDirectory = _settings.DefaultDownloadDirectory,
-                OverwritePrompt = _settings.ConfirmOverwrite
-            };
-            if (save.ShowDialog(this) != DialogResult.OK) return;
-            await EnqueueDownloadAsync(selected[0], save.FileName);
-            SetTransferVisibility(true);
+            await DownloadSingleObjectAsync(selected[0]);
             return;
         }
         using (var folder = new FolderBrowserDialog
@@ -2331,6 +2323,19 @@ internal sealed partial class MainForm : Form
         var bucket = _currentBucket!;
         await _transfers.EnqueueDownloadAsync(profile, bucket, entry.Key, localPath, entry.Size);
         _logger.Info($"Download queued profile={profile.Name} bucket={bucket} key={entry.Key} bytes={entry.Size}");
+    }
+
+    private async Task DownloadSingleObjectAsync(S3ObjectEntry entry)
+    {
+        using var save = new SaveFileDialog
+        {
+            FileName = entry.Name,
+            InitialDirectory = _settings.DefaultDownloadDirectory,
+            OverwritePrompt = _settings.ConfirmOverwrite
+        };
+        if (save.ShowDialog(this) != DialogResult.OK) return;
+        await EnqueueDownloadAsync(entry, save.FileName);
+        SetTransferVisibility(true);
     }
 
     private async Task CreateFolderAsync()
@@ -2605,18 +2610,43 @@ internal sealed partial class MainForm : Form
         if (!EnsureLocation()) return;
         var selected = SelectedEntries();
         if (selected.Count != 1 || selected[0].IsDirectory) return;
+        var entry = selected[0];
+        ObjectProperties properties;
         try
         {
             SetBusy("正在读取对象属性...");
-            var properties = await _storage.GetObjectPropertiesAsync(_currentProfile!, _currentBucket!, selected[0].Key, CancellationToken.None);
-            using var dialog = new ObjectPropertiesDialog(properties, _currentProfile!.Endpoint);
-            dialog.ShowDialog(this);
+            properties = await _storage.GetObjectPropertiesAsync(
+                _currentProfile!,
+                _currentBucket!,
+                entry.Key,
+                CancellationToken.None);
         }
         catch (Exception exception)
         {
             ErrorDialog.ShowException(this, "读取失败", "对象属性", exception, CurrentLocationText());
+            return;
         }
         finally { SetIdle(); }
+
+        var cdnTargets = CdnUrlMapper.ResolveAll(
+            _cdnConfiguration,
+            _currentProfile!.Id,
+            _currentBucket!,
+            entry.Key);
+        using var dialog = new ObjectPropertiesDialog(
+            properties,
+            _currentProfile.Endpoint,
+            cdnProfileName: cdnTargets.FirstOrDefault()?.Profile.Name);
+        dialog.ShowDialog(this);
+        switch (dialog.SelectedAction)
+        {
+            case ObjectPropertiesAction.DownloadFromObjectStorage:
+                await DownloadSingleObjectAsync(entry);
+                break;
+            case ObjectPropertiesAction.DownloadFromCdn when cdnTargets.Count > 0:
+                await DownloadFromCdnAsync(entry, cdnTargets[0]);
+                break;
+        }
     }
 
     private void ShowPresignedUrl()

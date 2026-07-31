@@ -436,6 +436,87 @@ internal sealed partial class MainForm
         dialog.ShowDialog(this);
     }
 
+    private async Task DownloadFromCdnAsync(
+        S3ObjectEntry entry,
+        CdnResolvedTarget target)
+    {
+        if (!TryResolveCdnCredential(target, out var credential, showMessage: true))
+            return;
+
+        using var save = new SaveFileDialog
+        {
+            FileName = entry.Name,
+            InitialDirectory = _settings.DefaultDownloadDirectory,
+            OverwritePrompt = _settings.ConfirmOverwrite
+        };
+        if (save.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        var destination = LocalObjectPath.ToExtendedLengthPath(save.FileName);
+        var temporary = destination + $".s3explorer-cdn-{Guid.NewGuid():N}.part";
+        string? completedStatus = null;
+        try
+        {
+            SetBusy($"正在通过 CDN 下载：{target.Profile.Name}...");
+            CdnDownloadResult result;
+            await using (var output = new FileStream(
+                             temporary,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None,
+                             128 * 1024,
+                             FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                result = await _cdnDeliveryService.DownloadAsync(
+                    target.Profile,
+                    credential,
+                    target.Url,
+                    output,
+                    CancellationToken.None);
+            }
+
+            File.Move(temporary, destination, overwrite: true);
+            _logger.Info(
+                $"CDN download completed profile={target.Profile.Name} bucket={_currentBucket} " +
+                $"key={entry.Key} bytes={result.BytesWritten}");
+            completedStatus =
+                $"CDN 下载完成：{target.Profile.Name}，{FileSizeFormatter.Format(result.BytesWritten)}";
+            MessageBox.Show(
+                this,
+                $"已通过 CDN“{target.Profile.Name}”保存到：{Environment.NewLine}{save.FileName}",
+                "CDN 下载完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception exception)
+        {
+            _logger.Error(
+                $"CDN download failed profile={target.Profile.Name} bucket={_currentBucket} key={entry.Key}",
+                exception);
+            ErrorDialog.ShowException(
+                this,
+                "CDN 下载失败",
+                target.Profile.Name,
+                exception,
+                $"对象：{_currentBucket}/{entry.Key}");
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+            catch (Exception cleanupException)
+            {
+                _logger.Error("Failed to clean temporary CDN download file", cleanupException);
+            }
+            SetIdle();
+            if (completedStatus is not null)
+                _requestStatus.Text = completedStatus;
+        }
+    }
+
     private async Task EnqueueSelectedCdnOperationAsync(CdnJobAction action)
     {
         if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)

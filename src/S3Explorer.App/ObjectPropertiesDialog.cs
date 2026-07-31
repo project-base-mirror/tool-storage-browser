@@ -2,15 +2,30 @@ using S3Explorer.Core;
 
 namespace S3Explorer.App;
 
+internal enum ObjectPropertiesAction
+{
+    None,
+    DownloadFromObjectStorage,
+    DownloadFromCdn
+}
+
 internal sealed class ObjectPropertiesDialog : Form
 {
-    public ObjectPropertiesDialog(ObjectProperties properties, string endpoint, string? presignedUrl = null)
+    public ObjectPropertiesAction SelectedAction { get; private set; }
+
+    public ObjectPropertiesDialog(
+        ObjectProperties properties,
+        string endpoint,
+        string? presignedUrl = null,
+        string? cdnProfileName = null)
     {
+        Name = "ObjectPropertiesDialog";
         Text = $"属性 - {S3Path.DisplayName(properties.Key, false)}";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(700, 520);
-        MinimumSize = new Size(620, 440);
+        MinimumSize = new Size(680, 480);
         ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Font;
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneral(properties, endpoint, presignedUrl));
@@ -27,9 +42,46 @@ internal sealed class ObjectPropertiesDialog : Form
             });
             tabs.TabPages.Add(page);
         }
-        var close = new Button { Text = "关闭", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 38 };
-        Controls.Add(tabs);
-        Controls.Add(close);
+
+        var objectStorageDownload = ActionButton("ObjectStorageDownloadButton", "OSS 下载...");
+        objectStorageDownload.Click += (_, _) => SelectAction(ObjectPropertiesAction.DownloadFromObjectStorage);
+        var cdnDownload = ActionButton("CdnDownloadButton", "CDN 下载...");
+        cdnDownload.Enabled = !string.IsNullOrWhiteSpace(cdnProfileName);
+        cdnDownload.AccessibleDescription = cdnDownload.Enabled
+            ? $"通过默认 CDN 配置 {cdnProfileName} 下载"
+            : "当前对象没有匹配的 CDN 关联";
+        cdnDownload.Click += (_, _) => SelectAction(ObjectPropertiesAction.DownloadFromCdn);
+        var close = ActionButton("CloseObjectPropertiesButton", "关闭");
+        close.DialogResult = DialogResult.Cancel;
+
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Padding = new Padding(8, 7, 8, 7),
+            Margin = Padding.Empty
+        };
+        actions.Controls.Add(close);
+        actions.Controls.Add(cdnDownload);
+        actions.Controls.Add(objectStorageDownload);
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.Controls.Add(tabs, 0, 0);
+        root.Controls.Add(actions, 0, 1);
+        Controls.Add(root);
         AcceptButton = close;
         CancelButton = close;
     }
@@ -37,8 +89,15 @@ internal sealed class ObjectPropertiesDialog : Form
     private static TabPage BuildGeneral(ObjectProperties value, string endpoint, string? presignedUrl)
     {
         var page = new TabPage("常规");
-        var table = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, AutoScroll = true };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
+        var table = new TableLayoutPanel
+        {
+            Name = "ObjectPropertiesGeneralTable",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12),
+            ColumnCount = 2,
+            AutoScroll = true
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var fields = new (string, string)[]
         {
@@ -54,12 +113,32 @@ internal sealed class ObjectPropertiesDialog : Form
             ("Version ID", value.VersionId ?? "—"),
             ("预签名 URL", presignedUrl is null ? "未生成" : "已生成（出于安全考虑不在日志中记录）")
         };
+        table.RowCount = fields.Length;
+        for (var row = 0; row < fields.Length; row++)
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         var baseFont = SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont;
         for (var row = 0; row < fields.Length; row++)
         {
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(new Label { Text = fields[row].Item1 + "：", AutoSize = true, Font = new Font(baseFont, FontStyle.Bold), Margin = new Padding(3, 7, 3, 3) }, 0, row);
-            var box = new TextBox { Text = fields[row].Item2, ReadOnly = true, BorderStyle = BorderStyle.None, Dock = DockStyle.Fill, BackColor = SystemColors.Window, Margin = new Padding(3, 7, 3, 3) };
+            table.Controls.Add(new Label
+            {
+                Name = $"ObjectPropertyLabel{row}",
+                Text = fields[row].Item1 + "：",
+                AutoSize = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                Font = new Font(baseFont, FontStyle.Bold),
+                Margin = new Padding(3, 7, 9, 3)
+            }, 0, row);
+            var box = new TextBox
+            {
+                Name = $"ObjectPropertyValue{row}",
+                Text = fields[row].Item2,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                Dock = DockStyle.Fill,
+                BackColor = SystemColors.Window,
+                Margin = new Padding(3, 7, 3, 3)
+            };
             table.Controls.Add(box, 1, row);
         }
         page.Controls.Add(table);
@@ -82,5 +161,23 @@ internal sealed class ObjectPropertiesDialog : Form
             list.Items.Add(new ListViewItem("(无自定义 Metadata)") { ForeColor = SystemColors.GrayText });
         page.Controls.Add(list);
         return page;
+    }
+
+    private static Button ActionButton(string name, string text) => new()
+    {
+        Name = name,
+        Text = text,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        MinimumSize = new Size(112, 36),
+        Margin = new Padding(6, 0, 0, 0),
+        UseVisualStyleBackColor = true
+    };
+
+    private void SelectAction(ObjectPropertiesAction action)
+    {
+        SelectedAction = action;
+        DialogResult = DialogResult.OK;
+        Close();
     }
 }

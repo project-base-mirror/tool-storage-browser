@@ -106,6 +106,13 @@ public sealed record CdnProbeResult(
     public double BytesPerSecond => TotalElapsed.TotalSeconds <= 0 ? 0 : BytesRead / TotalElapsed.TotalSeconds;
 }
 
+public sealed record CdnDownloadResult(
+    Uri RequestedUrl,
+    Uri FinalUrl,
+    int StatusCode,
+    long BytesWritten,
+    string? ContentType);
+
 public sealed record CdnOperationResult(
     bool Success,
     int? StatusCode,
@@ -188,6 +195,14 @@ public interface ICdnDeliveryService
         Uri url,
         CancellationToken cancellationToken) =>
         ProbeAsync(profile, credential, url, 1, cancellationToken);
+
+    Task<CdnDownloadResult> DownloadAsync(
+        CdnProfile profile,
+        CdnCredential? credential,
+        Uri url,
+        Stream destination,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("当前 CDN Provider 不支持直接下载。");
 
     Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,

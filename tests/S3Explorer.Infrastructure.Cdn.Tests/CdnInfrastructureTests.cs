@@ -210,6 +210,67 @@ public sealed class CdnInfrastructureTests
     }
 
     [Fact]
+    public async Task DownloadStreamsWholeResponseAndAppliesCredential()
+    {
+        CapturedRequest? captured = null;
+        var payload = Encoding.UTF8.GetBytes("payload from CDN");
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                captured = CapturedRequest.From(request);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload),
+                    RequestMessage = request
+                };
+            }));
+        var credential = new CdnCredential
+        {
+            Name = "download token",
+            AuthenticationType = CdnAuthenticationType.BearerToken,
+            Secret = "secret"
+        };
+        await using var destination = new MemoryStream();
+
+        var result = await service.DownloadAsync(
+            Profile(),
+            credential,
+            new Uri("https://cdn.example/assets/file.txt"),
+            destination,
+            CancellationToken.None);
+
+        Assert.Equal(payload, destination.ToArray());
+        Assert.Equal(payload.Length, result.BytesWritten);
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(HttpMethod.Get, captured?.Method);
+        Assert.Null(captured?.Range);
+        Assert.Equal("Bearer secret", captured?.Authorization);
+    }
+
+    [Fact]
+    public async Task DownloadRejectsErrorResponseWithoutWritingBody()
+    {
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("not found"),
+                RequestMessage = request
+            }));
+        await using var destination = new MemoryStream();
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.DownloadAsync(
+                Profile(),
+                null,
+                new Uri("https://cdn.example/missing.txt"),
+                destination,
+                CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
+        Assert.Equal(0, destination.Length);
+    }
+
+    [Fact]
     public async Task HeadProbesCanObserveMissThenHitWithoutDownloadingContent()
     {
         var attempts = 0;
