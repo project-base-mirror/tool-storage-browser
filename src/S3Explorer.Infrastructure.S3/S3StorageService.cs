@@ -808,14 +808,17 @@ public sealed class S3StorageService : IS3StorageService
                     },
                     leaveOpen: false);
 
-                await client.PutObjectAsync(new PutObjectRequest
+                var request = new PutObjectRequest
                 {
                     BucketName = bucket,
                     Key = key,
                     InputStream = throttled,
-                    AutoCloseStream = false,
-                    StorageClass = S3StorageClass.FindValue(storageClass)
-                }, cancellationToken).ConfigureAwait(false);
+                    AutoCloseStream = false
+                };
+                var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
+                if (resolvedStorageClass is not null)
+                    request.StorageClass = resolvedStorageClass;
+                await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
                 transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
                 return;
             }
@@ -1131,7 +1134,7 @@ public sealed class S3StorageService : IS3StorageService
             return;
 
         using var client = _factory.Create(profile);
-        if (!profile.EnableMultiObjectDelete)
+        if (!S3CompatibilityPolicy.ShouldUseMultiObjectDelete(profile))
         {
             await DeleteOneByOneAsync(client, bucket, keys, cancellationToken).ConfigureAwait(false);
             return;
@@ -1397,12 +1400,15 @@ public sealed class S3StorageService : IS3StorageService
 
         if (checkpoint is null)
         {
-            var initiated = await client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            var request = new InitiateMultipartUploadRequest
             {
                 BucketName = bucket,
-                Key = key,
-                StorageClass = S3StorageClass.FindValue(storageClass)
-            }, cancellationToken).ConfigureAwait(false);
+                Key = key
+            };
+            var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
+            if (resolvedStorageClass is not null)
+                request.StorageClass = resolvedStorageClass;
+            var initiated = await client.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
             checkpoint = new MultipartUploadCheckpoint(
                 initiated.UploadId,
                 partSize,

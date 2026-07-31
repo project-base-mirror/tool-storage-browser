@@ -22,6 +22,7 @@ public static class S3CompatibilityPolicy
             "InvalidRequest",
             "MalformedXML",
             "MethodNotAllowed",
+            "MissingSomeRequiredArguments",
             "NotImplemented",
             "XNotImplemented");
 
@@ -32,6 +33,9 @@ public static class S3CompatibilityPolicy
     public static bool ShouldForcePathStyle(ConnectionProfile profile) =>
         profile.AddressingStyle == AddressingStyle.PathStyle ||
         (profile.ServiceType == S3ServiceType.MinIO && profile.AddressingStyle == AddressingStyle.Auto);
+
+    public static bool ShouldUseMultiObjectDelete(ConnectionProfile profile) =>
+        profile.EnableMultiObjectDelete && profile.ServiceType != S3ServiceType.AliyunOss;
 
     public static bool IsMinioApiPortError(ConnectionProfile profile, AmazonS3Exception exception) =>
         profile.ServiceType == S3ServiceType.MinIO &&
@@ -45,6 +49,14 @@ public static class S3CompatibilityPolicy
          exception.StatusCode == HttpStatusCode.NotFound &&
          (string.IsNullOrWhiteSpace(exception.ErrorCode) || IsCode(exception, "NotFound")) &&
          string.IsNullOrWhiteSpace(exception.RequestId));
+
+    public static S3StorageClass? ResolveStorageClass(string? requestedStorageClass)
+    {
+        var normalized = requestedStorageClass?.Trim();
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : S3StorageClass.FindValue(normalized);
+    }
 
     public static PutBucketRequest CreateBucketRequest(
         ConnectionProfile profile,

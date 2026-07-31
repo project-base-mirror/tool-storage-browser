@@ -23,6 +23,7 @@ public sealed class S3CompatibilityPolicyTests
     [InlineData(HttpStatusCode.MethodNotAllowed, "MethodNotAllowed")]
     [InlineData(HttpStatusCode.NotImplemented, "NotImplemented")]
     [InlineData(HttpStatusCode.Forbidden, "AccessDenied")]
+    [InlineData(HttpStatusCode.BadRequest, "MissingSomeRequiredArguments")]
     public void UnsupportedBatchDeleteFallsBackToSingleDeletes(HttpStatusCode status, string code)
     {
         var exception = new AmazonS3Exception(code)
@@ -56,6 +57,36 @@ public sealed class S3CompatibilityPolicyTests
             S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", " eu-west-1 " ).BucketRegionName);
         Assert.Null(S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", "us-east-1").BucketRegionName);
         Assert.Null(S3CompatibilityPolicy.CreateBucketRequest(profile, "test-bucket", "auto").BucketRegionName);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void EmptyStorageClassOmitsCompatibilityHeader(string? storageClass)
+    {
+        Assert.Null(S3CompatibilityPolicy.ResolveStorageClass(storageClass));
+    }
+
+    [Fact]
+    public void ExplicitStorageClassIsNormalized()
+    {
+        Assert.Equal("STANDARD", S3CompatibilityPolicy.ResolveStorageClass(" STANDARD ")?.Value);
+    }
+
+    [Fact]
+    public void AliyunOssUsesCompatibleSingleObjectDeletes()
+    {
+        Assert.False(S3CompatibilityPolicy.ShouldUseMultiObjectDelete(new ConnectionProfile
+        {
+            ServiceType = S3ServiceType.AliyunOss,
+            EnableMultiObjectDelete = true
+        }));
+        Assert.True(S3CompatibilityPolicy.ShouldUseMultiObjectDelete(new ConnectionProfile
+        {
+            ServiceType = S3ServiceType.AmazonS3,
+            EnableMultiObjectDelete = true
+        }));
     }
 
     [Fact]
