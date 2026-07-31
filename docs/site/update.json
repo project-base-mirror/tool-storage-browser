@@ -1,15 +1,15 @@
 {
   "schemaVersion": 2,
-  "tagName": "v0.6.11",
-  "version": "0.6.11",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.11",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64.zip",
+  "tagName": "v0.6.12",
+  "version": "0.6.12",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.6.12",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.12/S3Explorer-v0.6.12-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.11/S3Explorer-v0.6.11-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.12/S3Explorer-v0.6.12-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.12/S3Explorer-v0.6.12-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.12/S3Explorer-v0.6.12-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.12/S3Explorer-v0.6.12-win-x64-setup.msi"
   },
-  "notes": "账户组织与高级 AWS 身份：连接分组、折叠和组内排序，导入目标分组；IAM Identity Center (SSO)、AssumeRole 与 Web Identity，角色链、External ID 状态和会话到期诊断；SSO token、短期角色会话和 Web Identity token 内容不进入连接配置、连接包或日志。",
-  "publishedAt": "2026-07-31T19:23:07+08:00"
+  "notes": "阿里 OSS 发布兼容与属性下载：空 Storage Class 不再发送非法请求头，阿里 OSS 删除使用逐对象兼容路径；对象属性页修复长标签折行和末行错位，并增加 OSS 传输队列下载与默认 CDN 关联下载。",
+  "publishedAt": "2026-07-31T20:38:26+08:00"
 }

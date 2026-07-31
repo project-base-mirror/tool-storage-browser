@@ -172,11 +172,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.11-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.11-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.11.zip
-    artifacts/release/S3Explorer-v0.6.11-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.6.11-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.6.12-win-x64.zip
+    artifacts/release/S3Explorer-v0.6.12-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.6.12.zip
+    artifacts/release/S3Explorer-v0.6.12-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.6.12-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
