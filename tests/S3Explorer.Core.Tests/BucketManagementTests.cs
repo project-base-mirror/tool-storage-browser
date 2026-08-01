@@ -76,6 +76,10 @@ public sealed class BucketManagementTests
         Assert.True(capabilities.Encryption.Supported);
         Assert.True(capabilities.KmsEncryption.Supported);
         Assert.True(capabilities.Tagging.Supported);
+        Assert.True(capabilities.Lifecycle.Supported);
+        Assert.False(capabilities.LifecycleStorageTransitions.Supported);
+        Assert.False(capabilities.LifecycleMultipartCleanup.Supported);
+        Assert.False(capabilities.ObjectLock.Supported);
         Assert.False(capabilities.PublicAccessBlock.Supported);
         Assert.False(capabilities.ObjectOwnership.Supported);
     }
@@ -138,6 +142,10 @@ public sealed class BucketManagementTests
 
         Assert.True(capabilities.PublicAccessBlock.Supported);
         Assert.True(capabilities.ObjectOwnership.Supported);
+        Assert.True(capabilities.Lifecycle.Supported);
+        Assert.True(capabilities.LifecycleStorageTransitions.Supported);
+        Assert.True(capabilities.LifecycleMultipartCleanup.Supported);
+        Assert.True(capabilities.ObjectLock.Supported);
     }
 
     [Fact]
@@ -165,4 +173,93 @@ public sealed class BucketManagementTests
         Assert.Equal(14, summary.TotalRemoteEntries);
         Assert.False(summary.IsEmpty);
     }
+
+    [Fact]
+    public void LifecycleDocumentNormalizesRulesFiltersAndTransitions()
+    {
+        var configuration = new BucketLifecycleConfiguration([
+            new BucketLifecycleRule(
+                " archive ", true, "logs/",
+                [new LifecycleTag(" team ", " platform ")],
+                [new LifecycleTransition(90, LifecycleStorageClass.GlacierFlexibleRetrieval),
+                 new LifecycleTransition(30, LifecycleStorageClass.StandardInfrequentAccess)],
+                365,
+                [new LifecycleTransition(60, LifecycleStorageClass.GlacierFlexibleRetrieval)],
+                180,
+                7)
+        ]);
+
+        var normalized = BucketLifecycleDocument.Validate(configuration);
+
+        var rule = Assert.Single(normalized.Rules);
+        Assert.Equal("archive", rule.Id);
+        Assert.Equal("team", Assert.Single(rule.Tags).Key);
+        Assert.Equal([30, 90], rule.Transitions.Select(value => value.Days));
+        Assert.True(BucketLifecycleDocument.AreSemanticallyEquivalent(
+            normalized,
+            BucketLifecycleDocument.Parse(BucketLifecycleDocument.Serialize(normalized))));
+    }
+
+    [Fact]
+    public void LifecycleDocumentRejectsConflictingFilters()
+    {
+        var configuration = new BucketLifecycleConfiguration([
+            Rule("first", "logs/", expirationDays: 30),
+            Rule("second", "logs/", expirationDays: 60)
+        ]);
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            BucketLifecycleDocument.Validate(configuration));
+
+        Assert.Contains("相同过滤条件", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LifecycleDocumentRejectsInvalidActionOrderAndUnsupportedTransitions()
+    {
+        Assert.Throws<ArgumentException>(() => BucketLifecycleDocument.Validate(
+            new BucketLifecycleConfiguration([
+                Rule("late-transition", null, expirationDays: 30) with
+                {
+                    Transitions = [new LifecycleTransition(30, LifecycleStorageClass.GlacierFlexibleRetrieval)]
+                }
+            ])));
+
+        var unsupported = Assert.Throws<ArgumentException>(() => BucketLifecycleDocument.Validate(
+            new BucketLifecycleConfiguration([
+                Rule("tier", null, expirationDays: null) with
+                {
+                    Transitions = [new LifecycleTransition(30, LifecycleStorageClass.GlacierFlexibleRetrieval)]
+                }
+            ]),
+            storageTransitionsSupported: false));
+        Assert.Contains("Provider", unsupported.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ComplianceRetentionCanOnlyBeExtendedWithoutDowngrade()
+    {
+        var current = new ObjectLockSnapshot(
+            ObjectRetentionMode.Compliance,
+            DateTimeOffset.Parse("2030-01-01T00:00:00Z"),
+            false,
+            "version-1");
+
+        Assert.Throws<ArgumentException>(() => new ObjectRetentionConfiguration(
+            ObjectRetentionMode.Governance,
+            DateTimeOffset.Parse("2031-01-01T00:00:00Z")).Validate(
+                current, DateTimeOffset.Parse("2029-01-01T00:00:00Z")));
+        Assert.Throws<ArgumentException>(() => new ObjectRetentionConfiguration(
+            ObjectRetentionMode.Compliance,
+            DateTimeOffset.Parse("2029-12-01T00:00:00Z")).Validate(
+                current, DateTimeOffset.Parse("2029-01-01T00:00:00Z")));
+
+        new ObjectRetentionConfiguration(
+            ObjectRetentionMode.Compliance,
+            DateTimeOffset.Parse("2031-01-01T00:00:00Z")).Validate(
+                current, DateTimeOffset.Parse("2029-01-01T00:00:00Z"));
+    }
+
+    private static BucketLifecycleRule Rule(string id, string? prefix, int? expirationDays) => new(
+        id, true, prefix, [], [], expirationDays, [], null, null);
 }

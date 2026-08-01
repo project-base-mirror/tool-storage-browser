@@ -13,6 +13,8 @@ internal enum BucketManagementPage
     Versioning,
     Encryption,
     Tags,
+    Lifecycle,
+    ObjectLock,
     EmptyBucket
 }
 
@@ -84,7 +86,8 @@ internal sealed partial class BucketManagementDialog : Form
         _tabs.TabPages.AddRange([
             BuildOverviewTab(), BuildPolicyTab(), BuildAclTab(),
             BuildAccessTab(), BuildCorsTab(), BuildVersioningTab(),
-            BuildEncryptionTab(), BuildTagsTab(), BuildEmptyTab()
+            BuildEncryptionTab(), BuildTagsTab(), BuildLifecycleTab(),
+            BuildObjectLockTab(), BuildEmptyTab()
         ]);
         _tabs.SelectedIndex = Math.Clamp((int)initialPage, 0, _tabs.TabPages.Count - 1);
 
@@ -245,6 +248,10 @@ internal sealed partial class BucketManagementDialog : Form
         AppendCapability(text, "Encryption", value.Capabilities.Encryption);
         AppendCapability(text, "SSE-KMS", value.Capabilities.KmsEncryption);
         AppendCapability(text, "Tagging", value.Capabilities.Tagging);
+        AppendCapability(text, "Lifecycle", value.Capabilities.Lifecycle);
+        AppendCapability(text, "Lifecycle Storage Transitions", value.Capabilities.LifecycleStorageTransitions);
+        AppendCapability(text, "Lifecycle Multipart Cleanup", value.Capabilities.LifecycleMultipartCleanup);
+        AppendCapability(text, "Object Lock", value.Capabilities.ObjectLock);
         AppendCapability(text, "安全清空", value.Capabilities.EmptyBucket);
         _overview.Text = text.ToString();
 

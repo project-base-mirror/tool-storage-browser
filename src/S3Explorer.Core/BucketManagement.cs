@@ -18,6 +18,10 @@ public sealed record BucketCapabilities(
     BucketFeatureSupport Encryption,
     BucketFeatureSupport KmsEncryption,
     BucketFeatureSupport Tagging,
+    BucketFeatureSupport Lifecycle,
+    BucketFeatureSupport LifecycleStorageTransitions,
+    BucketFeatureSupport LifecycleMultipartCleanup,
+    BucketFeatureSupport ObjectLock,
     BucketFeatureSupport EmptyBucket);
 
 public static class BucketCapabilityMatrix
@@ -28,6 +32,9 @@ public static class BucketCapabilityMatrix
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
+            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
+            BucketFeatureSupport.Yes(),
+            BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes(),
             BucketFeatureSupport.Yes()),
@@ -41,6 +48,10 @@ public static class BucketCapabilityMatrix
             BucketFeatureSupport.Yes("MinIO 支持 Bucket 默认加密；服务端必须已配置密钥管理"),
             BucketFeatureSupport.Yes("MinIO 支持 SSE-KMS；保存前请确认服务端 KMS 与 Key 已就绪"),
             BucketFeatureSupport.Yes("MinIO 支持 S3 Bucket Tagging API"),
+            BucketFeatureSupport.Yes("MinIO 已验证对象过期与非当前版本生命周期规则"),
+            BucketFeatureSupport.No("MinIO 存储类型转换需要服务端远程分层配置，当前客户端未启用"),
+            BucketFeatureSupport.No("当前锁定的 MinIO 版本不会可靠保存 AbortIncompleteMultipartUpload 规则"),
+            BucketFeatureSupport.No("当前客户端尚未验证 MinIO Object Lock 创建与管理流程"),
             BucketFeatureSupport.Yes()),
         _ => new(
             BucketFeatureSupport.No("该兼容服务的 Bucket Policy API 尚未验证"),
@@ -52,6 +63,10 @@ public static class BucketCapabilityMatrix
             BucketFeatureSupport.No("该兼容服务的加密配置 API 尚未验证"),
             BucketFeatureSupport.No("该兼容服务的 SSE-KMS 配置 API 尚未验证"),
             BucketFeatureSupport.No("该兼容服务的 Tagging API 尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的生命周期 API 尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的生命周期存储类型转换尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的 Multipart 生命周期清理尚未验证"),
+            BucketFeatureSupport.No("该兼容服务的 Object Lock API 尚未验证"),
             BucketFeatureSupport.Yes("普通对象与未完成分片可安全清理；版本能力需扫描确认"))
     };
 }

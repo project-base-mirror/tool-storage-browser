@@ -9,7 +9,7 @@ internal enum ObjectPropertiesAction
     DownloadFromCdn
 }
 
-internal sealed class ObjectPropertiesDialog : Form
+internal sealed partial class ObjectPropertiesDialog : Form
 {
     public ObjectPropertiesAction SelectedAction { get; private set; }
 
@@ -17,8 +17,13 @@ internal sealed class ObjectPropertiesDialog : Form
         ObjectProperties properties,
         string endpoint,
         string? presignedUrl = null,
-        string? cdnProfileName = null)
+        string? cdnProfileName = null,
+        IS3StorageService? storage = null,
+        ConnectionProfile? profile = null)
     {
+        _storage = storage;
+        _profile = profile;
+        _objectProperties = properties;
         Name = "ObjectPropertiesDialog";
         Text = $"属性 - {S3Path.DisplayName(properties.Key, false)}";
         StartPosition = FormStartPosition.CenterParent;
@@ -30,7 +35,7 @@ internal sealed class ObjectPropertiesDialog : Form
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneral(properties, endpoint, presignedUrl));
         tabs.TabPages.Add(BuildMetadata(properties));
-        foreach (var name in new[] { "权限", "版本", "Tags", "Object Lock" })
+        foreach (var name in new[] { "权限", "版本", "Tags" })
         {
             var page = new TabPage(name);
             page.Controls.Add(new Label
@@ -42,6 +47,12 @@ internal sealed class ObjectPropertiesDialog : Form
             });
             tabs.TabPages.Add(page);
         }
+        tabs.TabPages.Add(BuildObjectLock(properties));
+        tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            if (string.Equals(tabs.SelectedTab?.Text, "Object Lock", StringComparison.Ordinal))
+                await LoadObjectLockAsync();
+        };
 
         var objectStorageDownload = ActionButton("ObjectStorageDownloadButton", "OSS 下载...");
         objectStorageDownload.Click += (_, _) => SelectAction(ObjectPropertiesAction.DownloadFromObjectStorage);
@@ -84,6 +95,7 @@ internal sealed class ObjectPropertiesDialog : Form
         Controls.Add(root);
         AcceptButton = close;
         CancelButton = close;
+        FormClosed += (_, _) => _objectLockCancellation.Cancel();
     }
 
     private static TabPage BuildGeneral(ObjectProperties value, string endpoint, string? presignedUrl)

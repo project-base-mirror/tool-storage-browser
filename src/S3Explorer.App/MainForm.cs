@@ -246,9 +246,9 @@ internal sealed partial class MainForm : Form
         bucket.DropDownItems.Add(Command("bucket-versioning", "版本控制...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Versioning)));
         bucket.DropDownItems.Add(Command("bucket-encryption", "默认加密...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Encryption)));
         bucket.DropDownItems.Add(Command("bucket-tags", "Bucket Tags...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Tags)));
-        bucket.DropDownItems.Add(Unsupported("生命周期规则..."));
+        bucket.DropDownItems.Add(Command("bucket-lifecycle", "生命周期规则...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.Lifecycle)));
         bucket.DropDownItems.Add(Command("bucket-access-controls", "Public Access Block / Object Ownership...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.AccessControls)));
-        bucket.DropDownItems.Add(Unsupported("Object Lock..."));
+        bucket.DropDownItems.Add(Command("bucket-object-lock", "Object Lock...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.ObjectLock)));
         bucket.DropDownItems.Add(Command("empty-bucket", "清空 Bucket...", async (_, _) => await ShowBucketManagementAsync(BucketManagementPage.EmptyBucket)));
         bucket.DropDownItems.Add(new ToolStripSeparator());
         bucket.DropDownItems.Add(Command("refresh-buckets", "刷新 Bucket 列表", async (_, _) => await ReloadBucketsAsync()));
@@ -508,6 +508,10 @@ internal sealed partial class MainForm : Form
             await ShowBucketManagementAsync(BucketManagementPage.Encryption));
         var tags = ContextCommand("bucket-tags", "Bucket Tags...", UiIconKind.Properties, async (_, _) =>
             await ShowBucketManagementAsync(BucketManagementPage.Tags));
+        var lifecycle = ContextCommand("bucket-lifecycle", "生命周期配置...", UiIconKind.Properties, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.Lifecycle));
+        var objectLock = ContextCommand("bucket-object-lock", "Object Lock...", UiIconKind.Info, async (_, _) =>
+            await ShowBucketManagementAsync(BucketManagementPage.ObjectLock));
         var empty = ContextCommand("empty-bucket", "清空 Bucket...", UiIconKind.Delete, async (_, _) =>
             await ShowBucketManagementAsync(BucketManagementPage.EmptyBucket));
         var delete = ContextCommand("delete-bucket", "删除 Bucket...", UiIconKind.Delete, async (_, _) => await DeleteBucketAsync());
@@ -532,9 +536,9 @@ internal sealed partial class MainForm : Form
             new ToolStripSeparator(),
             versioning,
             encryption,
-            Unsupported("生命周期配置..."),
+            lifecycle,
             cors,
-            Unsupported("Object Lock..."),
+            objectLock,
             tags,
             Unsupported("日志设置..."),
             Unsupported("跨区域复制..."),
@@ -2636,7 +2640,9 @@ internal sealed partial class MainForm : Form
         using var dialog = new ObjectPropertiesDialog(
             properties,
             _currentProfile.Endpoint,
-            cdnProfileName: cdnTargets.FirstOrDefault()?.Profile.Name);
+            cdnProfileName: cdnTargets.FirstOrDefault()?.Profile.Name,
+            storage: _storage,
+            profile: _currentProfile);
         dialog.ShowDialog(this);
         switch (dialog.SelectedAction)
         {

@@ -47,6 +47,11 @@ public sealed class ObjectPropertiesDialogLayoutTests
             var cdn = AssertButtonIsReadable(dialog, "CdnDownloadButton");
             Assert.True(cdn.Enabled);
             AssertButtonIsReadable(dialog, "CloseObjectPropertiesButton");
+            AssertButtonIsReadable(dialog, "SaveObjectRetentionButton");
+            AssertButtonIsReadable(dialog, "SaveObjectLegalHoldButton");
+            AssertButtonIsReadable(dialog, "ReloadObjectLockButton");
+            Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ObjectRetentionAuthorization")).Checked);
+            Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ObjectLegalHoldAuthorization")).Checked);
         });
     }
 

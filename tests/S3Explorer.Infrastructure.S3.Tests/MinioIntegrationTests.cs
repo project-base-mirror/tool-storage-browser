@@ -197,16 +197,42 @@ public sealed class MinioIntegrationTests
             Assert.False(properties.Capabilities.Cors.Supported);
             Assert.True(properties.Capabilities.Encryption.Supported);
             Assert.Contains("服务端必须", properties.Capabilities.Encryption.Reason, StringComparison.Ordinal);
-
-            await service.PutBucketTagsAsync(profile, bucket,
-                [new BucketTag("environment", "integration")], CancellationToken.None);
-            var tags = await service.GetBucketTagsAsync(profile, bucket, CancellationToken.None);
-            Assert.Contains(tags, tag => tag.Key == "environment" && tag.Value == "integration");
+            Assert.True(properties.Capabilities.Lifecycle.Supported);
+            Assert.False(properties.Capabilities.LifecycleStorageTransitions.Supported);
+            Assert.False(properties.Capabilities.LifecycleMultipartCleanup.Supported);
+            Assert.False(properties.Capabilities.ObjectLock.Supported);
 
             await service.PutBucketVersioningAsync(
                 profile, bucket, BucketVersioningState.Enabled, CancellationToken.None);
             Assert.Equal(BucketVersioningState.Enabled,
                 await service.GetBucketVersioningAsync(profile, bucket, CancellationToken.None));
+
+            var lifecycle = new BucketLifecycleConfiguration([
+                new BucketLifecycleRule(
+                    "integration-cleanup", true, "objects/", [], [], 3650, [], 3650, null)
+            ]);
+            await service.PutBucketLifecycleAsync(profile, bucket, lifecycle, CancellationToken.None);
+            Assert.True(BucketLifecycleDocument.AreSemanticallyEquivalent(
+                lifecycle,
+                await service.GetBucketLifecycleAsync(profile, bucket, CancellationToken.None),
+                storageTransitionsSupported: false,
+                multipartCleanupSupported: false));
+            await Assert.ThrowsAsync<ArgumentException>(() => service.PutBucketLifecycleAsync(
+                profile,
+                bucket,
+                new BucketLifecycleConfiguration([
+                    new BucketLifecycleRule(
+                        "unsupported-multipart", true, null, [], [], null, [], null, 7)
+                ]),
+                CancellationToken.None));
+            await service.DeleteBucketLifecycleAsync(profile, bucket, CancellationToken.None);
+            Assert.Empty((await service.GetBucketLifecycleAsync(
+                profile, bucket, CancellationToken.None)).Rules);
+
+            await service.PutBucketTagsAsync(profile, bucket,
+                [new BucketTag("environment", "integration")], CancellationToken.None);
+            var tags = await service.GetBucketTagsAsync(profile, bucket, CancellationToken.None);
+            Assert.Contains(tags, tag => tag.Key == "environment" && tag.Value == "integration");
 
             await service.PutBucketAclAsync(profile, bucket, BucketAclMode.Private, CancellationToken.None);
             var acl = await service.GetBucketAclAsync(profile, bucket, CancellationToken.None);
@@ -284,6 +310,7 @@ public sealed class MinioIntegrationTests
             {
                 try { await service.DeleteBucketPolicyAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.DeleteBucketTagsAsync(profile, bucket, CancellationToken.None); } catch { }
+                try { await service.DeleteBucketLifecycleAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.EmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
                 try { await service.DeleteEmptyBucketAsync(profile, bucket, CancellationToken.None); } catch { }
             }

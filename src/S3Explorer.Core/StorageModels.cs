@@ -121,6 +121,10 @@ public interface IS3StorageService
     Task<IReadOnlyList<BucketTag>> GetBucketTagsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task PutBucketTagsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<BucketTag> tags, CancellationToken cancellationToken);
     Task DeleteBucketTagsAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketLifecycleConfiguration> GetBucketLifecycleAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task PutBucketLifecycleAsync(ConnectionProfile profile, string bucket, BucketLifecycleConfiguration configuration, CancellationToken cancellationToken);
+    Task DeleteBucketLifecycleAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
+    Task<BucketObjectLockSnapshot> GetBucketObjectLockAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptySummary> ScanBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptyResult> EmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
@@ -141,5 +145,8 @@ public interface IS3StorageService
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
+    Task<ObjectLockSnapshot> GetObjectLockAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
+    Task PutObjectRetentionAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectRetentionConfiguration retention, CancellationToken cancellationToken);
+    Task PutObjectLegalHoldAsync(ConnectionProfile profile, string bucket, string key, string? versionId, bool enabled, CancellationToken cancellationToken);
     string CreatePresignedUrl(ConnectionProfile profile, string bucket, string key, TimeSpan lifetime);
 }

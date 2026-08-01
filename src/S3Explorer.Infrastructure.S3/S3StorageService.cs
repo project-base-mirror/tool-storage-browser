@@ -612,6 +612,102 @@ public sealed class S3StorageService : IS3StorageService
         catch (AmazonS3Exception exception) when (IsMissingTagSet(exception)) { }
     }
 
+    public async Task<BucketLifecycleConfiguration> GetBucketLifecycleAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        EnsureBucketFeature(capabilities.Lifecycle, "Bucket 生命周期");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetLifecycleConfigurationAsync(
+                new GetLifecycleConfigurationRequest { BucketName = bucket }, cancellationToken)
+                .ConfigureAwait(false);
+            var configuration = S3LifecycleMapper.ToCore(response.Configuration);
+            return BucketLifecycleDocument.Validate(
+                configuration,
+                capabilities.LifecycleStorageTransitions.Supported,
+                capabilities.LifecycleMultipartCleanup.Supported);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingLifecycle(exception))
+        {
+            return new BucketLifecycleConfiguration([]);
+        }
+    }
+
+    public async Task PutBucketLifecycleAsync(
+        ConnectionProfile profile,
+        string bucket,
+        BucketLifecycleConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        EnsureBucketFeature(capabilities.Lifecycle, "Bucket 生命周期");
+        var normalized = BucketLifecycleDocument.Validate(
+            configuration,
+            capabilities.LifecycleStorageTransitions.Supported,
+            capabilities.LifecycleMultipartCleanup.Supported);
+        if (normalized.Rules.Count == 0)
+            throw new ArgumentException("生命周期规则为空时请使用删除配置。", nameof(configuration));
+        using var client = _factory.Create(profile);
+        await client.PutLifecycleConfigurationAsync(new PutLifecycleConfigurationRequest
+        {
+            BucketName = bucket,
+            Configuration = S3LifecycleMapper.ToSdk(normalized)
+        }, cancellationToken).ConfigureAwait(false);
+        var readBack = await GetBucketLifecycleAsync(profile, bucket, cancellationToken).ConfigureAwait(false);
+        if (!BucketLifecycleDocument.AreSemanticallyEquivalent(
+                normalized, readBack,
+                capabilities.LifecycleStorageTransitions.Supported,
+                capabilities.LifecycleMultipartCleanup.Supported))
+            throw new InvalidOperationException(
+                "Bucket 生命周期保存后回读内容不一致。" +
+                $"\r\n提交：{BucketLifecycleDocument.Serialize(normalized, capabilities.LifecycleStorageTransitions.Supported, capabilities.LifecycleMultipartCleanup.Supported)}" +
+                $"\r\n回读：{BucketLifecycleDocument.Serialize(readBack, capabilities.LifecycleStorageTransitions.Supported, capabilities.LifecycleMultipartCleanup.Supported)}");
+    }
+
+    public async Task DeleteBucketLifecycleAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Lifecycle, "Bucket 生命周期");
+        using var client = _factory.Create(profile);
+        try
+        {
+            await client.DeleteLifecycleConfigurationAsync(
+                new DeleteLifecycleConfigurationRequest { BucketName = bucket }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingLifecycle(exception)) { }
+    }
+
+    public async Task<BucketObjectLockSnapshot> GetBucketObjectLockAsync(
+        ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Lock");
+        using var client = _factory.Create(profile);
+        try
+        {
+            var response = await client.GetObjectLockConfigurationAsync(
+                new GetObjectLockConfigurationRequest { BucketName = bucket }, cancellationToken)
+                .ConfigureAwait(false);
+            var configuration = response.ObjectLockConfiguration;
+            var enabled = string.Equals(
+                configuration?.ObjectLockEnabled?.Value,
+                ObjectLockEnabled.Enabled.Value,
+                StringComparison.Ordinal);
+            var retention = configuration?.Rule?.DefaultRetention;
+            return new BucketObjectLockSnapshot(
+                enabled,
+                FromSdkRetentionMode(retention?.Mode),
+                retention?.Days is > 0 ? retention.Days : null,
+                retention?.Years is > 0 ? retention.Years : null);
+        }
+        catch (AmazonS3Exception exception) when (IsMissingObjectLockConfiguration(exception))
+        {
+            return new BucketObjectLockSnapshot(false);
+        }
+    }
+
     public async Task<BucketEmptySummary> ScanBucketAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
@@ -1327,6 +1423,101 @@ public sealed class S3StorageService : IS3StorageService
             metadata);
     }
 
+    public async Task<ObjectLockSnapshot> GetObjectLockAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Lock");
+        using var client = _factory.Create(profile);
+        ObjectLockRetention? retention = null;
+        ObjectLockLegalHold? legalHold = null;
+        try
+        {
+            var response = await client.GetObjectRetentionAsync(new GetObjectRetentionRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                VersionId = NullIfWhiteSpace(versionId)
+            }, cancellationToken).ConfigureAwait(false);
+            retention = response.Retention;
+        }
+        catch (AmazonS3Exception exception) when (IsMissingObjectLockState(exception)) { }
+
+        try
+        {
+            var response = await client.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                VersionId = NullIfWhiteSpace(versionId)
+            }, cancellationToken).ConfigureAwait(false);
+            legalHold = response.LegalHold;
+        }
+        catch (AmazonS3Exception exception) when (IsMissingObjectLockState(exception)) { }
+
+        return new ObjectLockSnapshot(
+            FromSdkRetentionMode(retention?.Mode),
+            retention?.RetainUntilDate == default
+                ? null
+                : new DateTimeOffset(DateTime.SpecifyKind(retention!.RetainUntilDate, DateTimeKind.Utc)),
+            string.Equals(legalHold?.Status?.Value, ObjectLockLegalHoldStatus.On.Value, StringComparison.Ordinal),
+            NullIfWhiteSpace(versionId));
+    }
+
+    public async Task PutObjectRetentionAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        ObjectRetentionConfiguration retention,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Retention");
+        var current = await GetObjectLockAsync(profile, bucket, key, versionId, cancellationToken)
+            .ConfigureAwait(false);
+        retention.Validate(current);
+        using var client = _factory.Create(profile);
+        await client.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId),
+            BypassGovernanceRetention = false,
+            Retention = new ObjectLockRetention
+            {
+                Mode = retention.Mode == ObjectRetentionMode.Compliance
+                    ? ObjectLockRetentionMode.Compliance
+                    : ObjectLockRetentionMode.Governance,
+                RetainUntilDate = retention.RetainUntilDate.UtcDateTime
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task PutObjectLegalHoldAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Legal Hold");
+        using var client = _factory.Create(profile);
+        await client.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId),
+            LegalHold = new ObjectLockLegalHold
+            {
+                Status = enabled ? ObjectLockLegalHoldStatus.On : ObjectLockLegalHoldStatus.Off
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public string CreatePresignedUrl(ConnectionProfile profile, string bucket, string key, TimeSpan lifetime)
     {
         if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromDays(7))
@@ -1593,6 +1784,29 @@ public sealed class S3StorageService : IS3StorageService
     private static bool IsMissingTagSet(AmazonS3Exception exception) =>
         exception.StatusCode == HttpStatusCode.NotFound ||
         string.Equals(exception.ErrorCode, "NoSuchTagSet", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingLifecycle(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchLifecycleConfiguration", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingObjectLockConfiguration(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "ObjectLockConfigurationNotFoundError", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(exception.ErrorCode, "NoSuchObjectLockConfiguration", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingObjectLockState(AmazonS3Exception exception) =>
+        exception.StatusCode == HttpStatusCode.NotFound ||
+        string.Equals(exception.ErrorCode, "NoSuchObjectLockConfiguration", StringComparison.OrdinalIgnoreCase);
+
+    private static ObjectRetentionMode? FromSdkRetentionMode(ObjectLockRetentionMode? value) => value?.Value switch
+    {
+        "GOVERNANCE" => ObjectRetentionMode.Governance,
+        "COMPLIANCE" => ObjectRetentionMode.Compliance,
+        _ => null
+    };
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool IsUnsupportedBucketFeature(AmazonS3Exception exception) =>
         exception.StatusCode is HttpStatusCode.NotImplemented or HttpStatusCode.MethodNotAllowed ||

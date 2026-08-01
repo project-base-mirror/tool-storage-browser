@@ -28,11 +28,14 @@ public sealed class BucketManagementDialogLayoutTests
             Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "版本控制");
             Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "默认加密");
             Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "Tags");
+            Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "生命周期");
+            Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "Object Lock");
 
             foreach (var name in new[]
                      {
                          "ReloadBucketCorsButton", "ValidateBucketCorsButton", "SaveBucketCorsButton",
-                         "SaveBucketVersioningButton", "SaveBucketEncryptionButton", "SaveBucketTagsButton"
+                         "SaveBucketVersioningButton", "SaveBucketEncryptionButton", "SaveBucketTagsButton",
+                         "ValidateBucketLifecycleButton", "SaveBucketLifecycleButton", "ReloadBucketObjectLockButton"
                      })
                 AssertButtonIsReadable(dialog, FindButton(dialog, name));
         });

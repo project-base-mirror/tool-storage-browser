@@ -27,14 +27,26 @@ internal sealed partial class BucketManagementDialog
     private readonly Button _tagsReload = NamedButton("ReloadBucketTagsButton", "重新读取");
     private readonly Button _tagsSave = NamedButton("SaveBucketTagsButton", "保存 Tags");
     private readonly Button _tagsDelete = NamedButton("DeleteBucketTagsButton", "删除 Tags");
+    private readonly Label _lifecycleReason = ReasonLabel();
+    private readonly TextBox _lifecycleJson = JsonTextBox();
+    private readonly Button _lifecycleReload = NamedButton("ReloadBucketLifecycleButton", "重新读取");
+    private readonly Button _lifecycleValidate = NamedButton("ValidateBucketLifecycleButton", "校验 / 格式化");
+    private readonly Button _lifecycleSave = NamedButton("SaveBucketLifecycleButton", "保存生命周期");
+    private readonly Button _lifecycleDelete = NamedButton("DeleteBucketLifecycleButton", "删除生命周期");
+    private readonly Label _objectLockReason = ReasonLabel();
+    private readonly TextBox _objectLockSummary = ReadOnlyTextBox();
+    private readonly Button _objectLockReload = NamedButton("ReloadBucketObjectLockButton", "探测状态");
     private BucketCorsConfiguration _currentCors = new([]);
     private BucketVersioningState _currentVersioning;
     private BucketEncryptionConfiguration _currentEncryption = new(BucketEncryptionMode.None);
     private IReadOnlyList<BucketTag> _currentTags = [];
+    private BucketLifecycleConfiguration _currentLifecycle = new([]);
     private bool _corsLoaded;
     private bool _versioningLoaded;
     private bool _encryptionLoaded;
     private bool _tagsLoaded;
+    private bool _lifecycleLoaded;
+    private bool _objectLockLoaded;
 
     private TabPage BuildCorsTab()
     {
@@ -131,6 +143,35 @@ internal sealed partial class BucketManagementDialog
         return page;
     }
 
+    private TabPage BuildLifecycleTab()
+    {
+        _lifecycleReload.Click += async (_, _) => await LoadLifecycleAsync(force: true);
+        _lifecycleValidate.Click += (_, _) => ValidateAndFormatLifecycle();
+        _lifecycleSave.Click += async (_, _) => await SaveLifecycleAsync();
+        _lifecycleDelete.Click += async (_, _) => await DeleteLifecycleAsync();
+        var page = NewPage("生命周期");
+        var buttons = ButtonBar(_lifecycleDelete, _lifecycleSave, _lifecycleValidate, _lifecycleReload);
+        page.Controls.Add(_lifecycleJson);
+        page.Controls.Add(_lifecycleReason);
+        page.Controls.Add(buttons);
+        _lifecycleReason.Dock = DockStyle.Top;
+        buttons.Dock = DockStyle.Bottom;
+        return page;
+    }
+
+    private TabPage BuildObjectLockTab()
+    {
+        _objectLockReload.Click += async (_, _) => await LoadObjectLockAsync(force: true);
+        var page = NewPage("Object Lock");
+        var buttons = ButtonBar(_objectLockReload);
+        page.Controls.Add(_objectLockSummary);
+        page.Controls.Add(_objectLockReason);
+        page.Controls.Add(buttons);
+        _objectLockReason.Dock = DockStyle.Top;
+        buttons.Dock = DockStyle.Bottom;
+        return page;
+    }
+
     private async Task LoadSelectedConfigurationAsync()
     {
         if (_properties is null || _busy) return;
@@ -140,6 +181,8 @@ internal sealed partial class BucketManagementDialog
             case BucketManagementPage.Versioning: await LoadVersioningAsync(); break;
             case BucketManagementPage.Encryption: await LoadEncryptionAsync(); break;
             case BucketManagementPage.Tags: await LoadTagsAsync(); break;
+            case BucketManagementPage.Lifecycle: await LoadLifecycleAsync(); break;
+            case BucketManagementPage.ObjectLock: await LoadObjectLockAsync(); break;
         }
     }
 
@@ -157,6 +200,14 @@ internal sealed partial class BucketManagementDialog
         _tagsReason.Text = $"{capabilities.Tagging.Reason}\r\n最多 50 个 Tag，Key 不可重复。成本分配标签需要在云厂商控制台另行激活。";
         SetControls(capabilities.Tagging.Supported,
             _tagsGrid, _tagsReload, _tagsSave, _tagsDelete);
+        _lifecycleReason.Text = $"{capabilities.Lifecycle.Reason}\r\n" +
+            $"存储类型转换：{capabilities.LifecycleStorageTransitions.Reason}\r\n" +
+            $"未完成 Multipart 清理：{capabilities.LifecycleMultipartCleanup.Reason}\r\n" +
+            "JSON 支持 prefix、tags、transitions、expirationDays、noncurrentVersionTransitions、noncurrentVersionExpirationDays 与 abortIncompleteMultipartUploadDays。";
+        SetControls(capabilities.Lifecycle.Supported,
+            _lifecycleJson, _lifecycleReload, _lifecycleValidate, _lifecycleSave, _lifecycleDelete);
+        _objectLockReason.Text = $"{capabilities.ObjectLock.Reason}\r\n此页只探测 Bucket Object Lock 与默认保留期，不修改 Bucket 配置。";
+        SetControls(capabilities.ObjectLock.Supported, _objectLockSummary, _objectLockReload);
         UpdateKmsControls();
     }
 
@@ -400,6 +451,96 @@ internal sealed partial class BucketManagementDialog
             await _storage.DeleteBucketTagsAsync(_profile, _bucket, token);
             _currentTags = [];
             ApplyTags(_currentTags);
+        });
+    }
+
+    private async Task LoadLifecycleAsync(bool force = false)
+    {
+        if (_lifecycleLoaded && !force || _properties?.Capabilities.Lifecycle.Supported != true) return;
+        await ExecuteAsync("读取 Bucket 生命周期", async token =>
+        {
+            var loaded = await _storage.GetBucketLifecycleAsync(_profile, _bucket, token);
+            _currentLifecycle = loaded;
+            _lifecycleJson.Text = BucketLifecycleDocument.Serialize(
+                loaded,
+                _properties.Capabilities.LifecycleStorageTransitions.Supported,
+                _properties.Capabilities.LifecycleMultipartCleanup.Supported);
+            _lifecycleLoaded = true;
+        });
+    }
+
+    private void ValidateAndFormatLifecycle()
+    {
+        try
+        {
+            var value = ReadLifecycle();
+            _lifecycleJson.Text = BucketLifecycleDocument.Serialize(
+                value,
+                _properties?.Capabilities.LifecycleStorageTransitions.Supported == true,
+                _properties?.Capabilities.LifecycleMultipartCleanup.Supported == true);
+        }
+        catch (Exception exception)
+        {
+            ErrorDialog.ShowException(this, "生命周期配置无效", "校验生命周期", exception, _bucket);
+        }
+    }
+
+    private BucketLifecycleConfiguration ReadLifecycle() => BucketLifecycleDocument.Parse(
+        _lifecycleJson.Text,
+        _properties?.Capabilities.LifecycleStorageTransitions.Supported == true,
+        _properties?.Capabilities.LifecycleMultipartCleanup.Supported == true);
+
+    private async Task SaveLifecycleAsync()
+    {
+        BucketLifecycleConfiguration value;
+        try { value = ReadLifecycle(); }
+        catch (Exception exception)
+        {
+            ErrorDialog.ShowException(this, "生命周期配置无效", "校验生命周期", exception, _bucket);
+            return;
+        }
+        if (value.Rules.Count == 0) { await DeleteLifecycleAsync(); return; }
+        var enabled = value.Rules.Count(rule => rule.Enabled);
+        if (!ConfirmChange(
+                "保存生命周期",
+                $"规则数：{_currentLifecycle.Rules.Count} → {value.Rules.Count}（启用 {enabled}）\r\n\r\n规则可能自动转换或永久删除对象与历史版本。")) return;
+        await ExecuteAsync("保存 Bucket 生命周期", async token =>
+        {
+            await _storage.PutBucketLifecycleAsync(_profile, _bucket, value, token);
+            _currentLifecycle = await _storage.GetBucketLifecycleAsync(_profile, _bucket, token);
+            _lifecycleJson.Text = BucketLifecycleDocument.Serialize(
+                _currentLifecycle,
+                _properties!.Capabilities.LifecycleStorageTransitions.Supported,
+                _properties.Capabilities.LifecycleMultipartCleanup.Supported);
+        });
+    }
+
+    private async Task DeleteLifecycleAsync()
+    {
+        if (!ConfirmChange(
+                "删除生命周期",
+                $"将删除当前 {_currentLifecycle.Rules.Count} 条生命周期规则；对象不会因此立即删除。")) return;
+        await ExecuteAsync("删除 Bucket 生命周期", async token =>
+        {
+            await _storage.DeleteBucketLifecycleAsync(_profile, _bucket, token);
+            _currentLifecycle = new BucketLifecycleConfiguration([]);
+            _lifecycleJson.Text = BucketLifecycleDocument.Serialize(_currentLifecycle);
+        });
+    }
+
+    private async Task LoadObjectLockAsync(bool force = false)
+    {
+        if (_objectLockLoaded && !force || _properties?.Capabilities.ObjectLock.Supported != true) return;
+        await ExecuteAsync("探测 Object Lock", async token =>
+        {
+            var value = await _storage.GetBucketObjectLockAsync(_profile, _bucket, token);
+            _objectLockSummary.Text =
+                $"Bucket：{_bucket}\r\n" +
+                $"Object Lock：{(value.Enabled ? "已启用" : "未启用")}\r\n" +
+                $"默认 Retention：{value.Summary}\r\n\r\n" +
+                "Object Lock 必须在创建 Bucket 时启用。本页不会发送启用或修改默认保留期的请求。\r\n" +
+                "对象级 Retention 与 Legal Hold 请在单个对象的属性页操作。";
+            _objectLockLoaded = true;
         });
     }
 
