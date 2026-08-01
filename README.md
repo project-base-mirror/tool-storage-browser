@@ -172,11 +172,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.6.12-win-x64.zip
-    artifacts/release/S3Explorer-v0.6.12-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.6.12.zip
-    artifacts/release/S3Explorer-v0.6.12-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.6.12-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.7.0-win-x64.zip
+    artifacts/release/S3Explorer-v0.7.0-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.7.0.zip
+    artifacts/release/S3Explorer-v0.7.0-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.7.0-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
@@ -257,7 +257,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 ## 当前限制
 
-当前仍未实现生命周期、Object Lock、应用内静默升级和托盘驻留。未支持的入口保持禁用并明确提示当前版本不支持。
+生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。应用内静默升级和托盘驻留仍未实现。
 
 CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API 或 Prefix Purge。
 
