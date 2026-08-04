@@ -873,9 +873,23 @@ public sealed class S3StorageService : IS3StorageService
         string localPath,
         string storageClass,
         TransferOperationContext transferContext,
+        CancellationToken cancellationToken) =>
+        await UploadFileAsync(
+            profile, bucket, key, localPath, storageClass, ObjectWriteHeaders.Empty,
+            transferContext, cancellationToken).ConfigureAwait(false);
+
+    public async Task UploadFileAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string localPath,
+        string storageClass,
+        ObjectWriteHeaders headers,
+        TransferOperationContext transferContext,
         CancellationToken cancellationToken)
     {
         transferContext.Options.Validate();
+        headers = headers.ValidateAndNormalize();
         var file = new FileInfo(localPath);
         if (!file.Exists)
             throw new FileNotFoundException("上传源文件不存在。", localPath);
@@ -914,13 +928,14 @@ public sealed class S3StorageService : IS3StorageService
                 var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
                 if (resolvedStorageClass is not null)
                     request.StorageClass = resolvedStorageClass;
+                ApplyWriteHeaders(request.Headers, request.Metadata, request.TagSet, headers);
                 await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
                 transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
                 return;
             }
 
             await UploadMultipartFileAsync(
-                client, bucket, key, file, storageClass, transferContext, cancellationToken)
+                client, bucket, key, file, storageClass, headers, transferContext, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1406,10 +1421,10 @@ public sealed class S3StorageService : IS3StorageService
     {
         using var client = _factory.Create(profile);
         var response = await client.GetObjectMetadataAsync(bucket, key, cancellationToken).ConfigureAwait(false);
-        var metadata = response.Metadata.Keys.ToDictionary(
+        var metadata = ObjectMetadataValidator.Validate(response.Metadata.Keys.ToDictionary(
             name => name,
             name => response.Metadata[name],
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase));
 
         return new ObjectProperties(
             bucket,
@@ -1420,7 +1435,116 @@ public sealed class S3StorageService : IS3StorageService
             response.Headers.ContentType,
             response.StorageClass?.Value,
             response.VersionId,
-            metadata);
+            metadata,
+            NullIfWhiteSpace(response.Headers.CacheControl),
+            NullIfWhiteSpace(response.Headers.ContentEncoding),
+            NullIfWhiteSpace(response.Headers.ContentDisposition),
+            response.Headers.ExpiresUtc is not { } expiresUtc
+                ? null
+                : new DateTimeOffset(DateTime.SpecifyKind(expiresUtc, DateTimeKind.Utc)));
+    }
+
+    public async Task ReplaceObjectMetadataAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        ObjectWriteHeaders headers,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).MetadataRewrite, "对象 Metadata 替换");
+        headers = headers.ValidateAndNormalize();
+        using var client = _factory.Create(profile);
+        var existing = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId)
+        }, cancellationToken).ConfigureAwait(false);
+        if (existing.ContentLength > MaximumSingleCopyBytes)
+            throw new InvalidOperationException(
+                "超过 5 GiB 的对象不能通过单次原地 Copy 替换 Metadata；请重新上传对象，避免不完整的分片复制。");
+
+        var request = new CopyObjectRequest
+        {
+            SourceBucket = bucket,
+            SourceKey = key,
+            SourceVersionId = NullIfWhiteSpace(versionId),
+            DestinationBucket = bucket,
+            DestinationKey = key,
+            MetadataDirective = S3MetadataDirective.REPLACE
+        };
+        var storageClass = S3CompatibilityPolicy.ResolveStorageClass(existing.StorageClass?.Value);
+        if (storageClass is not null)
+            request.StorageClass = storageClass;
+        ApplyWriteHeaders(request.Headers, request.Metadata, null, headers);
+        await client.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        using var client = _factory.Create(profile);
+        var response = await client.GetObjectTaggingAsync(new GetObjectTaggingRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId)
+        }, cancellationToken).ConfigureAwait(false);
+        return response.Tagging
+            .Select(tag => new ObjectTag(tag.Key, tag.Value))
+            .OrderBy(tag => tag.Key, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public async Task PutObjectTagsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        IReadOnlyCollection<ObjectTag> tags,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        var validated = ObjectTagValidator.Validate(tags);
+        if (validated.Count == 0)
+        {
+            await DeleteObjectTagsAsync(profile, bucket, key, versionId, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        using var client = _factory.Create(profile);
+        await client.PutObjectTaggingAsync(new PutObjectTaggingRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId),
+            Tagging = new Tagging
+            {
+                TagSet = validated.Select(tag => new Tag { Key = tag.Key, Value = tag.Value }).ToList()
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteObjectTagsAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken)
+    {
+        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        using var client = _factory.Create(profile);
+        await client.DeleteObjectTaggingAsync(new DeleteObjectTaggingRequest
+        {
+            BucketName = bucket,
+            Key = key,
+            VersionId = NullIfWhiteSpace(versionId)
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<ObjectLockSnapshot> GetObjectLockAsync(
@@ -1549,12 +1673,26 @@ public sealed class S3StorageService : IS3StorageService
         string key,
         FileInfo file,
         string storageClass,
+        ObjectWriteHeaders headers,
         TransferOperationContext transferContext,
         CancellationToken cancellationToken)
     {
         var partSize = transferContext.Options.PartSizeBytes;
         var modified = new DateTimeOffset(file.LastWriteTimeUtc);
         var checkpoint = transferContext.MultipartCheckpoint;
+
+        // Existing checkpoints predate Header/Metadata fingerprints. Restart a customized upload
+        // rather than resuming parts whose final object attributes cannot be proven equivalent.
+        if (checkpoint is not null && HasWriteHeaders(headers))
+        {
+            await AbortMultipartInternalAsync(
+                client,
+                string.IsNullOrWhiteSpace(checkpoint.Bucket) ? bucket : checkpoint.Bucket,
+                string.IsNullOrWhiteSpace(checkpoint.ObjectKey) ? key : checkpoint.ObjectKey,
+                checkpoint.UploadId,
+                cancellationToken).ConfigureAwait(false);
+            checkpoint = null;
+        }
 
         if (checkpoint is not null &&
             !checkpoint.Matches(bucket, key, file.Length, modified, partSize))
@@ -1599,6 +1737,7 @@ public sealed class S3StorageService : IS3StorageService
             var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
             if (resolvedStorageClass is not null)
                 request.StorageClass = resolvedStorageClass;
+            ApplyWriteHeaders(request.Headers, request.Metadata, request.TagSet, headers);
             var initiated = await client.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
             checkpoint = new MultipartUploadCheckpoint(
                 initiated.UploadId,
@@ -1758,6 +1897,34 @@ public sealed class S3StorageService : IS3StorageService
         if (!support.Supported)
             throw new NotSupportedException($"{feature} 不可用：{support.Reason}");
     }
+
+    private static void ApplyWriteHeaders(
+        HeadersCollection destinationHeaders,
+        MetadataCollection destinationMetadata,
+        List<Tag>? destinationTags,
+        ObjectWriteHeaders source)
+    {
+        destinationHeaders.ContentType = source.ContentType;
+        destinationHeaders.CacheControl = source.CacheControl;
+        destinationHeaders.ContentEncoding = source.ContentEncoding;
+        destinationHeaders.ContentDisposition = source.ContentDisposition;
+        if (source.ExpiresUtc is not null)
+            destinationHeaders.ExpiresUtc = source.ExpiresUtc.Value.UtcDateTime;
+
+        foreach (var pair in source.Metadata ?? new Dictionary<string, string>())
+            destinationMetadata.Add(pair.Key, pair.Value);
+
+        if (destinationTags is null) return;
+        destinationTags.Clear();
+        destinationTags.AddRange((source.Tags ?? [])
+            .Select(tag => new Tag { Key = tag.Key, Value = tag.Value }));
+    }
+
+    private static bool HasWriteHeaders(ObjectWriteHeaders headers) =>
+        headers.ContentType is not null || headers.CacheControl is not null ||
+        headers.ContentEncoding is not null || headers.ContentDisposition is not null ||
+        headers.ExpiresUtc is not null || headers.Metadata is { Count: > 0 } ||
+        headers.Tags is { Count: > 0 };
 
     private static bool IsMissingBucketPolicy(AmazonS3Exception exception) =>
         exception.StatusCode == HttpStatusCode.NotFound ||

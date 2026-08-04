@@ -67,7 +67,11 @@ public sealed record ObjectProperties(
     string? ContentType,
     string? StorageClass,
     string? VersionId,
-    IReadOnlyDictionary<string, string> Metadata);
+    IReadOnlyDictionary<string, string> Metadata,
+    string? CacheControl = null,
+    string? ContentEncoding = null,
+    string? ContentDisposition = null,
+    DateTimeOffset? ExpiresUtc = null);
 
 public sealed record TransferProgress(long TransferredBytes, long TotalBytes)
 {
@@ -130,6 +134,7 @@ public interface IS3StorageService
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
     Task<PagedObjectVersionResult> ListObjectVersionsAsync(ConnectionProfile profile, string bucket, string prefix, string? keyMarker, string? versionIdMarker, int pageSize, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
+    Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, ObjectWriteHeaders headers, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task PutObjectAclAsync(ConnectionProfile profile, string bucket, string key, ObjectAclMode mode, CancellationToken cancellationToken);
     Task DownloadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task DownloadObjectVersionAsync(ConnectionProfile profile, string bucket, string key, string versionId, string localPath, TransferOperationContext transfer, CancellationToken cancellationToken);
@@ -145,6 +150,10 @@ public interface IS3StorageService
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
+    Task ReplaceObjectMetadataAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectWriteHeaders headers, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
+    Task PutObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, IReadOnlyCollection<ObjectTag> tags, CancellationToken cancellationToken);
+    Task DeleteObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
     Task<ObjectLockSnapshot> GetObjectLockAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
     Task PutObjectRetentionAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectRetentionConfiguration retention, CancellationToken cancellationToken);
     Task PutObjectLegalHoldAsync(ConnectionProfile profile, string bucket, string key, string? versionId, bool enabled, CancellationToken cancellationToken);

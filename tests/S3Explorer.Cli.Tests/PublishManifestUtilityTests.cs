@@ -113,6 +113,77 @@ public sealed class PublishManifestUtilityTests
 
         Assert.NotNull(manifest);
         Assert.Equal(PublishAccessMode.Preserve, manifest.AccessMode);
+        PublishManifestUtility.ValidateManifest(manifest);
+    }
+
+    [Fact]
+    public void CreatePlanTreatsHeaderOnlyChangeAsModified()
+    {
+        var local = ManifestFile("bundle.data", 10, 'a');
+        local.Headers = new PublishObjectHeaders { CacheControl = "public,max-age=31536000,immutable" };
+        var remote = ManifestFile("bundle.data", 10, 'a');
+        remote.Headers = new PublishObjectHeaders { CacheControl = "no-cache" };
+
+        var plan = PublishManifestUtility.CreatePlan(
+            [local],
+            new PublishManifest { SchemaVersion = 2, Files = [remote] });
+
+        Assert.Equal(PublishChangeKind.Modified, Assert.Single(plan.Items).Change);
+        Assert.Equal(10, plan.UploadBytes);
+    }
+
+    [Fact]
+    public void HeaderRulesApplyDefaultsAndOrderedGlobOverlays()
+    {
+        var rules = new PublishHeaderRuleSet
+        {
+            Defaults = new PublishObjectHeaders
+            {
+                CacheControl = "public,max-age=300",
+                Metadata = new Dictionary<string, string> { ["channel"] = "stable" }
+            },
+            Rules =
+            [
+                new PublishHeaderRule
+                {
+                    Pattern = "*.json",
+                    Headers = new PublishObjectHeaders
+                    {
+                        ContentType = "application/json",
+                        CacheControl = "no-cache"
+                    }
+                },
+                new PublishHeaderRule
+                {
+                    Pattern = "config/**",
+                    Headers = new PublishObjectHeaders
+                    {
+                        Tags = new Dictionary<string, string> { ["group"] = "configuration" }
+                    }
+                }
+            ]
+        };
+
+        PublishHeaderRuleUtility.Validate(rules);
+        var resolved = Assert.IsType<PublishObjectHeaders>(
+            PublishHeaderRuleUtility.Resolve(rules, "config/runtime.json"));
+
+        Assert.Equal("application/json", resolved.ContentType);
+        Assert.Equal("no-cache", resolved.CacheControl);
+        Assert.Equal("stable", resolved.Metadata!["channel"]);
+        Assert.Equal("configuration", resolved.Tags!["group"]);
+    }
+
+    [Fact]
+    public void UnsupportedFutureManifestSchemaIsRejected()
+    {
+        var manifest = new PublishManifest
+        {
+            SchemaVersion = PublishManifest.CurrentSchemaVersion + 1,
+            Files = []
+        };
+
+        Assert.Throws<InvalidDataException>(() => PublishManifestUtility.ValidateManifest(manifest));
     }
 
     private static PublishManifestFile ManifestFile(string path, long size, char hash) =>

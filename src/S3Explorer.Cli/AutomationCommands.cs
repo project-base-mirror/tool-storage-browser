@@ -59,6 +59,7 @@ internal static class AutomationCommands
         var source = Path.GetFullPath(args.Require("source"));
         var bucket = ResolveBucket(profile, args.Optional("bucket"));
         var prefix = NormalizePrefix(args.Optional("prefix"));
+        var headerRules = await LoadHeaderRulesAsync(args.Optional("header-rules"), cancellationToken);
         var files = EnumerateSourceFiles(source);
         long bytes = 0;
         var verify = args.Flag("verify");
@@ -80,6 +81,8 @@ internal static class AutomationCommands
             }
             await storage.UploadFileAsync(
                 profile, bucket, key, file, string.Empty,
+                PublishHeaderRuleUtility.ToObjectWriteHeaders(
+                    PublishHeaderRuleUtility.Resolve(headerRules, relative)),
                 transfer.CreateContext(), token);
             if (expected is not null)
                 await CliRemoteVerifier.VerifyAsync(
@@ -142,7 +145,9 @@ internal static class AutomationCommands
             throw new CliUsageException("修改对象 ACL 必须显式提供 --yes；程序不会修改 Bucket Policy 或 Public Access Block。");
 
         var manifestPath = Path.GetFullPath(args.Optional("manifest") ?? Path.Combine(source, DefaultManifestName));
-        var localFiles = await PublishManifestUtility.ScanAsync(source, manifestPath, cancellationToken);
+        var headerRules = await LoadHeaderRulesAsync(args.Optional("header-rules"), cancellationToken);
+        var localFiles = await PublishManifestUtility.ScanAsync(
+            source, manifestPath, headerRules, cancellationToken);
         var remoteManifest = args.Flag("full")
             ? null
             : await TryDownloadManifestAsync(
@@ -187,6 +192,7 @@ internal static class AutomationCommands
                 var key = CombineKey(prefix, file.Entry.Path);
                 await storage.UploadFileAsync(
                     profile, bucket, key, file.FullPath, string.Empty,
+                    PublishHeaderRuleUtility.ToObjectWriteHeaders(file.Entry.Headers),
                     transfer.CreateContext(), token);
                 await CliRemoteVerifier.VerifyAsync(
                     storage, profile, bucket, key, file.Entry.Size, file.Entry.Sha256, transfer, token);
@@ -253,6 +259,7 @@ internal static class AutomationCommands
                 var manifestKey = CombineKey(prefix, DefaultManifestName);
                 await storage.UploadFileAsync(
                     profile, bucket, manifestKey, manifestPath, string.Empty,
+                    new ObjectWriteHeaders(ContentType: "application/json", CacheControl: "no-cache"),
                     transfer.CreateContext(), cancellationToken);
                 var manifestEntry = new PublishManifestFile
                 {
@@ -563,6 +570,13 @@ internal static class AutomationCommands
             TryDelete(temporaryPath);
         }
     }
+
+    private static async Task<PublishHeaderRuleSet?> LoadHeaderRulesAsync(
+        string? path,
+        CancellationToken cancellationToken) =>
+        string.IsNullOrWhiteSpace(path)
+            ? null
+            : await PublishHeaderRuleUtility.LoadAsync(path, cancellationToken).ConfigureAwait(false);
 
     private static async Task<PublishManifest> ReadManifestAsync(
         string path,

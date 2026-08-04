@@ -45,6 +45,30 @@ internal sealed record ProviderMatrixCase(
     {
         string? Read(string name) => Environment.GetEnvironmentVariable($"{EnvironmentPrefix}_{name}");
 
+        var storedProfileName = Environment.GetEnvironmentVariable("S3EXPLORER_MATRIX_PROFILE")?.Trim();
+        if (!string.IsNullOrWhiteSpace(storedProfileName))
+        {
+            var profiles = new JsonProfileStore(new DpapiCredentialProtector())
+                .LoadAsync().GetAwaiter().GetResult();
+            var stored = profiles.SingleOrDefault(profile =>
+                string.Equals(profile.Name, storedProfileName, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException($"未找到矩阵测试连接：{storedProfileName}");
+            if (stored.ServiceType != ServiceType)
+                throw new InvalidOperationException(
+                    $"矩阵测试连接 {storedProfileName} 的类型是 {stored.ServiceType}，预期 {ServiceType}。");
+            return new ProviderMatrixConfiguration(
+                this,
+                true,
+                stored.Endpoint,
+                stored.Region,
+                stored.AccessKey,
+                stored.SecretKey,
+                stored.SessionToken,
+                stored.IgnoreCertificateErrors,
+                stored.DefaultBucket,
+                stored);
+        }
+
         var endpoint = Read("ENDPOINT");
         var accessKey = Read("ACCESS_KEY");
         var secretKey = Read("SECRET_KEY");
@@ -74,7 +98,8 @@ internal sealed record ProviderMatrixCase(
             secretKey ?? string.Empty,
             Read("SESSION_TOKEN") ?? string.Empty,
             bool.TryParse(Read("IGNORE_CERTIFICATE_ERRORS"), out var ignoreCertificateErrors) && ignoreCertificateErrors,
-            Read("KNOWN_BUCKET"));
+            Read("KNOWN_BUCKET"),
+            null);
     }
 }
 
@@ -87,10 +112,11 @@ internal sealed record ProviderMatrixConfiguration(
     string SecretKey,
     string SessionToken,
     bool IgnoreCertificateErrors,
-    string? KnownBucket)
+    string? KnownBucket,
+    ConnectionProfile? StoredProfile)
 {
     public ConnectionProfile CreateProfile(bool enableMultiObjectDelete = true, bool enableMultipartCopy = true) =>
-        new()
+        (StoredProfile ?? new ConnectionProfile
         {
             Name = $"Matrix {Case.DisplayName}",
             ServiceType = Case.ServiceType,
@@ -102,7 +128,9 @@ internal sealed record ProviderMatrixConfiguration(
             SessionToken = SessionToken,
             AddressingStyle = Case.AddressingStyle,
             UseHttps = Endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase),
-            IgnoreCertificateErrors = IgnoreCertificateErrors,
+            IgnoreCertificateErrors = IgnoreCertificateErrors
+        }) with
+        {
             EnableMultiObjectDelete = enableMultiObjectDelete,
             EnableMultipartCopy = enableMultipartCopy
         };

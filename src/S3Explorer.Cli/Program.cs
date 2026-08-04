@@ -197,11 +197,11 @@ internal static class Program
             ["name", "local", "remote", "direction", "exclude", "new-only", "changed-only", "delete", "hash"],
             ("sync", "run") => ["yes", .. TransferOptions],
             ("sync", "delete") => ["yes"],
-            ("upload", _) => ["profile", "source", "bucket", "prefix", "verify", .. TransferOptions],
+            ("upload", _) => ["profile", "source", "bucket", "prefix", "verify", "header-rules", .. TransferOptions],
             ("publish", _) =>
             [
                 "profile", "source", "bucket", "prefix", "project", "product", "version", "manifest",
-                "delete-mode", "access", "full", "dry-run", "cdn-profile", "warmup", "yes", .. TransferOptions
+                "header-rules", "delete-mode", "access", "full", "dry-run", "cdn-profile", "warmup", "yes", .. TransferOptions
             ],
             ("verify", _) => ["manifest", "profile", "bucket", "prefix", .. TransferOptions],
             ("cdn", "test" or "warmup" or "cache-test") => ["profile", "path", "manifest", "prefix", "include-manifest"],
@@ -1103,7 +1103,8 @@ internal static class Program
           s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>] [--verify]
           s3explorer-cli publish --profile <name> --source <folder> --bucket <bucket> --prefix <version-prefix>
               [--project <name> --product <platform> --version <version>] [--manifest <path>]
-              [--delete-mode none] [--access preserve|anonymous-read|private] [--full] [--dry-run]
+              [--header-rules <json-file>] [--delete-mode none] [--access preserve|anonymous-read|private]
+              [--full] [--dry-run]
               [--cdn-profile <name> --warmup]
           s3explorer-cli verify --manifest <publish-manifest.json> [--profile <name>] [--bucket <bucket>] [--prefix <prefix>]
           s3explorer-cli cdn test --profile <cdn-name> (--path <path> | --manifest <file>)
@@ -1161,6 +1162,7 @@ internal sealed class CliArguments
         "default-bucket", "direction", "local", "remote",
         "exclude", "page-size", "key-marker", "version-id-marker", "version-id", "source",
         "project", "product", "version", "manifest", "delete-mode", "access", "cdn-profile", "path",
+        "header-rules",
         "transfers", "multipart-concurrency", "upload-limit", "download-limit",
         "multipart-threshold", "part-size"
     };

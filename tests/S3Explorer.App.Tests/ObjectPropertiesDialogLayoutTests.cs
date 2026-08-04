@@ -50,8 +50,38 @@ public sealed class ObjectPropertiesDialogLayoutTests
             AssertButtonIsReadable(dialog, "SaveObjectRetentionButton");
             AssertButtonIsReadable(dialog, "SaveObjectLegalHoldButton");
             AssertButtonIsReadable(dialog, "ReloadObjectLockButton");
+            AssertButtonIsReadable(dialog, "SaveObjectMetadataButton");
+            AssertButtonIsReadable(dialog, "ReloadObjectTagsButton");
+            AssertButtonIsReadable(dialog, "SaveObjectTagsButton");
+            AssertButtonIsReadable(dialog, "DeleteObjectTagsButton");
+            Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid"));
+            Assert.IsType<DataGridView>(Find(dialog, "ObjectTagsGrid"));
+            var tabs = Assert.Single(dialog.Controls.Cast<Control>().SelectMany(Flatten).OfType<TabControl>());
+            Assert.Contains(tabs.TabPages.Cast<TabPage>(), page => page.Text == "Tags");
             Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ObjectRetentionAuthorization")).Checked);
             Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ObjectLegalHoldAuthorization")).Checked);
+        });
+    }
+
+    [Fact]
+    public void BatchMetadataDialogKeepsExplicitApplyControlsAndCostWarning()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ObjectMetadataBatchDialog(12);
+            dialog.Size = dialog.MinimumSize;
+            dialog.Show();
+            Application.DoEvents();
+            PerformLayout(dialog);
+
+            Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ApplyBatchcachecontrol")).Checked);
+            Assert.False(Assert.IsType<TextBox>(Find(dialog, "Batchcachecontrol")).Enabled);
+            Assert.False(Assert.IsType<CheckBox>(Find(dialog, "ReplaceBatchObjectMetadata")).Checked);
+            AssertButtonIsReadable(dialog, "ApplyBatchObjectMetadataButton");
+            AssertButtonIsReadable(dialog, "CancelBatchObjectMetadataButton");
+            Assert.Contains(
+                dialog.Controls.Cast<Control>().SelectMany(Flatten).OfType<Label>(),
+                label => label.Text.Contains("请求费", StringComparison.Ordinal));
         });
     }
 
@@ -96,6 +126,15 @@ public sealed class ObjectPropertiesDialogLayoutTests
 
     private static Control Find(Control root, string name) =>
         Assert.Single(root.Controls.Find(name, searchAllChildren: true));
+
+    private static IEnumerable<Control> Flatten(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Flatten(child)) yield return descendant;
+        }
+    }
 
     private static Button AssertButtonIsReadable(Form dialog, string name)
     {

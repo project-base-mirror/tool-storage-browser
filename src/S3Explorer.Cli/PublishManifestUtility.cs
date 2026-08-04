@@ -12,6 +12,13 @@ public static class PublishManifestUtility
         string sourceDirectory,
         string manifestPath,
         CancellationToken cancellationToken = default)
+        => await ScanAsync(sourceDirectory, manifestPath, null, cancellationToken).ConfigureAwait(false);
+
+    public static async Task<IReadOnlyList<LocalPublishFile>> ScanAsync(
+        string sourceDirectory,
+        string manifestPath,
+        PublishHeaderRuleSet? headerRules,
+        CancellationToken cancellationToken = default)
     {
         sourceDirectory = Path.GetFullPath(sourceDirectory);
         manifestPath = Path.GetFullPath(manifestPath);
@@ -39,7 +46,8 @@ public static class PublishManifestUtility
                 {
                     Path = relative,
                     Size = info.Length,
-                    Sha256 = await ComputeSha256Async(path, cancellationToken)
+                    Sha256 = await ComputeSha256Async(path, cancellationToken),
+                    Headers = PublishHeaderRuleUtility.Resolve(headerRules, relative)
                 }));
         }
         return results;
@@ -59,7 +67,8 @@ public static class PublishManifestUtility
             var change = !remote.TryGetValue(file.Path, out var existing)
                 ? PublishChangeKind.New
                 : existing.Size == file.Size &&
-                  string.Equals(existing.Sha256, file.Sha256, StringComparison.OrdinalIgnoreCase)
+                  string.Equals(existing.Sha256, file.Sha256, StringComparison.OrdinalIgnoreCase) &&
+                  HeadersEquivalent(existing.Headers, file.Headers)
                     ? PublishChangeKind.Unchanged
                     : PublishChangeKind.Modified;
             plan.Items.Add(new PublishPlanItem
@@ -67,6 +76,7 @@ public static class PublishManifestUtility
                 Path = file.Path,
                 Size = file.Size,
                 Sha256 = file.Sha256,
+                Headers = file.Headers,
                 Change = change
             });
             switch (change)
@@ -90,7 +100,7 @@ public static class PublishManifestUtility
     public static void ValidateManifest(PublishManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        if (manifest.SchemaVersion != PublishManifest.CurrentSchemaVersion)
+        if (!ContractCompatibility.SupportsManifestSchemaVersion(manifest.SchemaVersion))
             throw new InvalidDataException($"不支持的发布 Manifest 版本：{manifest.SchemaVersion}。");
         if (manifest.Files is null)
             throw new InvalidDataException("发布 Manifest 的 files 不能为空。");
@@ -163,5 +173,42 @@ public static class PublishManifestUtility
         if (file.Size < 0) throw new InvalidDataException($"发布文件大小无效：{file.Path}");
         if (file.Sha256.Length != 64 || file.Sha256.Any(value => !Uri.IsHexDigit(value)))
             throw new InvalidDataException($"发布文件 SHA-256 无效：{file.Path}");
+        _ = PublishHeaderRuleUtility.ToObjectWriteHeaders(file.Headers);
+    }
+
+    private static bool HeadersEquivalent(PublishObjectHeaders? left, PublishObjectHeaders? right)
+    {
+        var normalizedLeft = PublishHeaderRuleUtility.ToObjectWriteHeaders(left);
+        var normalizedRight = PublishHeaderRuleUtility.ToObjectWriteHeaders(right);
+        return string.Equals(normalizedLeft.ContentType, normalizedRight.ContentType, StringComparison.Ordinal) &&
+               string.Equals(normalizedLeft.CacheControl, normalizedRight.CacheControl, StringComparison.Ordinal) &&
+               string.Equals(normalizedLeft.ContentEncoding, normalizedRight.ContentEncoding, StringComparison.Ordinal) &&
+               string.Equals(normalizedLeft.ContentDisposition, normalizedRight.ContentDisposition, StringComparison.Ordinal) &&
+               normalizedLeft.ExpiresUtc == normalizedRight.ExpiresUtc &&
+               DictionariesEqual(normalizedLeft.Metadata, normalizedRight.Metadata, StringComparer.OrdinalIgnoreCase) &&
+               TagsEqual(normalizedLeft.Tags, normalizedRight.Tags);
+    }
+
+    private static bool DictionariesEqual(
+        IReadOnlyDictionary<string, string>? left,
+        IReadOnlyDictionary<string, string>? right,
+        StringComparer keyComparer)
+    {
+        left ??= new Dictionary<string, string>();
+        right ??= new Dictionary<string, string>();
+        if (left.Count != right.Count) return false;
+        var lookup = new Dictionary<string, string>(right, keyComparer);
+        return left.All(pair => lookup.TryGetValue(pair.Key, out var value) &&
+                                string.Equals(pair.Value, value, StringComparison.Ordinal));
+    }
+
+    private static bool TagsEqual(IReadOnlyList<ObjectTag>? left, IReadOnlyList<ObjectTag>? right)
+    {
+        left ??= [];
+        right ??= [];
+        if (left.Count != right.Count) return false;
+        var lookup = right.ToDictionary(tag => tag.Key, tag => tag.Value, StringComparer.Ordinal);
+        return left.All(tag => lookup.TryGetValue(tag.Key, out var value) &&
+                               string.Equals(tag.Value, value, StringComparison.Ordinal));
     }
 }

@@ -265,6 +265,7 @@ internal sealed partial class MainForm : Form
         objects.DropDownItems.Add(Command("delete-object-menu", "删除", async (_, _) => await DeleteSelectedAsync()));
         objects.DropDownItems.Add(Command("properties-menu", "属性...", async (_, _) => await ShowPropertiesAsync()));
         objects.DropDownItems.Add(Command("metadata", "Metadata...", async (_, _) => await ShowPropertiesAsync()));
+        objects.DropDownItems.Add(Command("batch-metadata", "批量 Header / Metadata...", async (_, _) => await EditBatchMetadataAsync()));
         foreach (var text in new[] { "权限...", "更改存储类型...", "公开访问", "取消公开访问" })
             objects.DropDownItems.Add(Unsupported(text));
         objects.DropDownItems.Add(Command("object-versions", "查看 / 恢复历史版本...", async (_, _) => await ShowObjectVersionsAsync(true)));
@@ -460,6 +461,7 @@ internal sealed partial class MainForm : Form
         _objectMenu.Items.Add("删除", UiIcons.Create(UiIconKind.Delete, 16), async (_, _) => await DeleteSelectedAsync());
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add("属性...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowPropertiesAsync());
+        _objectMenu.Items.Add("批量 Header / Metadata...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await EditBatchMetadataAsync());
         _objectMenu.Items.Add("查看 / 恢复历史版本...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowObjectVersionsAsync(true));
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add(BuildObjectCdnContextMenu());
@@ -2655,6 +2657,66 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    private async Task EditBatchMetadataAsync()
+    {
+        if (!EnsureLocation()) return;
+        var selected = SelectedEntries().Where(entry => !entry.IsDirectory).ToArray();
+        if (selected.Length == 0) return;
+        var capability = ObjectCapabilityMatrix.For(_currentProfile!.ServiceType).MetadataRewrite;
+        if (!capability.Supported)
+        {
+            MessageBox.Show(this, capability.Reason, "批量 Header / Metadata", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new ObjectMetadataBatchDialog(selected.Length);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (MessageBox.Show(
+                this,
+                $"确定对 {selected.Length:N0} 个对象逐个执行原地 Copy 吗？\r\n\r\n" +
+                "这可能产生请求费和新对象版本；失败对象会单独报告，不会回滚已成功对象。",
+                "确认批量 Header / Metadata",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+        var failures = new List<string>();
+        var succeeded = 0;
+        SetBusy($"正在更新 {selected.Length:N0} 个对象的 Header / Metadata...");
+        try
+        {
+            foreach (var entry in selected)
+            {
+                try
+                {
+                    var current = await _storage.GetObjectPropertiesAsync(
+                        _currentProfile, _currentBucket!, entry.Key, CancellationToken.None);
+                    var headers = dialog.ApplyTo(current);
+                    await _storage.ReplaceObjectMetadataAsync(
+                        _currentProfile, _currentBucket!, entry.Key, current.VersionId,
+                        headers, CancellationToken.None);
+                    succeeded++;
+                }
+                catch (Exception exception)
+                {
+                    failures.Add($"{entry.Key}: {SensitiveDataRedactor.Redact(exception.Message)}");
+                }
+            }
+        }
+        finally { SetIdle(); }
+
+        if (failures.Count == 0)
+            MessageBox.Show(this, $"已更新 {succeeded:N0} 个对象。", "批量 Header / Metadata");
+        else
+            MessageBox.Show(
+                this,
+                $"成功 {succeeded:N0}，失败 {failures.Count:N0}。\r\n\r\n{string.Join("\r\n", failures.Take(10))}",
+                "批量 Header / Metadata",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        await RefreshAsync();
+    }
+
     private void ShowPresignedUrl()
     {
         if (!EnsureLocation()) return;
@@ -3109,6 +3171,7 @@ internal sealed partial class MainForm : Form
         SetEnabled("properties-menu", oneFile);
         SetEnabled("properties-toolbar", oneFile);
         SetEnabled("metadata", oneFile);
+        SetEnabled("batch-metadata", selected.Any(entry => !entry.IsDirectory));
         SetEnabled("presign", oneFile);
         SetEnabled("copy-path", any);
         SetEnabled("copy-url", any);

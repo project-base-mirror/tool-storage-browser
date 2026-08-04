@@ -62,7 +62,17 @@ public sealed class ProviderMatrixIntegrationTests
 
             var specialKey = Key("folder/中文 space+%.txt");
             keys.Add(specialKey);
-            await service.UploadFileAsync(profile, bucket, specialKey, source, "STANDARD", CreateTransferContext(), CancellationToken.None);
+            var objectCapabilities = ObjectCapabilityMatrix.For(profile.ServiceType);
+            var uploadHeaders = new ObjectWriteHeaders(
+                ContentType: "text/plain",
+                CacheControl: "no-cache",
+                Metadata: new Dictionary<string, string> { ["matrix"] = "initial" },
+                Tags: objectCapabilities.Tagging.Supported
+                    ? [new ObjectTag("suite", "provider-matrix")]
+                    : []);
+            await service.UploadFileAsync(
+                profile, bucket, specialKey, source, "STANDARD", uploadHeaders,
+                CreateTransferContext(), CancellationToken.None);
 
             var page = await service.ListObjectsAsync(profile, bucket, prefix + "folder/", null, 1, CancellationToken.None);
             var allItems = new List<S3ObjectEntry>(page.Items);
@@ -79,6 +89,34 @@ public sealed class ProviderMatrixIntegrationTests
 
             var properties = await service.GetObjectPropertiesAsync(profile, bucket, specialKey, CancellationToken.None);
             Assert.Equal("S3 Explorer provider matrix".Length, properties.Size);
+            Assert.Equal("text/plain", properties.ContentType);
+            Assert.Equal("no-cache", properties.CacheControl);
+            Assert.Equal("initial", properties.Metadata["matrix"]);
+            if (objectCapabilities.Tagging.Supported)
+            {
+                var objectTags = await service.GetObjectTagsAsync(
+                    profile, bucket, specialKey, properties.VersionId, CancellationToken.None);
+                Assert.Contains(objectTags, tag => tag.Key == "suite" && tag.Value == "provider-matrix");
+            }
+            if (objectCapabilities.MetadataRewrite.Supported)
+            {
+                await service.ReplaceObjectMetadataAsync(
+                    profile, bucket, specialKey, properties.VersionId,
+                    new ObjectWriteHeaders(
+                        ContentType: "text/plain",
+                        CacheControl: "public,max-age=60",
+                        Metadata: new Dictionary<string, string> { ["matrix"] = "rewritten" }),
+                    CancellationToken.None);
+                properties = await service.GetObjectPropertiesAsync(
+                    profile, bucket, specialKey, CancellationToken.None);
+                Assert.Equal("public,max-age=60", properties.CacheControl?.Replace(" ", string.Empty, StringComparison.Ordinal));
+                Assert.Equal("rewritten", properties.Metadata["matrix"]);
+                if (objectCapabilities.Tagging.Supported)
+                    Assert.Contains(
+                        await service.GetObjectTagsAsync(
+                            profile, bucket, specialKey, properties.VersionId, CancellationToken.None),
+                        tag => tag.Key == "suite" && tag.Value == "provider-matrix");
+            }
 
             var url = service.CreatePresignedUrl(profile, bucket, specialKey, TimeSpan.FromMinutes(5));
             Assert.StartsWith("http", url, StringComparison.OrdinalIgnoreCase);
@@ -114,10 +152,17 @@ public sealed class ProviderMatrixIntegrationTests
             var multipartKey = Key("multipart/large.bin");
             keys.Add(multipartKey);
             await service.UploadFileAsync(
-                profile, bucket, multipartKey, multipartSource, "STANDARD", CreateTransferContext(), CancellationToken.None);
+                profile, bucket, multipartKey, multipartSource, "STANDARD",
+                new ObjectWriteHeaders(
+                    ContentType: "application/octet-stream",
+                    CacheControl: "public,max-age=120",
+                    Metadata: new Dictionary<string, string> { ["matrix"] = "multipart" }),
+                CreateTransferContext(), CancellationToken.None);
             var multipartProperties = await service.GetObjectPropertiesAsync(
                 profile, bucket, multipartKey, CancellationToken.None);
             Assert.Equal(new FileInfo(multipartSource).Length, multipartProperties.Size);
+            Assert.Equal("public,max-age=120", multipartProperties.CacheControl?.Replace(" ", string.Empty, StringComparison.Ordinal));
+            Assert.Equal("multipart", multipartProperties.Metadata["matrix"]);
 
             await service.DeleteObjectsAsync(profile, bucket, keys.ToArray(), CancellationToken.None);
             keys.Clear();

@@ -35,7 +35,7 @@ internal sealed partial class ObjectPropertiesDialog : Form
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneral(properties, endpoint, presignedUrl));
         tabs.TabPages.Add(BuildMetadata(properties));
-        foreach (var name in new[] { "权限", "版本", "Tags" })
+        foreach (var name in new[] { "权限", "版本" })
         {
             var page = new TabPage(name);
             page.Controls.Add(new Label
@@ -47,9 +47,12 @@ internal sealed partial class ObjectPropertiesDialog : Form
             });
             tabs.TabPages.Add(page);
         }
+        tabs.TabPages.Add(BuildTags(properties));
         tabs.TabPages.Add(BuildObjectLock(properties));
         tabs.SelectedIndexChanged += async (_, _) =>
         {
+            if (string.Equals(tabs.SelectedTab?.Text, "Tags", StringComparison.Ordinal))
+                await LoadObjectTagsAsync();
             if (string.Equals(tabs.SelectedTab?.Text, "Object Lock", StringComparison.Ordinal))
                 await LoadObjectLockAsync();
         };
@@ -121,6 +124,10 @@ internal sealed partial class ObjectPropertiesDialog : Form
             ("Last Modified", value.LastModified?.LocalDateTime.ToString("G") ?? "—"),
             ("ETag", value.ETag ?? "—"),
             ("Content-Type", value.ContentType ?? "—"),
+            ("Cache-Control", value.CacheControl ?? "—"),
+            ("Content-Encoding", value.ContentEncoding ?? "—"),
+            ("Content-Disposition", value.ContentDisposition ?? "—"),
+            ("Expires", value.ExpiresUtc?.LocalDateTime.ToString("G") ?? "—"),
             ("Storage Class", value.StorageClass ?? "—"),
             ("Version ID", value.VersionId ?? "—"),
             ("预签名 URL", presignedUrl is null ? "未生成" : "已生成（出于安全考虑不在日志中记录）")
@@ -154,24 +161,6 @@ internal sealed partial class ObjectPropertiesDialog : Form
             table.Controls.Add(box, 1, row);
         }
         page.Controls.Add(table);
-        return page;
-    }
-
-    private static TabPage BuildMetadata(ObjectProperties value)
-    {
-        var page = new TabPage("Metadata");
-        var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = true };
-        list.Columns.Add("名称", 260);
-        list.Columns.Add("值", 390);
-        foreach (var pair in value.Metadata.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
-        {
-            var item = new ListViewItem(pair.Key);
-            item.SubItems.Add(pair.Value);
-            list.Items.Add(item);
-        }
-        if (list.Items.Count == 0)
-            list.Items.Add(new ListViewItem("(无自定义 Metadata)") { ForeColor = SystemColors.GrayText });
-        page.Controls.Add(list);
         return page;
     }
 

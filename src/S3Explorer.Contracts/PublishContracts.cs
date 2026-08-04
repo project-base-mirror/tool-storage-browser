@@ -62,7 +62,7 @@ public enum PublishAccessMode
 /// <summary>A versioned manifest shared by the CLI, Unity Editor and game runtime.</summary>
 public sealed class PublishManifest
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public string Project { get; set; } = string.Empty;
@@ -82,6 +82,36 @@ public sealed class PublishManifestFile
     public string Path { get; set; } = string.Empty;
     public long Size { get; set; }
     public string Sha256 { get; set; } = string.Empty;
+    public PublishObjectHeaders? Headers { get; set; }
+}
+
+/// <summary>HTTP headers and user-defined metadata that must be applied to one published object.</summary>
+public sealed class PublishObjectHeaders
+{
+    public string? ContentType { get; set; }
+    public string? CacheControl { get; set; }
+    public string? ContentEncoding { get; set; }
+    public string? ContentDisposition { get; set; }
+    public DateTimeOffset? ExpiresUtc { get; set; }
+    public Dictionary<string, string>? Metadata { get; set; }
+    public Dictionary<string, string>? Tags { get; set; }
+}
+
+/// <summary>Versioned Header rules consumed by CLI and Unity publish integrations.</summary>
+public sealed class PublishHeaderRuleSet
+{
+    public const int CurrentSchemaVersion = 1;
+
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+    public PublishObjectHeaders? Defaults { get; set; }
+    public List<PublishHeaderRule> Rules { get; set; } = new List<PublishHeaderRule>();
+}
+
+/// <summary>A glob-scoped overlay applied after the default publish headers.</summary>
+public sealed class PublishHeaderRule
+{
+    public string Pattern { get; set; } = string.Empty;
+    public PublishObjectHeaders Headers { get; set; } = new PublishObjectHeaders();
 }
 
 /// <summary>One file in a publish preview.</summary>
@@ -90,6 +120,7 @@ public sealed class PublishPlanItem
     public string Path { get; set; } = string.Empty;
     public long Size { get; set; }
     public string Sha256 { get; set; } = string.Empty;
+    public PublishObjectHeaders? Headers { get; set; }
     public PublishChangeKind Change { get; set; }
 }
 
