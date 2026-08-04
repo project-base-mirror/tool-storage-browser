@@ -313,7 +313,7 @@
 - Object Lock 状态只读探测；Retention/Legal Hold 操作单独授权、逐对象确认。
 - 规则冲突、非法天数和 Provider 不支持在本地验证阶段阻止提交。
 
-候选状态（2026-08-01）：生命周期 Core 模型、AWS SDK 映射、JSON 编辑器、保存后回读校验、Bucket Object Lock 只读探测，以及对象 Retention/Legal Hold 双授权与逐对象确认已完成。隔离 MinIO 真实验证确认对象过期和非当前版本规则可回读，并将该版本不可靠的存储分层转换与 Multipart 生命周期清理作为本地禁用子能力。
+发布状态（2026-08-04）：生命周期 Core 模型、AWS SDK 映射、JSON 编辑器、保存后回读校验、Bucket Object Lock 只读探测，以及对象 Retention/Legal Hold 双授权与逐对象确认已完成并进入 v0.7.0 正式发布。隔离 MinIO 真实验证确认对象过期和非当前版本规则可回读，并将该版本不可靠的存储分层转换与 Multipart 生命周期清理作为本地禁用子能力。
 
 ### v0.7.1 对象元数据与发布
 

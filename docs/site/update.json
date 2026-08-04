@@ -11,5 +11,5 @@
     "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.0/S3Explorer-v0.7.0-win-x64-setup.msi"
   },
   "notes": "生命周期与 Object Lock：新增规则本地验证、Provider 子能力门禁和保存后回读；Bucket 锁状态只读探测，对象 Retention 与 Legal Hold 使用独立授权和逐对象确认。",
-  "publishedAt": "2026-08-01T13:11:47+08:00"
+  "publishedAt": "2026-08-04T22:34:17+08:00"
 }
