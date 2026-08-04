@@ -29,6 +29,36 @@ Unity 或构建脚本通过 `Process` 启动 CLI，并读取 `--output json` 的
 s3explorer-cli publish --profile minio-dev --source D:\Build\Windows --bucket game-builds --prefix windows/1.2.3 --project game --product windows --version 1.2.3 --output json --non-interactive --yes
 ```
 
+需要统一 CDN 缓存、Content-Type、自定义 Metadata 或 Object Tags 时，增加 `--header-rules <json-file>`。规则按顺序叠加，未包含 `/` 的 pattern 匹配任意目录中的文件名：
+
+```json
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "cacheControl": "public,max-age=300",
+    "metadata": { "channel": "stable" }
+  },
+  "rules": [
+    {
+      "pattern": "*.json",
+      "headers": {
+        "contentType": "application/json",
+        "cacheControl": "no-cache"
+      }
+    },
+    {
+      "pattern": "bundles/**",
+      "headers": {
+        "cacheControl": "public,max-age=31536000,immutable",
+        "tags": { "content": "bundle" }
+      }
+    }
+  ]
+}
+```
+
+最终生效的 Header、Metadata 与 Tags 会写入 Manifest Schema 2。增量计划同时比较文件 Size、SHA-256 和这些对象属性；只改缓存规则也会把对象标记为 `Modified`。Schema 1 Manifest 仍可读取，但需要解析 Schema 2 远端 Manifest 的 Unity 工具应更新 v0.7.1 Contracts DTO。
+
 Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥仍由 S3 Explorer 在 Windows 用户配置目录中保存并通过 DPAPI 保护，不应写入 Unity 工程、命令行或日志。
 
 ## CDN 匿名读取与缓存探测
@@ -49,4 +79,4 @@ CDN 配置完成后，可对同一路径连续发送两次 HEAD 请求并查看�
 
 Contracts DLL 和 CLI 不再要求产品版本完全一致。Unity 插件应先运行 `s3explorer-cli version --output json`，读取 `contractApiVersion`、`minimumSupportedContractApiVersion`、`maximumSupportedContractApiVersion` 以及 Manifest Schema 范围；只要插件使用的 Contract API 与 Manifest Schema 都落在 CLI 返回范围内即可继续。`version` 字段仅用于诊断和展示，不能作为拒绝运行的依据。
 
-当前 Contract API 和 Manifest Schema 都是 `1`。从 v0.6.7 开始，`S3Explorer.Contracts.dll` 的程序集 ABI 版本固定为 `1.0.0.0`，文件版本仍跟随产品版本；只有破坏兼容性的契约升级才会改变 ABI 主版本。旧插件需要一次性改为上述范围判断，此后普通补丁升级不再要求同步 DLL。
+当前 Contract API 为 `1`，Manifest Schema 当前版本为 `2`，CLI 仍支持读取 Schema `1`。从 v0.6.7 开始，`S3Explorer.Contracts.dll` 的程序集 ABI 版本固定为 `1.0.0.0`，文件版本仍跟随产品版本；只有破坏兼容性的契约升级才会改变 ABI 主版本。旧插件需要一次性改为上述范围判断；若插件需要读取 Schema 2 新增的对象属性，应更新 v0.7.1 Contracts DLL。

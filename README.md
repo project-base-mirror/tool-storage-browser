@@ -15,7 +15,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - Bucket 创建、空 Bucket 删除和对象分页浏览。
 - 文件/文件夹上传、下载、复制、移动、重命名和批量删除。
 - 大文件 multipart upload、传输队列、取消与失败状态。
-- 对象属性、Metadata、预签名下载 URL。
+- 对象属性、可编辑 Header/Metadata、Object Tags、批量 Metadata 重写和预签名下载 URL。
 - WinForms 主窗口、连接管理、设置、日志和错误详情。
 - 当前列表过滤、导航历史、布局与列设置持久化。
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
@@ -119,13 +119,13 @@ AWS shared credentials/config、环境变量与角色凭据的选择、诊断、
 面向 Unity、CI 和构建机的发布命令只接收 Profile ID/名称，不接收或保存长期密钥：
 
     s3explorer-cli upload --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --transfers 4 --upload-limit 0 --verify --output json --non-interactive
-    s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --access preserve --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
+    s3explorer-cli publish --profile "minio-dev" --source "D:\Build\Android" --bucket "game-survival" --prefix "android/1.2.3/" --project "game-survival" --product android --version 1.2.3 --header-rules "D:\Build\publish-headers.json" --access preserve --cdn-profile "cdn-dev" --warmup --output json --non-interactive --yes
     s3explorer-cli verify --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
     s3explorer-cli cdn test --profile "cdn-dev" --path "android/1.2.3/config.bytes" --output json --non-interactive
     s3explorer-cli cdn cache-test --profile "cdn-dev" --path "game-survival/android/1.2.3/config.bytes" --output json --non-interactive
     s3explorer-cli cdn warmup --profile "cdn-dev" --manifest "D:\Build\Android\publish-manifest.json" --output json --non-interactive
 
-`publish` 会扫描本地产物并计算 SHA-256，与远程 Manifest 比较，只上传新增和变化文件；每个对象上传后都会下载验证 Size/SHA-256，最终 `publish-manifest.json` 仅在文件全部成功时最后上传。默认只支持 `--delete-mode none`，版本目录不会被自动删除。`--dry-run` 可只输出变更计划，`--full` 可忽略远程 Manifest 重新上传全部文件。
+`publish` 会扫描本地产物并计算 SHA-256，与远程 Manifest 比较，只上传新增和变化文件；每个对象上传后都会下载验证 Size/SHA-256，最终 `publish-manifest.json` 仅在文件全部成功时最后上传。可选 `--header-rules <json-file>` 按默认值和 glob 规则设置 Content-Type、Cache-Control、Content-Encoding、Content-Disposition、Expires、自定义 Metadata 与 Tags；最终生效值写入 Manifest Schema 2，因此文件内容未变但 Header 规则变化时也会重新上传。默认只支持 `--delete-mode none`，版本目录不会被自动删除。`--dry-run` 可只输出变更计划，`--full` 可忽略远程 Manifest 重新上传全部文件。
 
 默认 `--access preserve` 不改变对象 ACL。CDN 使用匿名源站时可显式指定 `--access anonymous-read --yes`，它只设置当前 Manifest 对象与 Manifest 本身的对象级 `public-read`；不会修改 Bucket Policy 或 Public Access Block。`--access private --yes` 可恢复这些对象的私有 ACL。`cdn cache-test` 会对同一 URL 连续发送两次 HEAD 请求并分别输出缓存 Header。
 
@@ -172,11 +172,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 脚本默认执行 restore、全量测试和 Release 构建，然后生成：
 
-    artifacts/release/S3Explorer-v0.7.0-win-x64.zip
-    artifacts/release/S3Explorer-v0.7.0-win-x64-self-contained.zip
-    artifacts/release/S3Explorer.Contracts-v0.7.0.zip
-    artifacts/release/S3Explorer-v0.7.0-win-x64-setup.msi
-    artifacts/release/S3Explorer-v0.7.0-win-x64-framework-dependent-setup.msi
+    artifacts/release/S3Explorer-v0.7.1-win-x64.zip
+    artifacts/release/S3Explorer-v0.7.1-win-x64-self-contained.zip
+    artifacts/release/S3Explorer.Contracts-v0.7.1.zip
+    artifacts/release/S3Explorer-v0.7.1-win-x64-setup.msi
+    artifacts/release/S3Explorer-v0.7.1-win-x64-framework-dependent-setup.msi
     artifacts/release/release-metrics.json
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。

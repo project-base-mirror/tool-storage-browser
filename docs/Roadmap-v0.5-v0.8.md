@@ -317,10 +317,12 @@
 
 ### v0.7.1 对象元数据与发布
 
-- Object Tagging、批量 Metadata/Header、Content-Type 映射与默认 Header 规则。
-- 存储类型变更和服务端复制重写；显示请求成本与跨区域风险提示。
-- 高级 URL 生成器：过期时间、响应 Header、虚拟主机/路径样式；不把签名 URL 写入日志。
-- 静态网站配置与站点 URL，仅对支持 Website API 的 Provider 开放。
+- Object Tagging、单对象与批量 Metadata/Header、服务端原地 Copy 重写。
+- CLI/Unity 发布增加默认值与 glob Header 规则，覆盖 Content-Type、缓存 Header、自定义 Metadata 与 Tags。
+- Manifest Schema 2 记录最终对象属性；内容未变但规则变化时仍进入增量上传。
+- UI 在批量原地 Copy 前显示请求成本、新版本和 Provider Copy 风险；超过 5 GiB 的对象不执行不完整的单次重写。
+
+发布状态（2026-08-04）：对象 Header/Metadata 与 Tags 的读取、编辑、批量重写、Provider 门禁、发布规则和 Manifest 属性差异检测已完成并进入 v0.7.1 正式发布。隔离 MinIO 与阿里 OSS 真实矩阵均验证普通上传、Multipart、Tags、Metadata 重写、回读与清理。存储类型专用变更、高级 URL 生成器和静态网站配置继续留在后续 v0.7.x，不混入本次发布。
 
 ### v0.7.2 跨账户与共享
 

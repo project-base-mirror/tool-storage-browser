@@ -19,7 +19,12 @@ $projects = @(
     "tests\S3Explorer.Infrastructure.Cdn.Tests\S3Explorer.Infrastructure.Cdn.Tests.csproj"
 )
 foreach ($project in $projects) {
+    & dotnet build (Join-Path $repositoryRoot $project) -c $Configuration --nologo --no-restore --no-incremental
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coverage rebuild failed for $project (exit code $LASTEXITCODE)."
+    }
     & dotnet test (Join-Path $repositoryRoot $project) -c $Configuration --nologo --no-restore `
+        --no-build `
         --settings (Join-Path $repositoryRoot "eng\focused-coverage.runsettings") `
         --collect "XPlat Code Coverage" `
         --results-directory $OutputDirectory
@@ -49,6 +54,9 @@ foreach ($group in $groups.GetEnumerator()) {
     $lines = @{}
     foreach ($report in $reports) {
         [xml]$document = Get-Content -LiteralPath $report.FullName -Raw
+        if ($null -eq $document.coverage.packages.package) {
+            throw "Coverage report contains no instrumented packages: $($report.FullName)"
+        }
         foreach ($class in @($document.coverage.packages.package.classes.class)) {
             if ([string]$class.name -notmatch $group.Value) { continue }
             foreach ($line in @($class.lines.line)) {
