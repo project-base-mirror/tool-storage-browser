@@ -1,15 +1,16 @@
 {
-  "schemaVersion": 2,
-  "tagName": "v0.7.1",
-  "version": "0.7.1",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.1",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.1/S3Explorer-v0.7.1-win-x64.zip",
+  "schemaVersion": 3,
+  "tagName": "v0.7.2",
+  "version": "0.7.2",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.2",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.1/S3Explorer-v0.7.1-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.1/S3Explorer-v0.7.1-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.1/S3Explorer-v0.7.1-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.1/S3Explorer-v0.7.1-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-setup.msi"
   },
-  "notes": "对象元数据与发布 Header 规则：属性页支持 Header/Metadata 与 Object Tags 编辑，增加批量原地重写；CLI/Unity Manifest Schema 2 可检测只改缓存或 Metadata 的发布变化。",
-  "publishedAt": "2026-08-04T22:57:30+08:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/SHA256SUMS.txt",
+  "notes": "可选托盘驻留与安装版安全升级：关闭或最小化后可继续传输并合并通知；MSI 安装版可下载匹配安装包，经 SHA-256 双重校验、用户确认和 UAC 后静默升级并重启。",
+  "publishedAt": "2026-08-05T15:28:13+08:00"
 }
