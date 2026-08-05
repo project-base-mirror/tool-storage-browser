@@ -45,15 +45,36 @@ internal sealed class SettingsDialog : Form
         ClientSize = new Size(690, 500);
         MinimumSize = new Size(640, 450);
         ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Font;
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneral());
         tabs.TabPages.Add(BuildListing());
         tabs.TabPages.Add(BuildTransfer());
         tabs.TabPages.Add(BuildSecurity());
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };
-        var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Width = 85 };
-        var ok = new Button { Text = "确定", DialogResult = DialogResult.OK, Width = 85 };
+        var buttons = new FlowLayoutPanel
+        {
+            Name = "SettingsDialogFooter",
+            Dock = DockStyle.Bottom,
+            Height = 54,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Padding = new Padding(8)
+        };
+        var cancel = new Button
+        {
+            Name = "CancelSettingsButton",
+            Text = "取消",
+            DialogResult = DialogResult.Cancel,
+            Size = new Size(88, 32)
+        };
+        var ok = new Button
+        {
+            Name = "SaveSettingsButton",
+            Text = "确定",
+            DialogResult = DialogResult.OK,
+            Size = new Size(88, 32)
+        };
         ok.Click += (_, _) => Settings = settings with
         {
             RememberLayout = _remember.Checked,

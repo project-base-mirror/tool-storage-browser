@@ -76,7 +76,7 @@ public sealed class AppSettingsStoreTests
     }
 
     [Fact]
-    public async Task TraySettingsRoundTripWithoutChangingSafeDefaults()
+    public async Task TraySettingsUseResidentDefaultAndRoundTripExplicitChoice()
     {
         var root = TemporaryDirectory();
         var path = Path.Combine(root, "settings.json");
@@ -84,17 +84,17 @@ public sealed class AppSettingsStoreTests
         {
             var store = new AppSettingsStore(path);
             var defaults = await store.LoadAsync();
-            Assert.False(defaults.KeepRunningInTray);
+            Assert.True(defaults.KeepRunningInTray);
             Assert.True(defaults.ShowTrayTransferNotifications);
 
             await store.SaveAsync(defaults with
             {
-                KeepRunningInTray = true,
+                KeepRunningInTray = false,
                 ShowTrayTransferNotifications = false
             });
 
             var restored = await store.LoadAsync();
-            Assert.True(restored.KeepRunningInTray);
+            Assert.False(restored.KeepRunningInTray);
             Assert.False(restored.ShowTrayTransferNotifications);
         }
         finally
