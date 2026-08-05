@@ -40,13 +40,16 @@ function Invoke-Msi {
 }
 
 function Test-InstalledApplication {
+    param([switch]$RequireUpdater)
+
     $gui = Join-Path $InstallDirectory "S3Explorer.exe"
     $cli = Join-Path $InstallDirectory "s3explorer-cli.exe"
     $updater = Join-Path $InstallDirectory "S3Explorer.Updater.exe"
-    if (-not (Test-Path -LiteralPath $gui) -or
-        -not (Test-Path -LiteralPath $cli) -or
-        -not (Test-Path -LiteralPath $updater)) {
-        throw "Installed GUI, CLI, or maintenance updater is missing from $InstallDirectory."
+    if (-not (Test-Path -LiteralPath $gui) -or -not (Test-Path -LiteralPath $cli)) {
+        throw "Installed GUI or CLI is missing from $InstallDirectory."
+    }
+    if ($RequireUpdater -and -not (Test-Path -LiteralPath $updater)) {
+        throw "Installed maintenance updater is missing from $InstallDirectory."
     }
 
     $versionOutput = & $cli version --output json --non-interactive 2>&1
@@ -89,7 +92,7 @@ try {
 
     Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log")
     $installed = $true
-    Test-InstalledApplication
+    Test-InstalledApplication -RequireUpdater
 
     $registry = Get-ItemProperty -LiteralPath "HKLM:\Software\project-base-mirror\S3 Explorer" -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace([string]$registry.InstallerFlavor)) {
