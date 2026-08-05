@@ -29,6 +29,11 @@ internal sealed class TransferCompletedEventArgs(TransferTaskRecord task) : Even
     public TransferTaskRecord Task { get; } = task;
 }
 
+internal sealed class TransferFinishedEventArgs(TransferTaskRecord task) : EventArgs
+{
+    public TransferTaskRecord Task { get; } = task;
+}
+
 internal sealed class TransferQueueControl : UserControl
 {
     private const int VisibleStandaloneLimit = 1_000;
@@ -60,6 +65,7 @@ internal sealed class TransferQueueControl : UserControl
     }
 
     public event EventHandler<TransferCompletedEventArgs>? TransferCompleted;
+    public event EventHandler<TransferFinishedEventArgs>? TransferFinished;
 
     public TransferStoreSnapshot Snapshot => _queue.Snapshot;
     public int ActiveCount => _queue.ActiveCount;
@@ -409,6 +415,11 @@ internal sealed class TransferQueueControl : UserControl
                     previous != TransferTaskState.Completed)
                 {
                     TransferCompleted?.Invoke(this, new TransferCompletedEventArgs(task));
+                }
+                if (task.State is TransferTaskState.Completed or TransferTaskState.Failed &&
+                    previous != task.State)
+                {
+                    TransferFinished?.Invoke(this, new TransferFinishedEventArgs(task));
                 }
                 _knownStates[task.Id] = task.State;
             }

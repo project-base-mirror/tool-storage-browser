@@ -9,6 +9,8 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _overwrite = new() { Text = "覆盖前确认", AutoSize = true };
     private readonly CheckBox _autoConnect = new() { Text = "启动时自动连接最后账户", AutoSize = true };
     private readonly CheckBox _checkForUpdates = new() { Name = "CheckForUpdatesOnStartup", Text = "启动时自动检查更新", AutoSize = true };
+    private readonly CheckBox _keepRunningInTray = new() { Name = "KeepRunningInTray", Text = "关闭或最小化主窗口时驻留系统托盘", AutoSize = true };
+    private readonly CheckBox _showTrayNotifications = new() { Name = "ShowTrayTransferNotifications", Text = "在托盘显示传输完成或失败通知", AutoSize = true };
     private readonly TextBox _download = new();
     private readonly NumericUpDown _pageSize = new()
     {
@@ -59,6 +61,8 @@ internal sealed class SettingsDialog : Form
             ConfirmOverwrite = _overwrite.Checked,
             AutoConnectLastProfile = _autoConnect.Checked,
             CheckForUpdatesOnStartup = _checkForUpdates.Checked,
+            KeepRunningInTray = _keepRunningInTray.Checked,
+            ShowTrayTransferNotifications = _showTrayNotifications.Checked,
             DefaultDownloadDirectory = _download.Text.Trim(),
             ObjectPageSize = (int)_pageSize.Value,
             ObjectCacheLimit = (int)_cacheLimit.Value,
@@ -82,6 +86,11 @@ internal sealed class SettingsDialog : Form
         _overwrite.Checked = settings.ConfirmOverwrite;
         _autoConnect.Checked = settings.AutoConnectLastProfile;
         _checkForUpdates.Checked = settings.CheckForUpdatesOnStartup;
+        _keepRunningInTray.Checked = settings.KeepRunningInTray;
+        _showTrayNotifications.Checked = settings.ShowTrayTransferNotifications;
+        _showTrayNotifications.Enabled = settings.KeepRunningInTray;
+        _keepRunningInTray.CheckedChanged += (_, _) =>
+            _showTrayNotifications.Enabled = _keepRunningInTray.Checked;
         _download.Text = settings.DefaultDownloadDirectory;
         _pageSize.Value = Math.Clamp(
             settings.ObjectPageSize,
@@ -105,7 +114,15 @@ internal sealed class SettingsDialog : Form
     {
         var page = new TabPage("常规");
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(14) };
-        panel.Controls.AddRange([_remember, _delete, _overwrite, _autoConnect, _checkForUpdates]);
+        panel.Controls.AddRange([
+            _remember,
+            _delete,
+            _overwrite,
+            _autoConnect,
+            _checkForUpdates,
+            _keepRunningInTray,
+            _showTrayNotifications
+        ]);
         var downloadPanel = new FlowLayoutPanel { AutoSize = true };
         downloadPanel.Controls.Add(new Label { Text = "默认下载目录：", AutoSize = true, Margin = new Padding(3, 8, 3, 3) });
         _download.Width = 390;

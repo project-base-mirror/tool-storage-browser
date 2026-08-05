@@ -18,6 +18,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 对象属性、可编辑 Header/Metadata、Object Tags、批量 Metadata 重写和预签名下载 URL。
 - WinForms 主窗口、连接管理、设置、日志和错误详情。
 - 当前列表过滤、导航历史、布局与列设置持久化。
+- 可选托盘驻留：关闭或最小化主窗口后继续传输，显式退出仍安全暂停并保存队列；完成与失败通知会合并显示，避免批量任务刷屏。
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象、同步、增量发布、远程验证和 CDN 自动化，支持稳定 JSON 输出、取消与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
@@ -257,7 +258,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 ## 当前限制
 
-生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。应用内静默升级和托盘驻留仍未实现。
+生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。应用内自动安装升级仍未实现；托盘驻留可在设置中显式启用。
 
 CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API 或 Prefix Purge。
 

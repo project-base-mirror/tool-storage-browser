@@ -75,6 +75,34 @@ public sealed class AppSettingsStoreTests
         }
     }
 
+    [Fact]
+    public async Task TraySettingsRoundTripWithoutChangingSafeDefaults()
+    {
+        var root = TemporaryDirectory();
+        var path = Path.Combine(root, "settings.json");
+        try
+        {
+            var store = new AppSettingsStore(path);
+            var defaults = await store.LoadAsync();
+            Assert.False(defaults.KeepRunningInTray);
+            Assert.True(defaults.ShowTrayTransferNotifications);
+
+            await store.SaveAsync(defaults with
+            {
+                KeepRunningInTray = true,
+                ShowTrayTransferNotifications = false
+            });
+
+            var restored = await store.LoadAsync();
+            Assert.True(restored.KeepRunningInTray);
+            Assert.False(restored.ShowTrayTransferNotifications);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     private static string TemporaryDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));

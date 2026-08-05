@@ -79,11 +79,13 @@ internal sealed partial class MainForm : Form
     private readonly ToolStripStatusLabel _downloadSpeed = new("↓ 0 B/s");
     private readonly System.Windows.Forms.Timer _searchTimer = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _speedTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _trayNotificationTimer = new() { Interval = 750 };
     private readonly BoundedObjectCache _loadedItems = new(ObjectListingLimits.DefaultCacheLimit);
     private readonly List<S3Location> _history = [];
     private readonly Dictionary<string, ToolStripItem> _commands = new(StringComparer.OrdinalIgnoreCase);
     private readonly OperationCancellation _navigationCancellation = new();
     private readonly CancellationTokenSource _updateCancellation = new();
+    private NotifyIcon? _trayIcon;
 
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private IReadOnlyList<ConnectionGroup> _profileGroups = [];
@@ -103,6 +105,10 @@ internal sealed partial class MainForm : Form
     private bool _populatingProfiles;
     private ObjectClipboardPayload? _objectClipboard;
     private bool _updateCheckInProgress;
+    private bool _exitRequested;
+    private bool _trayHintShown;
+    private int _trayCompletedTransfers;
+    private int _trayFailedTransfers;
 
     public MainForm(
         IProfileStore profileStore,
@@ -157,6 +163,8 @@ internal sealed partial class MainForm : Form
         BuildObjectContextMenu();
         BuildStatus();
         WireEvents();
+        if (_automation is null)
+            BuildTray();
 
         Controls.Add(_outerSplit);
         Controls.Add(_addressStrip);
@@ -183,7 +191,16 @@ internal sealed partial class MainForm : Form
             }
         };
         FormClosing += MainForm_FormClosing;
-        FormClosed += (_, _) => _automation?.MarkStopped(this);
+        FormClosed += (_, _) =>
+        {
+            if (_trayIcon is not null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+            }
+            _trayNotificationTimer.Dispose();
+            _automation?.MarkStopped(this);
+        };
     }
 
     private void BuildMenu()
@@ -202,7 +219,7 @@ internal sealed partial class MainForm : Form
         file.DropDownItems.Add(Command("export-connection", "导出当前连接...", async (_, _) => await ExportConnectionsAsync(exportAll: false)));
         file.DropDownItems.Add(Command("export-all-connections", "导出全部连接...", async (_, _) => await ExportConnectionsAsync(exportAll: true)));
         file.DropDownItems.Add(new ToolStripSeparator());
-        file.DropDownItems.Add(new ToolStripMenuItem("退出", null, (_, _) => Close()));
+        file.DropDownItems.Add(new ToolStripMenuItem("退出", null, (_, _) => RequestExit()));
 
         var edit = new ToolStripMenuItem("编辑(&E)");
         edit.DropDownItems.Add(new ToolStripMenuItem("全选", null, (_, _) => SelectAllObjects(), Keys.Control | Keys.A));
@@ -702,6 +719,7 @@ internal sealed partial class MainForm : Form
         {
             _uploadSpeed.Text = $"↑ {FileSizeFormatter.Format((long)_transfers.UploadBytesPerSecond)}/s";
             _downloadSpeed.Text = $"↓ {FileSizeFormatter.Format((long)_transfers.DownloadBytesPerSecond)}/s";
+            UpdateTrayStatus();
         };
         _transfers.TransferCompleted += async (_, args) =>
         {
@@ -713,6 +731,19 @@ internal sealed partial class MainForm : Form
                  string.Equals(_currentBucket, args.Task.DestinationBucket, StringComparison.Ordinal)))
             {
                 await RefreshAsync();
+            }
+        };
+        _transfers.TransferFinished += (_, args) => QueueTrayTransferNotification(args.Task);
+        _trayNotificationTimer.Tick += (_, _) => FlushTrayTransferNotifications();
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized &&
+                TrayResidencePolicy.ShouldHideOnMinimize(
+                    _settings.KeepRunningInTray,
+                    _automation is not null,
+                    _closing))
+            {
+                BeginInvoke(new Action(() => HideToTray(showHint: true)));
             }
         };
 
@@ -863,6 +894,8 @@ internal sealed partial class MainForm : Form
             new("transfer-queue", _transfers.Name == "TransferQueue" && _transfers.Parent is not null, $"Visible={_transfers.Visible}"),
             new("status-bar", _status.Name == "StatusBar" && _status.Items.Count > 0, $"Items={_status.Items.Count}"),
             new("update-command", hasUpdateCommand, $"Present={updateCommand is not null}"),
+            new("tray-automation-isolated", _automation is null || _trayIcon is null,
+                $"Automation={_automation is not null}; TrayCreated={_trayIcon is not null}"),
             new("project-links", hasProjectHome && hasIssueLink,
                 $"Home={projectHome is not null}; Issue={issueLink is not null}"),
             new("connection-transfer-commands", hasConnectionImport && hasConnectionExport,
@@ -924,6 +957,125 @@ internal sealed partial class MainForm : Form
             _sortAscending = _settings.SortAscending;
         }
         SetTransferVisibility(_settings.ShowTransfers);
+        ApplyTraySettings();
+    }
+
+    private void BuildTray()
+    {
+        var menu = new ContextMenuStrip();
+        var show = new ToolStripMenuItem("打开 S3 Explorer", null, (_, _) => ShowMainWindow())
+        {
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
+        var pause = new ToolStripMenuItem("暂停全部传输", null, async (_, _) =>
+            await RunUiCommandAsync("暂停全部传输", () => _transfers.PauseAllAsync()));
+        var updates = new ToolStripMenuItem("检查更新...", null, async (_, _) =>
+        {
+            ShowMainWindow();
+            await CheckForUpdatesAsync(automatic: false);
+        });
+        var exit = new ToolStripMenuItem("退出", null, (_, _) => RequestExit());
+        menu.Items.AddRange([show, pause, updates, new ToolStripSeparator(), exit]);
+
+        _trayIcon = new NotifyIcon
+        {
+            Icon = Icon,
+            Text = "S3 Explorer",
+            ContextMenuStrip = menu,
+            Visible = false
+        };
+        _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
+    }
+
+    private void ApplyTraySettings()
+    {
+        if (_trayIcon is null) return;
+        _trayIcon.Visible = _settings.KeepRunningInTray && !_closing;
+        UpdateTrayStatus();
+    }
+
+    private void UpdateTrayStatus()
+    {
+        if (_trayIcon is null) return;
+        var active = _transfers.ActiveCount;
+        _trayIcon.Text = active > 0
+            ? $"S3 Explorer - {active:N0} 个活动传输"
+            : "S3 Explorer - 空闲";
+    }
+
+    private void HideToTray(bool showHint)
+    {
+        if (_trayIcon is null || !_settings.KeepRunningInTray || _closing) return;
+        _trayIcon.Visible = true;
+        Hide();
+        UpdateTrayStatus();
+        if (showHint && !_trayHintShown)
+        {
+            _trayHintShown = true;
+            _trayIcon.ShowBalloonTip(
+                2500,
+                "S3 Explorer 已驻留托盘",
+                "传输任务会继续运行；使用托盘菜单中的“退出”可安全结束程序。",
+                ToolTipIcon.Info);
+        }
+    }
+
+    private void ShowMainWindow()
+    {
+        if (IsDisposed || Disposing) return;
+        Show();
+        if (WindowState == FormWindowState.Minimized)
+            WindowState = FormWindowState.Normal;
+        Activate();
+        BringToFront();
+    }
+
+    private void RequestExit()
+    {
+        if (_closing) return;
+        _exitRequested = true;
+        ShowMainWindow();
+        Close();
+    }
+
+    private void QueueTrayTransferNotification(TransferTaskRecord task)
+    {
+        if (task.State == TransferTaskState.Completed)
+            _trayCompletedTransfers++;
+        else if (task.State == TransferTaskState.Failed)
+            _trayFailedTransfers++;
+        else
+            return;
+
+        _trayNotificationTimer.Stop();
+        _trayNotificationTimer.Start();
+        UpdateTrayStatus();
+    }
+
+    private void FlushTrayTransferNotifications()
+    {
+        _trayNotificationTimer.Stop();
+        if (_transfers.ActiveCount > 0)
+        {
+            _trayNotificationTimer.Start();
+            return;
+        }
+
+        var completed = _trayCompletedTransfers;
+        var failed = _trayFailedTransfers;
+        _trayCompletedTransfers = 0;
+        _trayFailedTransfers = 0;
+        if (!_settings.KeepRunningInTray ||
+            !_settings.ShowTrayTransferNotifications ||
+            _trayIcon is not { Visible: true } ||
+            completed + failed == 0)
+            return;
+
+        _trayIcon.ShowBalloonTip(
+            4000,
+            failed == 0 ? "传输已完成" : "传输任务已结束",
+            $"成功 {completed:N0} 项，失败 {failed:N0} 项。",
+            failed == 0 ? ToolTipIcon.Info : ToolTipIcon.Warning);
     }
 
     private void PopulateProfiles()
@@ -2846,6 +2998,7 @@ internal sealed partial class MainForm : Form
         _transfers.ConfigureRetryPolicy(_settings.RetryCount, _settings.RetryDelaySeconds);
         await _transfers.SetConcurrencyAsync(_settings.ConcurrentTransfers);
         await SaveSettingsAsync();
+        ApplyTraySettings();
         if (_currentProfile is not null && _currentBucket is not null)
             await LoadObjectsPageAsync(true);
     }
@@ -3189,6 +3342,16 @@ internal sealed partial class MainForm : Form
 
     private async void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
+        if (TrayResidencePolicy.ShouldHideOnClose(
+                _settings.KeepRunningInTray,
+                _automation is not null,
+                _exitRequested,
+                e.CloseReason))
+        {
+            e.Cancel = true;
+            HideToTray(showHint: true);
+            return;
+        }
         if (_closing) return;
         e.Cancel = true;
 
@@ -3199,7 +3362,10 @@ internal sealed partial class MainForm : Form
             dialog.ShowDialog(this);
             closeAction = dialog.SelectedAction;
             if (closeAction == TransferCloseAction.Return)
+            {
+                _exitRequested = false;
                 return;
+            }
         }
 
         try
@@ -3233,11 +3399,14 @@ internal sealed partial class MainForm : Form
             await AwaitShutdownStepAsync(_cdnJobQueue.DisposeAsync().AsTask(), "保存 CDN 任务队列");
             await AwaitShutdownStepAsync(_transferQueue.DisposeAsync().AsTask(), "保存传输队列");
             _closing = true;
+            if (_trayIcon is not null)
+                _trayIcon.Visible = false;
             BeginInvoke(Close);
         }
         catch (Exception exception)
         {
             _logger.Error("Failed to close transfer queue safely", exception);
+            _exitRequested = false;
             _speedTimer.Start();
             ErrorDialog.ShowException(this, "无法安全退出", "保存传输队列", exception);
         }
