@@ -26,7 +26,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 连接复制、健康状态、最近检查与最近成功时间。
 - 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、HTTP 预热与通用刷新端点。
 - 上传后 CDN 自动化：关联可分别设置新对象预热、覆盖后刷新或刷新后预热；任务独立重试、取消并在重启后恢复，不改变上传成功状态。
-- GitHub Pages 项目主页、tag 驱动的 GitHub Release，以及可关闭的启动更新检查。
+- GitHub Pages 项目主页、tag 驱动的 GitHub Release、可关闭的启动更新检查，以及安装版经 SHA-256 复验后的用户确认静默升级。
 
 ## 运行要求
 
@@ -182,7 +182,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 构建和发布输出位置固定在仓库根目录的 `artifacts` 下，不接受重定向到其他目录。
 
-两个便携 ZIP 保持单文件形式：framework-dependent ZIP 需要 .NET 10 Desktop Runtime，self-contained ZIP 可直接解压运行。安装器使用独立的多文件发布目录，不再把 DLL 集成到入口 EXE：默认 `setup.msi` 自带运行时，`framework-dependent-setup.msi` 依赖系统中的 .NET 10 Desktop Runtime。两个 MSI 都默认安装到 `C:\Program Files\S3 Explorer\`，提供路径选择、开始菜单入口和桌面快捷方式选项。安装失败时可在 `%TEMP%` 查找最新的 `MSI*.log`。
+两个便携 ZIP 保持单文件形式：framework-dependent ZIP 需要 .NET 10 Desktop Runtime，self-contained ZIP 可直接解压运行。安装器使用独立的多文件发布目录，不再把 DLL 集成到入口 EXE：默认 `setup.msi` 自带运行时，`framework-dependent-setup.msi` 依赖系统中的 .NET 10 Desktop Runtime。两个 MSI 都默认安装到 `C:\Program Files\S3 Explorer\`，提供路径选择、开始菜单入口和桌面快捷方式选项，并携带独立单文件维护程序。安装版可以后台下载匹配 MSI，按 Release `SHA256SUMS.txt` 校验，用户确认后安全退出、静默安装并重新启动；Windows UAC 仍会正常显示。安装日志保存在 `%LOCALAPPDATA%\S3Explorer\updates\`。
 
 仅重新打包而跳过验证：
 
@@ -196,7 +196,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
     pwsh .\scripts\Publish.ps1 -MeasureRuntime
 
-`release-metrics.json` 会记录两个应用发布目录的压缩前大小、应用 ZIP、Unity Contracts SDK ZIP、两个 MSI 的大小和 SHA-256、安装器多文件负载统计，以及 .NET SDK 版本、签名配置状态和可选的启动时间与内存数据。
+`release-metrics.json` 会记录两个应用发布目录的压缩前大小、应用 ZIP、Unity Contracts SDK ZIP、两个 MSI 与维护程序的大小和 SHA-256、安装器多文件负载统计，以及 .NET SDK 版本、签名配置状态和可选的启动时间与内存数据。
 
 推送与项目版本一致的 `vX.Y.Z` tag 后，GitHub Actions 会执行相同验证并创建 GitHub Release；版本、更新清单、Release 与 Pages 的固定同步步骤见 [`docs/Release-Process.md`](docs/Release-Process.md)，GitHub 交付机制见 [`docs/GitHub-Delivery.md`](docs/GitHub-Delivery.md)。
 
@@ -258,7 +258,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 ## 当前限制
 
-生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。应用内自动安装升级仍未实现；托盘驻留可在设置中显式启用。
+生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。安装版支持用户确认的静默升级，但不做无人值守自动安装；便携 ZIP 继续打开下载页面，由用户手动替换。托盘驻留可在设置中显式启用。
 
 CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、无需厂商签名的刷新端点、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront/Cloudflare/阿里云/腾讯云签名 API 或 Prefix Purge。
 

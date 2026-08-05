@@ -16,25 +16,44 @@ internal static class UpdatePackageDetector
 
     public static UpdatePackageKind Detect()
     {
-        try
-        {
-            using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var key = machine.OpenSubKey(RegistryKeyPath, writable: false);
-            var installerFlavor = key?.GetValue("InstallerFlavor") as string;
-            if (!string.IsNullOrWhiteSpace(installerFlavor))
-                return FromInstallerFlavor(installerFlavor);
-        }
-        catch (Exception exception) when (
-            exception is UnauthorizedAccessException or IOException or System.Security.SecurityException)
-        {
-            // Registry detection is optional. Restricted and portable builds can still update.
-        }
+        if (TryGetInstallerRegistration(out var registeredKind, out _))
+            return registeredKind;
 
         var processPath = Environment.ProcessPath;
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         if (IsUnderDirectory(processPath, programFiles))
             return UpdatePackageKind.InstallerSelfContained;
         return UpdatePackageKind.PortableFrameworkDependent;
+    }
+
+    public static bool TryGetInstallerRegistration(
+        out UpdatePackageKind packageKind,
+        out string installLocation)
+    {
+        packageKind = UpdatePackageKind.PortableFrameworkDependent;
+        installLocation = string.Empty;
+        try
+        {
+            using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = machine.OpenSubKey(RegistryKeyPath, writable: false);
+            var installerFlavor = key?.GetValue("InstallerFlavor") as string;
+            var registeredLocation = key?.GetValue("InstallLocation") as string;
+            if (string.IsNullOrWhiteSpace(installerFlavor) || string.IsNullOrWhiteSpace(registeredLocation))
+                return false;
+            if (!Path.IsPathFullyQualified(registeredLocation))
+                return false;
+            var parsedKind = FromInstallerFlavor(installerFlavor);
+            if (parsedKind is not (UpdatePackageKind.InstallerFrameworkDependent or UpdatePackageKind.InstallerSelfContained))
+                return false;
+            packageKind = parsedKind;
+            installLocation = Path.GetFullPath(registeredLocation);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     internal static UpdatePackageKind FromInstallerFlavor(string installerFlavor) =>

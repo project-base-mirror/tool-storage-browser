@@ -855,9 +855,11 @@ internal sealed partial class MainForm : Form
                     "应用已启动，但检测到以下恢复情况：\n\n" + summary + "\n\n详细信息已写入内置日志。",
                     "启动恢复提示",
                     MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+                MessageBoxIcon.Warning);
             }
         }
+        if (_automation is null)
+            ShowPendingUpdateResult();
     }
 
     private static void AddRecoveryWarning(
@@ -3047,9 +3049,15 @@ internal sealed partial class MainForm : Form
 
             if (IsDisposed || Disposing) return;
             _logger.Info($"Update check source={release.Source}; latest={release.TagName}; cachedAt={release.CachedAtUtc:O}");
-            using var dialog = new UpdateDialog(currentVersion, release);
-            if (dialog.ShowDialog(this) == DialogResult.OK && dialog.SelectedUri is not null)
-                OpenExternalUrl(dialog.SelectedUri.AbsoluteUri);
+            var canApplyInstaller = UpdateInstallerLauncher.CanApply(release);
+            using var dialog = new UpdateDialog(currentVersion, release, canApplyInstaller);
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                if (dialog.InstallRequested && canApplyInstaller)
+                    await DownloadAndInstallUpdateAsync(release);
+                else if (dialog.SelectedUri is not null)
+                    OpenExternalUrl(dialog.SelectedUri.AbsoluteUri);
+            }
         }
         catch (HttpRequestException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -3081,6 +3089,118 @@ internal sealed partial class MainForm : Form
             if (!IsDisposed && !Disposing)
                 _requestStatus.Text = previousStatus;
         }
+    }
+
+    private async Task DownloadAndInstallUpdateAsync(GitHubReleaseInfo release)
+    {
+        using var service = new UpdateDownloadService();
+        using var downloadDialog = new UpdateDownloadDialog(service, release);
+        var result = downloadDialog.ShowDialog(this);
+        if (result == DialogResult.Cancel)
+            return;
+        if (result != DialogResult.OK || downloadDialog.Package is null)
+        {
+            var failure = downloadDialog.Failure ?? new InvalidOperationException("更新下载未完成。");
+            _logger.Error("Verified update download failed", failure);
+            ErrorDialog.ShowException(this, "更新下载失败", "下载并校验安装包", failure);
+            return;
+        }
+
+        var package = downloadDialog.Package;
+        var answer = MessageBox.Show(
+            this,
+            $"安装包已通过 SHA-256 校验。\n\n" +
+            $"版本：{package.Version.ToString(3)}\n" +
+            $"大小：{FileSizeFormatter.Format(package.Bytes)}\n\n" +
+            "继续后会先安全暂停活动传输并退出 S3 Explorer，然后静默运行 MSI。" +
+            "Windows 仍会显示管理员权限确认，安装完成后程序会自动重新打开。",
+            "确认安装更新",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information,
+            MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes)
+            return;
+
+        if (!await PrepareTransfersForUpdateAsync())
+            return;
+
+        try
+        {
+            using var updater = UpdateInstallerLauncher.Launch(package);
+            _logger.Info($"Verified MSI updater launched. target={package.Version.ToString(3)}; pid={updater.Id}");
+            _exitRequested = true;
+            Close();
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Failed to launch MSI updater", exception);
+            ErrorDialog.ShowException(this, "无法启动更新安装", "启动维护程序", exception);
+        }
+    }
+
+    private async Task<bool> PrepareTransfersForUpdateAsync()
+    {
+        if (_transfers.ActiveCount <= 0)
+            return true;
+
+        using var dialog = new TransferCloseDialog(_transfers.ActiveCount);
+        dialog.Text = "安装更新前处理传输任务";
+        dialog.ShowDialog(this);
+        var action = dialog.SelectedAction;
+        if (action == TransferCloseAction.Return)
+            return false;
+
+        _requestStatus.Text = action switch
+        {
+            TransferCloseAction.Wait => "等待传输完成后安装更新...",
+            TransferCloseAction.Cancel => "正在取消传输以安装更新...",
+            _ => "正在暂停传输以安装更新..."
+        };
+        switch (action)
+        {
+            case TransferCloseAction.Wait:
+                await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待传输完成");
+                break;
+            case TransferCloseAction.Cancel:
+                await AwaitShutdownStepAsync(_transfers.CancelAllAsync(), "取消传输");
+                await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待取消完成");
+                break;
+            case TransferCloseAction.Pause:
+                await AwaitShutdownStepAsync(_transfers.PauseAllAsync(), "暂停传输");
+                await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待暂停完成");
+                break;
+        }
+        return true;
+    }
+
+    private void ShowPendingUpdateResult()
+    {
+        var result = UpdateInstallerLauncher.TryConsumeResult();
+        if (result is null) return;
+        var currentVersion = typeof(MainForm).Assembly.GetName().Version ?? new Version(0, 0, 0, 0);
+        var installedTarget = GitHubUpdateChecker.NormalizeVersion(currentVersion).CompareTo(
+            GitHubUpdateChecker.NormalizeVersion(result.TargetVersion)) >= 0;
+        if (result.Succeeded && installedTarget)
+        {
+            MessageBox.Show(
+                this,
+                $"S3 Explorer 已成功更新到 {result.TargetVersion.ToString(3)}。" +
+                (result.InstallerExitCode == 3010 ? "\nWindows 建议稍后重新启动系统。" : string.Empty),
+                "更新完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var message = result.Succeeded
+            ? $"安装器已完成，但当前程序版本仍是 {DisplayVersion}。"
+            : SensitiveDataRedactor.Redact(result.Message);
+        MessageBox.Show(
+            this,
+            $"S3 Explorer 更新未完成：{message}\n\n安装日志：{result.LogPath}",
+            "更新需要处理",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
 
     private void OpenExternalUrl(string value)

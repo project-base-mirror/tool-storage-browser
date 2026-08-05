@@ -13,8 +13,9 @@ $manifestPath = Join-Path $repositoryRoot "docs\site\update.json"
 $sitePath = Join-Path $repositoryRoot "docs\site\index.html"
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ([int]$manifest.schemaVersion -ne 2) {
-    throw "docs/site/update.json schemaVersion must be 2."
+$schemaVersion = [int]$manifest.schemaVersion
+if ($schemaVersion -notin @(2, 3)) {
+    throw "docs/site/update.json schemaVersion must be 2 or 3."
 }
 if ([string]$manifest.tagName -cne $tag) {
     throw "Update manifest tagName $($manifest.tagName) does not match $tag."
@@ -41,6 +42,12 @@ $expectedDownloads = [ordered]@{
 foreach ($entry in $expectedDownloads.GetEnumerator()) {
     if ([string]$manifest.downloads.($entry.Key) -cne $entry.Value) {
         throw "Update manifest downloads.$($entry.Key) does not match $($entry.Value)."
+    }
+}
+if ($schemaVersion -eq 3) {
+    $expectedChecksums = "$repository/releases/download/$tag/SHA256SUMS.txt"
+    if ([string]$manifest.checksumsUrl -cne $expectedChecksums) {
+        throw "Update manifest checksumsUrl does not match $expectedChecksums."
     }
 }
 

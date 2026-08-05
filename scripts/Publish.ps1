@@ -16,6 +16,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $appProject = Join-Path $repositoryRoot "src\S3Explorer.App\S3Explorer.App.csproj"
 $cliProject = Join-Path $repositoryRoot "src\S3Explorer.Cli\S3Explorer.Cli.csproj"
+$updaterProject = Join-Path $repositoryRoot "src\S3Explorer.Updater\S3Explorer.Updater.csproj"
 $contractsProject = Join-Path $repositoryRoot "src\S3Explorer.Contracts\S3Explorer.Contracts.csproj"
 $contractsGuide = Join-Path $repositoryRoot "docs\Unity-Publish-Integration.md"
 $installerProject = Join-Path $repositoryRoot "installer\S3Explorer.Installer.wixproj"
@@ -24,6 +25,7 @@ $propsPath = Join-Path $repositoryRoot "Directory.Build.props"
 $artifactsRoot = Join-Path $repositoryRoot "artifacts"
 $outputRoot = Join-Path $artifactsRoot "release"
 $installerPayloadRoot = Join-Path $artifactsRoot "installer-payload"
+$updaterPayloadRoot = Join-Path $artifactsRoot "updater-payload"
 [xml]$props = Get-Content -LiteralPath $propsPath -Raw
 $version = [string]$props.Project.PropertyGroup.Version
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
@@ -240,6 +242,9 @@ if (Test-Path -LiteralPath $outputRoot) {
 if (Test-Path -LiteralPath $installerPayloadRoot) {
     Remove-Item -LiteralPath $installerPayloadRoot -Recurse -Force
 }
+if (Test-Path -LiteralPath $updaterPayloadRoot) {
+    Remove-Item -LiteralPath $updaterPayloadRoot -Recurse -Force
+}
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $installerPayloadRoot -Force | Out-Null
@@ -254,6 +259,27 @@ Publish-Package -Destination $frameworkDirectory -SelfContained $false
 Publish-Package -Destination $selfContainedDirectory -SelfContained $true
 Publish-Package -Destination $frameworkInstallerPayload -SelfContained $false -SingleFile $false
 Publish-Package -Destination $selfContainedInstallerPayload -SelfContained $true -SingleFile $false
+Invoke-DotNet -Arguments @(
+    "publish",
+    $updaterProject,
+    "-c", $Configuration,
+    "--no-restore",
+    "--self-contained", "true",
+    "-o", $updaterPayloadRoot,
+    "-p:PublishTrimmed=true",
+    "-p:TrimMode=full",
+    "-p:PublishSingleFile=true",
+    "-p:IncludeNativeLibrariesForSelfExtract=true",
+    "-p:EnableCompressionInSingleFile=true",
+    "-p:PublishReadyToRun=false",
+    "-p:GenerateDocumentationFile=false",
+    "-p:DebugType=None",
+    "-p:DebugSymbols=false"
+)
+$updaterExecutable = Join-Path $updaterPayloadRoot "S3Explorer.Updater.exe"
+if (-not (Test-Path -LiteralPath $updaterExecutable -PathType Leaf)) {
+    throw "Updater publish did not produce S3Explorer.Updater.exe."
+}
 Invoke-DotNet -Arguments @("build", $contractsProject, "-c", $Configuration)
 
 $contractsOutput = Join-Path $repositoryRoot "src\S3Explorer.Contracts\bin\$Configuration\netstandard2.1"
@@ -277,8 +303,11 @@ Invoke-CodeSigning -ArtifactPaths @(
     (Join-Path $frameworkInstallerPayload "S3Explorer.exe"),
     (Join-Path $frameworkInstallerPayload "s3explorer-cli.exe"),
     (Join-Path $selfContainedInstallerPayload "S3Explorer.exe"),
-    (Join-Path $selfContainedInstallerPayload "s3explorer-cli.exe")
+    (Join-Path $selfContainedInstallerPayload "s3explorer-cli.exe"),
+    $updaterExecutable
 )
+Copy-Item -LiteralPath $updaterExecutable -Destination (Join-Path $frameworkInstallerPayload "S3Explorer.Updater.exe")
+Copy-Item -LiteralPath $updaterExecutable -Destination (Join-Path $selfContainedInstallerPayload "S3Explorer.Updater.exe")
 New-ZipArchive -SourceDirectory $frameworkDirectory -DestinationPath $frameworkZip
 New-ZipArchive -SourceDirectory $selfContainedDirectory -DestinationPath $selfContainedZip
 New-ZipArchive -SourceDirectory $contractsDirectory -DestinationPath $contractsZip
@@ -334,6 +363,7 @@ $metrics = [ordered]@{
     contracts = New-ArtifactMetric -Name "$contractsName.zip" -Path $contractsZip
     installer = New-ArtifactMetric -Name $installerName -Path $installerPath
     frameworkInstaller = New-ArtifactMetric -Name $frameworkInstallerName -Path $frameworkInstallerPath
+    updater = New-ArtifactMetric -Name "S3Explorer.Updater.exe" -Path $updaterExecutable
     installerPayloads = @(
         [ordered]@{
             name = "self-contained"
@@ -360,6 +390,7 @@ $metrics.packages | Format-Table name, directoryMiB, zipMiB, zipSha256 -AutoSize
 $metrics.contracts | Format-Table name, sizeMiB, sha256 -AutoSize
 $metrics.installer | Format-Table name, sizeMiB, sha256 -AutoSize
 $metrics.frameworkInstaller | Format-Table name, sizeMiB, sha256 -AutoSize
+$metrics.updater | Format-Table name, sizeMiB, sha256 -AutoSize
 if ($null -ne $runtimeMetric) {
     $runtimeMetric | Format-List
 }

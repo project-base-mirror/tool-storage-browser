@@ -154,6 +154,7 @@ $selfContainedFileCount = Get-MsiQueryRowCount -Query "SELECT ``File`` FROM ``Fi
 $selfContainedFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``File``")
 $selfContainedManagedAssembly = @($selfContainedFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
 $selfContainedRuntime = @($selfContainedFileNames | Where-Object { $_ -match '(?i)coreclr\.dll$' })
+$selfContainedUpdater = @($selfContainedFileNames | Where-Object { $_ -match '(?i)S3Explorer\.Updater\.exe$' })
 Assert-True -Condition ($msiLogging -ceq "voicewarmup") -Message "MSI automatic logging is not enabled."
 Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($applicationFolder)) -Message "MSI does not expose an application install directory."
 Assert-True -Condition ($applicationFolderParent -ceq "ProgramFiles64Folder") -Message "MSI application directory is not rooted under ProgramFiles64Folder."
@@ -173,6 +174,7 @@ Assert-True -Condition ($installLocationMarker -ceq "[APPLICATIONFOLDER]") -Mess
 Assert-True -Condition ($selfContainedFileCount -gt 2) -Message "Primary MSI still contains only bundled single-file executables."
 Assert-True -Condition ($selfContainedManagedAssembly.Count -gt 0) -Message "Primary MSI does not contain the unpacked application assemblies."
 Assert-True -Condition ($selfContainedRuntime.Count -gt 0) -Message "Primary MSI does not contain the self-contained .NET runtime."
+Assert-True -Condition ($selfContainedUpdater.Count -eq 1) -Message "Primary MSI does not contain exactly one maintenance updater."
 
 $frameworkMsiPath = (Resolve-Path -LiteralPath (Join-Path $releaseRoot $frameworkInstallerName)).Path
 $msiDatabase = $windowsInstaller.GetType().InvokeMember(
@@ -186,6 +188,7 @@ $frameworkFileNames = @(Get-MsiQueryValues -Query "SELECT ``FileName`` FROM ``Fi
 $frameworkManagedAssembly = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.dll$' })
 $frameworkRuntime = @($frameworkFileNames | Where-Object { $_ -match '(?i)coreclr\.dll$' })
 $frameworkRuntimeConfig = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.runtimeconfig\.json$' })
+$frameworkUpdater = @($frameworkFileNames | Where-Object { $_ -match '(?i)S3Explorer\.Updater\.exe$' })
 Assert-True -Condition ($frameworkVersion -ceq $version) -Message "Framework-dependent MSI ProductVersion $frameworkVersion does not match $version."
 Assert-True -Condition ($frameworkFlavor -ceq "framework-dependent") -Message "Additional MSI is not marked framework-dependent."
 Assert-True -Condition ($frameworkFlavorMarker -ceq "[INSTALLERFLAVOR]") -Message "Framework-dependent MSI does not persist its installer flavor for update selection."
@@ -194,6 +197,7 @@ Assert-True -Condition ($frameworkFileCount -gt 2) -Message "Framework-dependent
 Assert-True -Condition ($frameworkManagedAssembly.Count -gt 0) -Message "Framework-dependent MSI does not contain the unpacked application assemblies."
 Assert-True -Condition ($frameworkRuntimeConfig.Count -gt 0) -Message "Framework-dependent MSI does not contain the runtime configuration."
 Assert-True -Condition ($frameworkRuntime.Count -eq 0) -Message "Framework-dependent MSI unexpectedly embeds the .NET runtime."
+Assert-True -Condition ($frameworkUpdater.Count -eq 1) -Message "Framework-dependent MSI does not contain exactly one maintenance updater."
 
 if (-not $SkipPackageBuild) {
     $actualNames = @(Get-ChildItem -LiteralPath $releaseRoot | Select-Object -ExpandProperty Name | Sort-Object)
@@ -246,6 +250,8 @@ Assert-True -Condition ($metrics.packages.name -contains $selfContainedName) -Me
 Assert-True -Condition ($metrics.contracts.name -ceq "$contractsName.zip") -Message "Unity contracts package metric is missing."
 Assert-True -Condition ($metrics.installer.name -ceq $installerName) -Message "Installer metric is missing."
 Assert-True -Condition ($metrics.frameworkInstaller.name -ceq $frameworkInstallerName) -Message "Framework-dependent installer metric is missing."
+Assert-True -Condition ($metrics.updater.name -ceq "S3Explorer.Updater.exe") -Message "Maintenance updater metric is missing."
+Assert-True -Condition ([int64]$metrics.updater.bytes -gt 0) -Message "Maintenance updater metric is empty."
 Assert-True -Condition ($metrics.installerPayloads.Count -eq 2) -Message "Installer payload metrics must contain both deployment modes."
 Assert-True -Condition (($metrics.installerPayloads | Where-Object name -ceq 'self-contained').fileCount -gt 2) -Message "Self-contained installer payload metric is invalid."
 Assert-True -Condition (($metrics.installerPayloads | Where-Object name -ceq 'framework-dependent').fileCount -gt 2) -Message "Framework-dependent installer payload metric is invalid."

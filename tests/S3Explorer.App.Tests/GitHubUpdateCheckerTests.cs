@@ -61,6 +61,32 @@ public sealed class GitHubUpdateCheckerTests
     }
 
     [Fact]
+    public void VersionThreeManifestEnablesVerifiedInstallerDownload()
+    {
+        const string payload = """
+        {
+          "schemaVersion": 3,
+          "tagName": "v0.7.2",
+          "version": "0.7.2",
+          "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.2",
+          "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/SHA256SUMS.txt",
+          "downloads": {
+            "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64.zip",
+            "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-self-contained.zip",
+            "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-framework-dependent-setup.msi",
+            "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.2/S3Explorer-v0.7.2-win-x64-setup.msi"
+          }
+        }
+        """;
+
+        var release = GitHubUpdateChecker.ParseManifest(payload, UpdatePackageKind.InstallerSelfContained);
+
+        Assert.True(release.HasVerifiedInstallerDownload);
+        Assert.Equal("S3Explorer-v0.7.2-win-x64-setup.msi", release.PreferredAssetName);
+        Assert.EndsWith("/SHA256SUMS.txt", release.ChecksumsDownload!.AbsoluteUri);
+    }
+
+    [Fact]
     public void RejectsManifestWhenVersionAndTagDiffer()
     {
         const string payload = """
@@ -232,6 +258,10 @@ public sealed class GitHubUpdateCheckerTests
             {
               "name": "{{expectedName}}",
               "browser_download_url": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/{{expectedName}}"
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "browser_download_url": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.6.10/SHA256SUMS.txt"
             }
           ]
         }
@@ -241,6 +271,7 @@ public sealed class GitHubUpdateCheckerTests
 
         Assert.Equal(kind, release.RecommendedPackage);
         Assert.EndsWith(expectedName, release.PreferredDownload!.AbsoluteUri);
+        Assert.True(release.HasVerifiedInstallerDownload);
     }
 
     [Theory]

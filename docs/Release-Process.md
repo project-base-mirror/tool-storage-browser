@@ -31,7 +31,7 @@ git ls-remote --tags origin
 1. `Directory.Build.props` 中的 `Version`、`AssemblyVersion` 和 `FileVersion`。
 2. 新建 `docs/versions/vX.Y.Z.md`，记录范围、行为变化、兼容性、安全边界、验证、已知限制和关联提交。
 3. 在 `docs/versions/README.md` 顶部加入版本索引。
-4. 更新 `docs/site/update.json` 的 tag、版本、Release 页面、版本化下载地址、说明和发布时间。
+4. 更新 `docs/site/update.json` 的 tag、版本、Release 页面、版本化下载地址、说明和发布时间；启用安装版静默升级的版本使用 Schema 3，并把 `checksumsUrl` 固定到同一 tag 的 `SHA256SUMS.txt`。
 5. 更新 `docs/site/index.html` 的稳定版本、下载地址和与本版本相关的功能说明。
 6. 更新 README 中的发布包示例；路线图中已完成的版本也要同步标记。
 

@@ -78,4 +78,4 @@ https://github.com/project-base-mirror/tool-storage-browser/releases/download/vX
 
 ## 自动更新的数据边界
 
-客户端只读取公开的 Pages 清单和 GitHub Latest Release API，不上传账户、Bucket、对象路径、日志、凭据或设备标识。最后成功结果只以公开信息缓存到本机；在线通道失败时不会把旧缓存冒充为已经确认的最新版本。检查到新版本后仅展示说明并打开用户选择的下载链接，不静默安装。
+客户端只读取公开的 Pages 清单和 GitHub Latest Release API，不上传账户、Bucket、对象路径、日志、凭据或设备标识。最后成功结果只以公开信息缓存到本机；在线通道失败时不会把旧缓存冒充为已经确认的最新版本。Schema 3 清单还绑定同一 tag 的 `SHA256SUMS.txt`：MSI 安装版在用户明确选择后后台下载匹配包、校验 SHA-256、安全退出，再由独立维护程序二次校验并调用 Windows Installer `/qn /norestart`；UAC 不会绕过，结果与 MSI 日志保存在本机。便携版与缺少校验清单的旧 Release 仍只打开下载链接。

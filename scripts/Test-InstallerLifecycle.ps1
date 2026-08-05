@@ -42,8 +42,11 @@ function Invoke-Msi {
 function Test-InstalledApplication {
     $gui = Join-Path $InstallDirectory "S3Explorer.exe"
     $cli = Join-Path $InstallDirectory "s3explorer-cli.exe"
-    if (-not (Test-Path -LiteralPath $gui) -or -not (Test-Path -LiteralPath $cli)) {
-        throw "Installed GUI or CLI executable is missing from $InstallDirectory."
+    $updater = Join-Path $InstallDirectory "S3Explorer.Updater.exe"
+    if (-not (Test-Path -LiteralPath $gui) -or
+        -not (Test-Path -LiteralPath $cli) -or
+        -not (Test-Path -LiteralPath $updater)) {
+        throw "Installed GUI, CLI, or maintenance updater is missing from $InstallDirectory."
     }
 
     $versionOutput = & $cli version --output json --non-interactive 2>&1

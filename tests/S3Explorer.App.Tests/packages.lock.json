@@ -139,9 +139,9 @@
       "S3Explorer": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.6.11, )",
-          "S3Explorer.Infrastructure.Cdn": "[0.6.11, )",
-          "S3Explorer.Infrastructure.S3": "[0.6.11, )"
+          "S3Explorer.Core": "[0.7.1, )",
+          "S3Explorer.Infrastructure.Cdn": "[0.7.1, )",
+          "S3Explorer.Infrastructure.S3": "[0.7.1, )"
         }
       },
       "s3explorer.core": {
@@ -150,7 +150,7 @@
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.6.11, )"
+          "S3Explorer.Core": "[0.7.1, )"
         }
       },
       "s3explorer.infrastructure.s3": {
@@ -160,8 +160,11 @@
           "AWSSDK.SSO": "[3.7.502.56, )",
           "AWSSDK.SSOOIDC": "[3.7.503.59, )",
           "AWSSDK.SecurityToken": "[3.7.504.50, )",
-          "S3Explorer.Core": "[0.6.11, )"
+          "S3Explorer.Core": "[0.7.1, )"
         }
+      },
+      "s3explorer.updater": {
+        "type": "Project"
       }
     }
   }

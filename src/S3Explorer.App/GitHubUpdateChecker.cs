@@ -21,13 +21,22 @@ internal sealed record GitHubReleaseInfo(
     DateTimeOffset? PublishedAt,
     UpdatePackageKind RecommendedPackage = UpdatePackageKind.PortableFrameworkDependent,
     UpdateReleaseSource Source = UpdateReleaseSource.GitHubApi,
-    DateTimeOffset? CachedAtUtc = null)
+    DateTimeOffset? CachedAtUtc = null,
+    Uri? ChecksumsDownload = null,
+    string? PreferredAssetName = null)
 {
     public bool IsFromCache => Source == UpdateReleaseSource.Cache;
 
     public bool IsNewerThan(Version currentVersion) =>
         GitHubUpdateChecker.NormalizeVersion(Version).CompareTo(
             GitHubUpdateChecker.NormalizeVersion(currentVersion)) > 0;
+
+    public bool HasVerifiedInstallerDownload =>
+        (RecommendedPackage is UpdatePackageKind.InstallerFrameworkDependent or UpdatePackageKind.InstallerSelfContained) &&
+        PreferredDownload is not null &&
+        ChecksumsDownload is not null &&
+        !string.IsNullOrWhiteSpace(PreferredAssetName) &&
+        PreferredAssetName.EndsWith(".msi", StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed partial class GitHubUpdateChecker : IDisposable
@@ -154,8 +163,8 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         if (!root.TryGetProperty("schemaVersion", out var schemaVersion) ||
             schemaVersion.ValueKind != JsonValueKind.Number ||
             !schemaVersion.TryGetInt32(out var parsedSchemaVersion) ||
-            parsedSchemaVersion is not (1 or 2))
-            throw new InvalidDataException("Pages 更新清单 schemaVersion 必须为 1 或 2。");
+            parsedSchemaVersion is not (1 or 2 or 3))
+            throw new InvalidDataException("Pages 更新清单 schemaVersion 必须为 1、2 或 3。");
 
         var tagName = RequiredString(root, "tagName");
         if (!TryParseReleaseVersion(tagName, out var version))
@@ -166,9 +175,12 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             throw new InvalidDataException("Pages 更新清单的 version 与 tagName 不一致。");
 
         var notes = OptionalNotes(root);
-        var preferredDownload = parsedSchemaVersion == 2
+        var preferredDownload = parsedSchemaVersion >= 2
             ? RequiredPackageDownload(root, packageKind)
             : OptionalHttpsUri(root, "downloadUrl");
+        var checksumsDownload = parsedSchemaVersion >= 3
+            ? RequiredHttpsUri(root, "checksumsUrl")
+            : null;
         return new GitHubReleaseInfo(
             tagName,
             version!,
@@ -177,7 +189,10 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             notes,
             OptionalDate(root, "publishedAt"),
             packageKind,
-            UpdateReleaseSource.PagesManifest);
+            UpdateReleaseSource.PagesManifest,
+            null,
+            checksumsDownload,
+            preferredDownload is null ? null : Uri.UnescapeDataString(Path.GetFileName(preferredDownload.AbsolutePath)));
     }
 
     internal static GitHubReleaseInfo ParseRelease(
@@ -202,6 +217,8 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             publishedAt = parsedDate;
 
         Uri? preferredDownload = null;
+        string? preferredAssetName = null;
+        Uri? checksumsDownload = null;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
             var preferredNames = PreferredAssetNames(tagName, packageKind);
@@ -216,11 +233,27 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
                     if (asset.TryGetProperty("browser_download_url", out var download) &&
                         download.ValueKind == JsonValueKind.String &&
                         TryHttpsUri(download.GetString(), out var uri))
+                    {
                         preferredDownload = uri;
+                        preferredAssetName = preferredName;
+                    }
                     break;
                 }
                 if (preferredDownload is not null)
                     break;
+            }
+
+            foreach (var asset in assets.EnumerateArray())
+            {
+                if (!asset.TryGetProperty("name", out var name) ||
+                    name.ValueKind != JsonValueKind.String ||
+                    !string.Equals(name.GetString(), "SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase) ||
+                    !asset.TryGetProperty("browser_download_url", out var download) ||
+                    download.ValueKind != JsonValueKind.String ||
+                    !TryHttpsUri(download.GetString(), out var uri))
+                    continue;
+                checksumsDownload = uri;
+                break;
             }
         }
 
@@ -232,7 +265,10 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             notes,
             publishedAt,
             packageKind,
-            UpdateReleaseSource.GitHubApi);
+            UpdateReleaseSource.GitHubApi,
+            null,
+            checksumsDownload,
+            preferredAssetName);
     }
 
     private static string[] PreferredAssetNames(string tagName, UpdatePackageKind packageKind) => packageKind switch
@@ -452,11 +488,13 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
 
     private sealed class CachedReleaseDocument
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string TagName { get; set; } = string.Empty;
         public string Version { get; set; } = string.Empty;
         public string ReleasePage { get; set; } = string.Empty;
         public string? DownloadUrl { get; set; }
+        public string? ChecksumsUrl { get; set; }
+        public string? PreferredAssetName { get; set; }
         public string Notes { get; set; } = string.Empty;
         public DateTimeOffset? PublishedAt { get; set; }
         public UpdatePackageKind RecommendedPackage { get; set; }
@@ -468,6 +506,8 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
             Version = release.Version.ToString(3),
             ReleasePage = release.ReleasePage.AbsoluteUri,
             DownloadUrl = release.PreferredDownload?.AbsoluteUri,
+            ChecksumsUrl = release.ChecksumsDownload?.AbsoluteUri,
+            PreferredAssetName = release.PreferredAssetName,
             Notes = release.Notes,
             PublishedAt = release.PublishedAt,
             RecommendedPackage = release.RecommendedPackage,
@@ -476,7 +516,7 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
 
         public GitHubReleaseInfo ToRelease()
         {
-            if (SchemaVersion != 1)
+            if (SchemaVersion is not (1 or 2))
                 throw new InvalidDataException("更新缓存版本不受支持。");
             if (!TryParseReleaseVersion(TagName, out var tagVersion) ||
                 !System.Version.TryParse(Version, out var version) ||
@@ -491,6 +531,13 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
                     throw new InvalidDataException("更新缓存中的下载地址无效。");
                 downloadUrl = parsedDownloadUrl;
             }
+            Uri? checksumsUrl = null;
+            if (ChecksumsUrl is not null)
+            {
+                if (!TryHttpsUri(ChecksumsUrl, out var parsedChecksumsUrl))
+                    throw new InvalidDataException("更新缓存中的校验清单地址无效。");
+                checksumsUrl = parsedChecksumsUrl;
+            }
             return new GitHubReleaseInfo(
                 TagName,
                 version,
@@ -500,7 +547,9 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
                 PublishedAt,
                 RecommendedPackage,
                 UpdateReleaseSource.Cache,
-                CachedAtUtc);
+                CachedAtUtc,
+                checksumsUrl,
+                PreferredAssetName);
         }
     }
 

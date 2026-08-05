@@ -3,8 +3,9 @@ namespace S3Explorer.App;
 internal sealed class UpdateDialog : Form
 {
     public Uri? SelectedUri { get; private set; }
+    public bool InstallRequested { get; private set; }
 
-    public UpdateDialog(Version currentVersion, GitHubReleaseInfo release)
+    public UpdateDialog(Version currentVersion, GitHubReleaseInfo release, bool allowVerifiedInstaller = false)
     {
         Text = "发现 S3 Explorer 新版本";
         Icon = UiIcons.CreateApplicationIcon();
@@ -39,8 +40,10 @@ internal sealed class UpdateDialog : Form
         var privacy = new Label
         {
             Text = release.IsFromCache
-                ? $"在线通道暂时不可用，显示 {release.CachedAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm} 的缓存；安装由你确认。"
-                : "更新检查只读取项目 Pages/GitHub 的公开发布信息；安装由你确认。",
+                ? $"在线通道暂时不可用，显示 {release.CachedAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm} 的缓存；安装仍由你确认。"
+                : allowVerifiedInstaller
+                    ? "安装版可在下载并校验 SHA-256 后静默升级；Windows 仍会请求管理员确认。"
+                    : "更新检查只读取项目 Pages/GitHub 的公开发布信息；安装由你确认。",
             ForeColor = Color.FromArgb(90, 103, 120),
             Location = new Point(88, 74),
             AutoSize = true
@@ -73,12 +76,20 @@ internal sealed class UpdateDialog : Form
         };
         var download = new Button
         {
-            Text = release.PreferredDownload is null ? "打开下载页面" : "下载匹配版本",
+            Text = allowVerifiedInstaller
+                ? "下载并安装"
+                : release.PreferredDownload is null ? "打开下载页面" : "下载匹配版本",
             Width = 124,
             Height = 32,
             AccessibleDescription = UpdatePackageDetector.DisplayName(release.RecommendedPackage)
         };
-        download.Click += (_, _) => SelectAndClose(release.PreferredDownload ?? release.ReleasePage);
+        download.Click += (_, _) =>
+        {
+            if (allowVerifiedInstaller)
+                RequestInstallAndClose();
+            else
+                SelectAndClose(release.PreferredDownload ?? release.ReleasePage);
+        };
         var openRelease = new Button { Text = "查看 Release", Width = 108, Height = 32 };
         openRelease.Click += (_, _) => SelectAndClose(release.ReleasePage);
         var later = new Button { Text = "稍后提醒", DialogResult = DialogResult.Cancel, Width = 96, Height = 32 };
@@ -102,6 +113,13 @@ internal sealed class UpdateDialog : Form
     private void SelectAndClose(Uri uri)
     {
         SelectedUri = uri;
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+
+    private void RequestInstallAndClose()
+    {
+        InstallRequested = true;
         DialogResult = DialogResult.OK;
         Close();
     }
