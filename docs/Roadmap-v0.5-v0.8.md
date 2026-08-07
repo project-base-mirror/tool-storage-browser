@@ -333,13 +333,23 @@
 
 发布状态（2026-08-05）：托盘驻留、合并通知、Schema 3 更新清单、安装包下载与校验、独立维护程序、双 MSI 打包及端到端发布验证已完成并进入 v0.7.2 正式发布。
 
-### v0.7.3 跨账户与共享
+### v0.7.3 依赖与结构维护
+
+- 先升级 Microsoft.NET.Test.Sdk 与 coverlet 的大版本，通过全量测试与重点覆盖率门禁后再单独迁移 AWS SDK for .NET v4。
+- 显式处理 AWS SDK v4 的可空值、集合初始化、ACL API 与日期属性变化，不使用全局兼容开关隐藏差异。
+- 按职责拆分对象操作、Bucket 配置、对象 Metadata/Tagging/Object Lock 与 CDN 编辑器，保持公开接口和运行行为不变。
+
+验收：锁定依赖可还原；全量测试、重点覆盖率、UI 冒烟、隔离 MinIO 与真实阿里 OSS Provider Matrix 通过；拆分前后移动块文本一致。
+
+发布状态（2026-08-07）：测试基础设施、AWS SDK v4 兼容迁移和大文件拆分已完成，进入 v0.7.3 正式发布。
+
+### v0.7.4 跨账户与共享
 
 - 跨 Bucket/跨账户复制移动：先判断服务端 Copy 可行性，再回退到受控下载上传。
 - 外部 Bucket 向导、Requester Pays、共享 Bucket 权限说明。
 - Bucket Sharing Wizard 将授权对象、动作和资源范围可视化，最终仍以 Policy/ACL 差异确认。
 
-### v0.7.4 运维配置
+### v0.7.5 运维配置
 
 - Bucket Logging、Transfer Acceleration、Replication 的只读探测与分阶段编辑。
 - 统一 Provider capability registry；菜单按支持/只读/不支持显示原因。
