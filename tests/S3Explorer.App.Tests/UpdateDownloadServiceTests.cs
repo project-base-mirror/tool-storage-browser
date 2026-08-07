@@ -91,11 +91,11 @@ public sealed class UpdateDownloadServiceTests
                 StringComparison.Ordinal))
             return;
 
-        const string tag = "v0.7.1";
-        const string asset = "S3Explorer-v0.7.1-win-x64-framework-dependent-setup.msi";
+        const string tag = "v0.7.2";
+        const string asset = "S3Explorer-v0.7.2-win-x64-framework-dependent-setup.msi";
         var release = new GitHubReleaseInfo(
             tag,
-            new Version(0, 7, 1),
+            new Version(0, 7, 2),
             new Uri($"https://github.com/project-base-mirror/tool-storage-browser/releases/tag/{tag}"),
             new Uri($"https://github.com/project-base-mirror/tool-storage-browser/releases/download/{tag}/{asset}"),
             "integration",
