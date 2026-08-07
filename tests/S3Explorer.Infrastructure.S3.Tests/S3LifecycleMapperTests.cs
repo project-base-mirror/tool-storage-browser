@@ -46,7 +46,7 @@ public sealed class S3LifecycleMapperTests
                     },
                     Expiration = new LifecycleRuleExpiration
                     {
-                        DateUtc = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                        Date = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc)
                     }
                 }
             ]
@@ -55,5 +55,36 @@ public sealed class S3LifecycleMapperTests
         var exception = Assert.Throws<NotSupportedException>(() => S3LifecycleMapper.ToCore(sdk));
 
         Assert.Contains("绝对日期", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MapperRejectsTransitionWithoutDaysInsteadOfInventingAValue()
+    {
+        var sdk = new LifecycleConfiguration
+        {
+            Rules =
+            [
+                new LifecycleRule
+                {
+                    Id = "missing-days",
+                    Status = LifecycleRuleStatus.Enabled,
+                    Filter = new LifecycleFilter
+                    {
+                        LifecycleFilterPredicate = new LifecyclePrefixPredicate { Prefix = string.Empty }
+                    },
+                    Transitions =
+                    [
+                        new Amazon.S3.Model.LifecycleTransition
+                        {
+                            StorageClass = S3StorageClass.StandardInfrequentAccess
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var exception = Assert.Throws<NotSupportedException>(() => S3LifecycleMapper.ToCore(sdk));
+
+        Assert.Contains("缺少天数", exception.Message, StringComparison.Ordinal);
     }
 }

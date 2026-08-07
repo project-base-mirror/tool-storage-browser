@@ -132,9 +132,11 @@ internal static class S3LifecycleMapper
         var values = rule.Transitions ?? [];
         return values.Select(value =>
         {
-            if (HasDate(value.DateUtc))
+            if (HasDate(value.Date))
                 throw new NotSupportedException("当前生命周期配置包含按绝对日期执行的存储类型转换，已阻止编辑以避免配置丢失。");
-            return new CoreLifecycleTransition(value.Days, FromSdkStorageClass(value.StorageClass));
+            return new CoreLifecycleTransition(
+                RequireDays(value.Days, "存储类型转换"),
+                FromSdkStorageClass(value.StorageClass));
         }).ToArray();
     }
 
@@ -146,7 +148,7 @@ internal static class S3LifecycleMapper
             if (value.NewerNoncurrentVersions > 0)
                 throw new NotSupportedException("当前生命周期配置使用 NewerNoncurrentVersions 条件，已阻止编辑以避免配置丢失。");
             return new CoreLifecycleTransition(
-                value.NoncurrentDays,
+                RequireDays(value.NoncurrentDays, "非当前版本存储类型转换"),
                 FromSdkStorageClass(value.StorageClass));
         }).ToArray();
     }
@@ -155,16 +157,21 @@ internal static class S3LifecycleMapper
     {
         if (rule.Expiration is not null)
         {
-            if (HasDate(rule.Expiration.DateUtc))
+            if (HasDate(rule.Expiration.Date))
                 throw new NotSupportedException("当前生命周期配置包含按绝对日期过期的规则，已阻止编辑以避免配置丢失。");
-            if (rule.Expiration.ExpiredObjectDeleteMarker)
+            if (rule.Expiration.ExpiredObjectDeleteMarker == true)
                 throw new NotSupportedException("当前生命周期配置包含 ExpiredObjectDeleteMarker，已阻止编辑以避免配置丢失。");
         }
         if (rule.NoncurrentVersionExpiration?.NewerNoncurrentVersions > 0)
             throw new NotSupportedException("当前生命周期配置使用 NewerNoncurrentVersions 条件，已阻止编辑以避免配置丢失。");
     }
 
-    private static bool HasDate(DateTime value) => value != default && value != DateTime.MinValue;
+    private static bool HasDate(DateTime? value) =>
+        value is { } date && date != default && date != DateTime.MinValue;
+
+    private static int RequireDays(int? value, string description) =>
+        value ?? throw new NotSupportedException(
+            $"当前生命周期配置中的{description}缺少天数，已阻止编辑以避免配置丢失。");
 
     private static Amazon.S3.Model.LifecycleTransition ToSdkTransition(CoreLifecycleTransition value) => new()
     {

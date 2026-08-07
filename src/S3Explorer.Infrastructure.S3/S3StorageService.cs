@@ -30,7 +30,7 @@ public sealed class S3StorageService : IS3StorageService
             using var client = creation.Client;
             var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
             stopwatch.Stop();
-            var bucketCount = response.Buckets
+            var bucketCount = (response.Buckets ?? [])
                 .Select(bucket => bucket.BucketName)
                 .Concat(profile.KnownBuckets)
                 .Distinct(StringComparer.Ordinal)
@@ -81,7 +81,7 @@ public sealed class S3StorageService : IS3StorageService
         {
             using var client = _factory.Create(profile);
             var response = await client.ListBucketsAsync(connectionTimeout.Token).ConfigureAwait(false);
-            return response.Buckets
+            return (response.Buckets ?? [])
                 .Select(bucket => new CoreBucketInfo(bucket.BucketName, bucket.CreationDate))
                 .Concat(profile.KnownBuckets.Select(bucket => new CoreBucketInfo(bucket, null, IsConfigured: true)))
                 .GroupBy(bucket => bucket.Name, StringComparer.Ordinal)
@@ -135,7 +135,7 @@ public sealed class S3StorageService : IS3StorageService
             MaxKeys = 1
         }, cancellationToken).ConfigureAwait(false);
 
-        if (check.S3Objects.Count > 0 || check.CommonPrefixes.Count > 0)
+        if ((check.S3Objects?.Count ?? 0) > 0 || (check.CommonPrefixes?.Count ?? 0) > 0)
             throw new InvalidOperationException("Bucket 非空，默认不允许删除。");
 
         var uploads = await client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
@@ -143,7 +143,7 @@ public sealed class S3StorageService : IS3StorageService
             BucketName = bucket,
             MaxUploads = 1
         }, cancellationToken).ConfigureAwait(false);
-        if (uploads.MultipartUploads.Count > 0)
+        if ((uploads.MultipartUploads?.Count ?? 0) > 0)
             throw new InvalidOperationException("Bucket 存在未完成的分片上传，不能删除。");
 
         await client.DeleteBucketAsync(bucket, cancellationToken).ConfigureAwait(false);
@@ -188,6 +188,8 @@ public sealed class S3StorageService : IS3StorageService
             {
                 BucketName = bucket
             }, cancellationToken).ConfigureAwait(false);
+            if (response.HttpStatusCode == HttpStatusCode.NotFound)
+                return null;
             return string.IsNullOrWhiteSpace(response.Policy)
                 ? null
                 : BucketPolicyDocument.ValidateAndNormalize(response.Policy);
@@ -239,11 +241,11 @@ public sealed class S3StorageService : IS3StorageService
     {
         EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
         using var client = _factory.Create(profile);
-        var response = await client.GetACLAsync(new GetACLRequest
+        var response = await client.GetBucketAclAsync(new GetBucketAclRequest
         {
             BucketName = bucket
         }, cancellationToken).ConfigureAwait(false);
-        var grants = response.AccessControlList.Grants
+        var grants = (response.Grants ?? [])
             .Select(grant => new BucketAclGrant(
                 grant.Grantee?.DisplayName ?? grant.Grantee?.URI ?? grant.Grantee?.EmailAddress ?? "未知主体",
                 grant.Permission?.Value ?? "未知权限"))
@@ -251,8 +253,7 @@ public sealed class S3StorageService : IS3StorageService
         var publicRead = grants.Any(grant =>
             grant.Permission.Contains("READ", StringComparison.OrdinalIgnoreCase) &&
             grant.Grantee.Contains("AllUsers", StringComparison.OrdinalIgnoreCase));
-        var owner = response.AccessControlList.Owner?.DisplayName ??
-            response.AccessControlList.Owner?.Id ?? "未知";
+        var owner = response.Owner?.DisplayName ?? response.Owner?.Id ?? "未知";
         return new BucketAclSnapshot(
             owner, publicRead ? BucketAclMode.PublicRead : BucketAclMode.Private, grants);
     }
@@ -262,10 +263,10 @@ public sealed class S3StorageService : IS3StorageService
     {
         EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
         using var client = _factory.Create(profile);
-        await client.PutACLAsync(new PutACLRequest
+        await client.PutBucketAclAsync(new PutBucketAclRequest
         {
             BucketName = bucket,
-            CannedACL = mode == BucketAclMode.PublicRead
+            ACL = mode == BucketAclMode.PublicRead
                 ? S3CannedACL.PublicRead
                 : S3CannedACL.Private
         }, cancellationToken).ConfigureAwait(false);
@@ -288,8 +289,8 @@ public sealed class S3StorageService : IS3StorageService
             return value is null
                 ? null
                 : new BucketPublicAccessBlockSnapshot(
-                    value.BlockPublicAcls, value.IgnorePublicAcls,
-                    value.BlockPublicPolicy, value.RestrictPublicBuckets);
+                    value.BlockPublicAcls.GetValueOrDefault(), value.IgnorePublicAcls.GetValueOrDefault(),
+                    value.BlockPublicPolicy.GetValueOrDefault(), value.RestrictPublicBuckets.GetValueOrDefault());
         }
         catch (AmazonS3Exception exception) when (IsMissingPublicAccessBlock(exception))
         {
@@ -388,8 +389,8 @@ public sealed class S3StorageService : IS3StorageService
             }, cancellationToken).ConfigureAwait(false);
             return BucketCorsDocument.Validate(new BucketCorsConfiguration(
                 (response.Configuration?.Rules ?? []).Select(rule => new BucketCorsRule(
-                    rule.Id, rule.AllowedOrigins.ToArray(), rule.AllowedMethods.ToArray(),
-                    rule.AllowedHeaders.ToArray(), rule.ExposeHeaders.ToArray(),
+                    rule.Id, (rule.AllowedOrigins ?? []).ToArray(), (rule.AllowedMethods ?? []).ToArray(),
+                    (rule.AllowedHeaders ?? []).ToArray(), (rule.ExposeHeaders ?? []).ToArray(),
                     rule.MaxAgeSeconds > 0 ? rule.MaxAgeSeconds : null)).ToArray()));
         }
         catch (AmazonS3Exception exception) when (IsMissingCors(exception))
@@ -568,7 +569,7 @@ public sealed class S3StorageService : IS3StorageService
             {
                 BucketName = bucket
             }, cancellationToken).ConfigureAwait(false);
-            return BucketTagValidator.Validate(response.TagSet.Select(tag =>
+            return BucketTagValidator.Validate((response.TagSet ?? []).Select(tag =>
                 new BucketTag(tag.Key, tag.Value)));
         }
         catch (AmazonS3Exception exception) when (IsMissingTagSet(exception))
@@ -723,9 +724,10 @@ public sealed class S3StorageService : IS3StorageService
                 ContinuationToken = continuationToken,
                 MaxKeys = 1000
             }, cancellationToken).ConfigureAwait(false);
-            objectCount += page.S3Objects.Count;
-            totalBytes += page.S3Objects.Sum(item => item.Size);
-            continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+            var objects = page.S3Objects ?? [];
+            objectCount += objects.Count;
+            totalBytes += objects.Sum(item => item.Size.GetValueOrDefault());
+            continuationToken = page.IsTruncated == true ? page.NextContinuationToken : null;
         } while (continuationToken is not null);
 
         var versionScan = await ScanVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
@@ -745,8 +747,11 @@ public sealed class S3StorageService : IS3StorageService
         var versionScan = await CollectVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
         foreach (var batch in versionScan.Items.Chunk(1000))
         {
-            var request = new DeleteObjectsRequest { BucketName = bucket };
-            request.Objects.AddRange(batch);
+            var request = new DeleteObjectsRequest
+            {
+                BucketName = bucket,
+                Objects = batch.ToList()
+            };
             await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
         }
         deletedVersions = versionScan.VersionCount;
@@ -760,13 +765,17 @@ public sealed class S3StorageService : IS3StorageService
                 BucketName = bucket,
                 MaxKeys = 1000
             }, cancellationToken).ConfigureAwait(false);
-            if (page.S3Objects.Count == 0)
+            var objects = page.S3Objects ?? [];
+            if (objects.Count == 0)
                 break;
 
-            var request = new DeleteObjectsRequest { BucketName = bucket };
-            request.Objects.AddRange(page.S3Objects.Select(item => new KeyVersion { Key = item.Key }));
+            var request = new DeleteObjectsRequest
+            {
+                BucketName = bucket,
+                Objects = objects.Select(item => new KeyVersion { Key = item.Key }).ToList()
+            };
             await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
-            deletedObjects += page.S3Objects.Count;
+            deletedObjects += objects.Count;
         }
 
         var uploads = await ListIncompleteMultipartUploadsAsync(
@@ -797,7 +806,7 @@ public sealed class S3StorageService : IS3StorageService
             MaxKeys = Math.Clamp(pageSize, 1, 1000)
         }, cancellationToken).ConfigureAwait(false);
 
-        var directories = response.CommonPrefixes.Select(commonPrefix => new S3ObjectEntry(
+        var directories = (response.CommonPrefixes ?? []).Select(commonPrefix => new S3ObjectEntry(
             commonPrefix,
             S3Path.DisplayName(commonPrefix, true),
             0,
@@ -805,12 +814,12 @@ public sealed class S3StorageService : IS3StorageService
             null,
             string.Empty));
 
-        var objects = response.S3Objects
+        var objects = (response.S3Objects ?? [])
             .Where(item => !string.Equals(item.Key, prefix, StringComparison.Ordinal))
             .Select(item => new S3ObjectEntry(
                 item.Key,
                 S3Path.DisplayName(item.Key, false),
-                item.Size,
+                item.Size.GetValueOrDefault(),
                 false,
                 item.LastModified,
                 item.StorageClass?.Value ?? "STANDARD",
@@ -823,7 +832,7 @@ public sealed class S3StorageService : IS3StorageService
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return new(items, response.NextContinuationToken, response.IsTruncated);
+        return new(items, response.NextContinuationToken, response.IsTruncated == true);
     }
 
     public async Task<PagedObjectVersionResult> ListObjectVersionsAsync(
@@ -845,25 +854,30 @@ public sealed class S3StorageService : IS3StorageService
             VersionIdMarker = string.IsNullOrWhiteSpace(versionIdMarker) ? null : versionIdMarker,
             MaxKeys = Math.Clamp(pageSize, 1, 1000)
         }, cancellationToken).ConfigureAwait(false);
-        var items = response.Versions.Select(item => new ObjectVersionEntry(
-            item.Key,
-            item.VersionId ?? string.Empty,
-            item.IsLatest,
-            item.IsDeleteMarker,
-            item.IsDeleteMarker ? 0 : item.Size,
-            item.LastModified,
-            item.IsDeleteMarker ? null : item.ETag,
-            item.IsDeleteMarker ? string.Empty : item.StorageClass?.Value ?? "STANDARD"))
+        var items = (response.Versions ?? []).Select(item =>
+        {
+            var isDeleteMarker = item.IsDeleteMarker == true;
+            return new ObjectVersionEntry(
+                item.Key,
+                item.VersionId ?? string.Empty,
+                item.IsLatest == true,
+                isDeleteMarker,
+                isDeleteMarker ? 0 : item.Size.GetValueOrDefault(),
+                item.LastModified,
+                isDeleteMarker ? null : item.ETag,
+                isDeleteMarker ? string.Empty : item.StorageClass?.Value ?? "STANDARD");
+        })
             .OrderBy(item => item.Key, StringComparer.Ordinal)
             .ThenByDescending(item => item.LastModified)
             .ToArray();
-        if (response.IsTruncated && string.IsNullOrWhiteSpace(response.NextKeyMarker))
+        var isTruncated = response.IsTruncated == true;
+        if (isTruncated && string.IsNullOrWhiteSpace(response.NextKeyMarker))
             throw new InvalidOperationException("ListObjectVersions 返回了无效的下一页 Key Marker。");
         return new PagedObjectVersionResult(
             items,
-            response.IsTruncated ? response.NextKeyMarker : null,
-            response.IsTruncated ? response.NextVersionIdMarker : null,
-            response.IsTruncated);
+            isTruncated ? response.NextKeyMarker : null,
+            isTruncated ? response.NextVersionIdMarker : null,
+            isTruncated);
     }
 
     public async Task UploadFileAsync(
@@ -923,7 +937,8 @@ public sealed class S3StorageService : IS3StorageService
                     BucketName = bucket,
                     Key = key,
                     InputStream = throttled,
-                    AutoCloseStream = false
+                    AutoCloseStream = false,
+                    TagSet = []
                 };
                 var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
                 if (resolvedStorageClass is not null)
@@ -959,11 +974,11 @@ public sealed class S3StorageService : IS3StorageService
         using var client = _factory.Create(profile);
         try
         {
-            await client.PutACLAsync(new PutACLRequest
+            await client.PutObjectAclAsync(new PutObjectAclRequest
             {
                 BucketName = bucket,
                 Key = key,
-                CannedACL = mode == ObjectAclMode.PublicRead
+                ACL = mode == ObjectAclMode.PublicRead
                     ? S3CannedACL.PublicRead
                     : S3CannedACL.Private
             }, cancellationToken).ConfigureAwait(false);
@@ -1156,9 +1171,11 @@ public sealed class S3StorageService : IS3StorageService
                 MaxUploads = 1000
             }, cancellationToken).ConfigureAwait(false);
 
-            foreach (var upload in response.MultipartUploads)
+            foreach (var upload in response.MultipartUploads ?? [])
             {
-                var initiated = new DateTimeOffset(upload.Initiated.ToUniversalTime());
+                var initiated = upload.Initiated is { } initiatedAt
+                    ? new DateTimeOffset(initiatedAt.ToUniversalTime())
+                    : DateTimeOffset.MinValue;
                 if (initiatedBefore is not null && initiated > initiatedBefore.Value)
                     continue;
                 try
@@ -1178,8 +1195,8 @@ public sealed class S3StorageService : IS3StorageService
                 }
             }
 
-            keyMarker = response.IsTruncated ? response.NextKeyMarker : null;
-            uploadIdMarker = response.IsTruncated ? response.NextUploadIdMarker : null;
+            keyMarker = response.IsTruncated == true ? response.NextKeyMarker : null;
+            uploadIdMarker = response.IsTruncated == true ? response.NextUploadIdMarker : null;
         } while (keyMarker is not null || uploadIdMarker is not null);
 
         return MultipartUploadPlanner.Filter(uploads, prefix, initiatedBefore);
@@ -1253,8 +1270,11 @@ public sealed class S3StorageService : IS3StorageService
 
         foreach (var batch in keys.Chunk(1000))
         {
-            var request = new DeleteObjectsRequest { BucketName = bucket };
-            request.Objects.AddRange(batch.Select(key => new KeyVersion { Key = key }));
+            var request = new DeleteObjectsRequest
+            {
+                BucketName = bucket,
+                Objects = batch.Select(key => new KeyVersion { Key = key }).ToList()
+            };
             try
             {
                 await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
@@ -1296,18 +1316,22 @@ public sealed class S3StorageService : IS3StorageService
         using var client = _factory.Create(profile);
         foreach (var batch in unique.Chunk(1000))
         {
-            var request = new DeleteObjectsRequest { BucketName = bucket };
-            request.Objects.AddRange(batch.Select(item => new KeyVersion
+            var request = new DeleteObjectsRequest
             {
-                Key = item.Key,
-                VersionId = item.VersionId
-            }));
+                BucketName = bucket,
+                Objects = batch.Select(item => new KeyVersion
+                {
+                    Key = item.Key,
+                    VersionId = item.VersionId
+                }).ToList()
+            };
             var response = await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.DeleteErrors.Count > 0)
+            var deleteErrors = response.DeleteErrors ?? [];
+            if (deleteErrors.Count > 0)
             {
-                var first = response.DeleteErrors[0];
+                var first = deleteErrors[0];
                 throw new InvalidOperationException(
-                    $"永久删除对象版本时有 {response.DeleteErrors.Count:N0} 项失败；首项 Key={first.Key}，VersionId={first.VersionId}，Code={first.Code}。");
+                    $"永久删除对象版本时有 {deleteErrors.Count:N0} 项失败；首项 Key={first.Key}，VersionId={first.VersionId}，Code={first.Code}。");
             }
         }
     }
@@ -1439,7 +1463,7 @@ public sealed class S3StorageService : IS3StorageService
             NullIfWhiteSpace(response.Headers.CacheControl),
             NullIfWhiteSpace(response.Headers.ContentEncoding),
             NullIfWhiteSpace(response.Headers.ContentDisposition),
-            response.Headers.ExpiresUtc is not { } expiresUtc
+            response.Headers.Expires is not { } expiresUtc
                 ? null
                 : new DateTimeOffset(DateTime.SpecifyKind(expiresUtc, DateTimeKind.Utc)));
     }
@@ -1496,7 +1520,7 @@ public sealed class S3StorageService : IS3StorageService
             Key = key,
             VersionId = NullIfWhiteSpace(versionId)
         }, cancellationToken).ConfigureAwait(false);
-        return response.Tagging
+        return (response.Tagging ?? [])
             .Select(tag => new ObjectTag(tag.Key, tag.Value))
             .OrderBy(tag => tag.Key, StringComparer.Ordinal)
             .ToArray();
@@ -1584,9 +1608,9 @@ public sealed class S3StorageService : IS3StorageService
 
         return new ObjectLockSnapshot(
             FromSdkRetentionMode(retention?.Mode),
-            retention?.RetainUntilDate == default
+            retention?.RetainUntilDate is not { } retainUntilDate || retainUntilDate == default
                 ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(retention!.RetainUntilDate, DateTimeKind.Utc)),
+                : new DateTimeOffset(DateTime.SpecifyKind(retainUntilDate, DateTimeKind.Utc)),
             string.Equals(legalHold?.Status?.Value, ObjectLockLegalHoldStatus.On.Value, StringComparison.Ordinal),
             NullIfWhiteSpace(versionId));
     }
@@ -1732,7 +1756,8 @@ public sealed class S3StorageService : IS3StorageService
             var request = new InitiateMultipartUploadRequest
             {
                 BucketName = bucket,
-                Key = key
+                Key = key,
+                TagSet = []
             };
             var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
             if (resolvedStorageClass is not null)
@@ -1830,11 +1855,12 @@ public sealed class S3StorageService : IS3StorageService
         {
             BucketName = bucket,
             Key = key,
-            UploadId = uploadId
+            UploadId = uploadId,
+            PartETags = completedParts.Values
+                .OrderBy(part => part.PartNumber)
+                .Select(part => new PartETag(part.PartNumber, part.ETag))
+                .ToList()
         };
-        complete.AddPartETags(completedParts.Values
-            .OrderBy(part => part.PartNumber)
-            .Select(part => new PartETag(part.PartNumber, part.ETag)));
         await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
         transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
     }
@@ -1858,12 +1884,14 @@ public sealed class S3StorageService : IS3StorageService
                 PartNumberMarker = marker,
                 MaxParts = 1000
             }, cancellationToken).ConfigureAwait(false);
-            parts.AddRange(response.Parts.Select(part =>
-                new MultipartPartCheckpoint(part.PartNumber, part.ETag, part.Size)));
-            if (!response.IsTruncated) break;
-            var nextMarker = response.Parts.Count == 0
+            var responseParts = response.Parts ?? [];
+            parts.AddRange(responseParts.Select(part =>
+                new MultipartPartCheckpoint(
+                    part.PartNumber.GetValueOrDefault(), part.ETag, part.Size.GetValueOrDefault())));
+            if (response.IsTruncated != true) break;
+            var nextMarker = responseParts.Count == 0
                 ? marker
-                : response.Parts[^1].PartNumber.ToString();
+                : responseParts[^1].PartNumber.GetValueOrDefault().ToString();
             if (string.IsNullOrWhiteSpace(nextMarker) || string.Equals(nextMarker, marker, StringComparison.Ordinal))
                 throw new InvalidOperationException("ListParts 返回了无效的分页游标。");
             marker = nextMarker;
@@ -1909,7 +1937,7 @@ public sealed class S3StorageService : IS3StorageService
         destinationHeaders.ContentEncoding = source.ContentEncoding;
         destinationHeaders.ContentDisposition = source.ContentDisposition;
         if (source.ExpiresUtc is not null)
-            destinationHeaders.ExpiresUtc = source.ExpiresUtc.Value.UtcDateTime;
+            destinationHeaders.Expires = source.ExpiresUtc.Value.UtcDateTime;
 
         foreach (var pair in source.Metadata ?? new Dictionary<string, string>())
             destinationMetadata.Add(pair.Key, pair.Value);
@@ -1999,9 +2027,10 @@ public sealed class S3StorageService : IS3StorageService
                     VersionIdMarker = versionMarker,
                     MaxKeys = 1000
                 }, cancellationToken).ConfigureAwait(false);
-                versions += response.Versions.LongCount(item => !item.IsDeleteMarker);
-                markers += response.Versions.LongCount(item => item.IsDeleteMarker);
-                more = response.IsTruncated;
+                var responseVersions = response.Versions ?? [];
+                versions += responseVersions.LongCount(item => item.IsDeleteMarker != true);
+                markers += responseVersions.LongCount(item => item.IsDeleteMarker == true);
+                more = response.IsTruncated == true;
                 keyMarker = more ? response.NextKeyMarker : null;
                 versionMarker = more ? response.NextVersionIdMarker : null;
             } while (more);
@@ -2031,11 +2060,12 @@ public sealed class S3StorageService : IS3StorageService
                     BucketName = bucket, KeyMarker = keyMarker,
                     VersionIdMarker = versionMarker, MaxKeys = 1000
                 }, cancellationToken).ConfigureAwait(false);
-                items.AddRange(response.Versions.Select(item =>
+                var responseVersions = response.Versions ?? [];
+                items.AddRange(responseVersions.Select(item =>
                     new KeyVersion { Key = item.Key, VersionId = item.VersionId }));
-                versions += response.Versions.LongCount(item => !item.IsDeleteMarker);
-                markers += response.Versions.LongCount(item => item.IsDeleteMarker);
-                more = response.IsTruncated;
+                versions += responseVersions.LongCount(item => item.IsDeleteMarker != true);
+                markers += responseVersions.LongCount(item => item.IsDeleteMarker == true);
+                more = response.IsTruncated == true;
                 keyMarker = more ? response.NextKeyMarker : null;
                 versionMarker = more ? response.NextVersionIdMarker : null;
             } while (more);
@@ -2118,9 +2148,9 @@ public sealed class S3StorageService : IS3StorageService
             {
                 BucketName = destinationBucket,
                 Key = destinationKey,
-                UploadId = initiate.UploadId
+                UploadId = initiate.UploadId,
+                PartETags = partEtags
             };
-            complete.AddPartETags(partEtags);
             await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
         }
         catch

@@ -37,39 +37,39 @@
       },
       "AWSSDK.Core": {
         "type": "Transitive",
-        "resolved": "3.7.501.1",
-        "contentHash": "VZR0LRAawpn5FQwXNPzhOO8DHhfffhBSvcSZT1d0ctcZ+kmsz3tzTArZnTQ9Haf/TNEqNLzKupHfjV2ndWAL4A=="
+        "resolved": "4.0.100.9",
+        "contentHash": "OPYy41jZjXwxxcYRotaq24HDrwUnVtBB/mvg1IwB9D1ICXAtHqMa1sp2hpmlVJCZwjlcrPcTCJIejInvV1vp5g=="
       },
       "AWSSDK.S3": {
         "type": "Transitive",
-        "resolved": "3.7.511.8",
-        "contentHash": "QLHt7ucegMurWnwB3GomMeP6DiCG033aEittRiabMGnTOMZ5xyu7tbmTkqs3ZU5tBz4AK53Ak8WJkF+kk+s4Tw==",
+        "resolved": "4.0.102",
+        "contentHash": "+5ToRNfpNnu1/oEbb1P+4AnHpknda1+eybYkhT6viFC4v772ZONeFYGR1pHgm7Zum0nvLDpSEJl/4y+wggpIpg==",
         "dependencies": {
-          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+          "AWSSDK.Core": "[4.0.100.9, 5.0.0)"
         }
       },
       "AWSSDK.SecurityToken": {
         "type": "Transitive",
-        "resolved": "3.7.504.50",
-        "contentHash": "uiGuL/3sH1mdwZvheNZwDkZaVTrMlFDrjKtT8Vq2yPkwDZvR9l/WieHluHrTwU0HG9qRlLzvA9DXwhsMu76Y1g==",
+        "resolved": "4.0.100.7",
+        "contentHash": "J+UONdTPOcLXAHIIJ/cutqqTv4RuzS2YWYIt6eXeLWnfkoIUEbfljROniHwT4yXbjWaLe9Gd2tgSStWJvl9J1A==",
         "dependencies": {
-          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+          "AWSSDK.Core": "[4.0.100.9, 5.0.0)"
         }
       },
       "AWSSDK.SSO": {
         "type": "Transitive",
-        "resolved": "3.7.502.56",
-        "contentHash": "oikwNz8JmBjBz+wSPm1Z6Kygxxp4NGC+GJNVe6hlLp/uqrXEPuYRlI8XZzIfMjt18MkCZWvGUL+2QN5gSJxA1g==",
+        "resolved": "4.0.100.7",
+        "contentHash": "HzXXscVe/said+K0FY9iS8JZzT7F1h/iMBOWUHVsri6gdSnAxqoSJBwaDxyihKAXPtt0l3ynb0/mP0Cuw0wiLg==",
         "dependencies": {
-          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+          "AWSSDK.Core": "[4.0.100.9, 5.0.0)"
         }
       },
       "AWSSDK.SSOOIDC": {
         "type": "Transitive",
-        "resolved": "3.7.503.59",
-        "contentHash": "4l3I0qxbvCYbdRk6QZ8pG2UcxisTnZND1sSqINCaCzM/kiiUPL68VitXnvuY7x5rtiCE/gktAmly+DvPl1BLqw==",
+        "resolved": "4.0.100.7",
+        "contentHash": "3iQCAc2z0iFBpZS/wVvjhJmiDpZg9yI7B2YLaxsPjkBkm2wUSWOSAJHYPOrk2WGexh5jY+FvChtSZnuWJXLSwg==",
         "dependencies": {
-          "AWSSDK.Core": "[3.7.501.1, 4.0.0)"
+          "AWSSDK.Core": "[4.0.100.9, 5.0.0)"
         }
       },
       "Microsoft.CodeCoverage": {
@@ -160,10 +160,10 @@
       "s3explorer.infrastructure.s3": {
         "type": "Project",
         "dependencies": {
-          "AWSSDK.S3": "[3.7.511.8, )",
-          "AWSSDK.SSO": "[3.7.502.56, )",
-          "AWSSDK.SSOOIDC": "[3.7.503.59, )",
-          "AWSSDK.SecurityToken": "[3.7.504.50, )",
+          "AWSSDK.S3": "[4.0.102, )",
+          "AWSSDK.SSO": "[4.0.100.7, )",
+          "AWSSDK.SSOOIDC": "[4.0.100.7, )",
+          "AWSSDK.SecurityToken": "[4.0.100.7, )",
           "S3Explorer.Core": "[0.7.2, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }

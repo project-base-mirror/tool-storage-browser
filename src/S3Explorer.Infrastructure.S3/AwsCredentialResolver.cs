@@ -5,6 +5,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.Runtime.CredentialManagement;
+using Amazon.Runtime.Credentials;
+using Amazon.S3;
 using S3Explorer.Core;
 
 namespace S3Explorer.Infrastructure.S3;
@@ -42,7 +44,11 @@ public sealed class AwsCredentialResolver
             static () => new EnvironmentVariablesAWSCredentials(),
             static () => new GenericContainerCredentials(),
             static () => new InstanceProfileAWSCredentials(),
-            static () => FallbackCredentialsFactory.GetCredentials(),
+            static () =>
+            {
+                using var resolver = new DefaultAWSCredentialsIdentityResolver();
+                return resolver.ResolveIdentity(new AmazonS3Config());
+            },
             Environment.GetEnvironmentVariable,
             OpenSsoVerificationUri)
     {

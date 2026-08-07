@@ -201,7 +201,7 @@ public sealed class ProviderMatrixIntegrationTests
                             UploadIdMarker = uploadIdMarker
                         },
                         CancellationToken.None);
-                    foreach (var upload in uploads.MultipartUploads)
+                    foreach (var upload in uploads.MultipartUploads ?? [])
                     {
                         await client.AbortMultipartUploadAsync(
                             new AbortMultipartUploadRequest
@@ -213,8 +213,8 @@ public sealed class ProviderMatrixIntegrationTests
                             CancellationToken.None);
                     }
 
-                    keyMarker = uploads.IsTruncated ? uploads.NextKeyMarker : null;
-                    uploadIdMarker = uploads.IsTruncated ? uploads.NextUploadIdMarker : null;
+                    keyMarker = uploads.IsTruncated == true ? uploads.NextKeyMarker : null;
+                    uploadIdMarker = uploads.IsTruncated == true ? uploads.NextUploadIdMarker : null;
                 } while (!string.IsNullOrEmpty(keyMarker));
             }
             catch
