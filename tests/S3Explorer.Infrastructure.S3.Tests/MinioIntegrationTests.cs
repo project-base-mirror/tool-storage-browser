@@ -1,7 +1,6 @@
 using Amazon.S3.Model;
 using S3Explorer.Core;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
 

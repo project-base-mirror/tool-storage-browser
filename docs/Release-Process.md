@@ -9,7 +9,7 @@
 - `Directory.Build.props`、`docs/versions/vX.Y.Z.md`、`docs/site/update.json`、Pages 下载链接和 Release 资产名必须使用同一个版本。
 - 已推送的正式 tag 不移动、不覆盖；发布后发现问题时提交修复并发布下一个补丁版本。
 - GitHub Actions 是 Release 资产与 Pages 部署的唯一正式生成入口，本地包只用于发布前验证。
-- PR 和 `main` 推送不自动运行完整测试、Release 构建或 CLI 进程测试；频繁开发阶段先在本地获得快速反馈，正式 tag 发布工作流再复验发布树。
+- PR 和 `main` 推送会运行锁定依赖恢复、Release `-warnaserror` 构建、默认完整测试与重点覆盖率门禁；真实 MinIO、CLI 独立进程、GUI/损坏配置 Smoke、安装器生命周期与完整发布打包仍在发布前或专用工作流中执行，正式 tag 发布工作流会再次复验不可变发布树。
 
 ## 1. 发布前确认
 

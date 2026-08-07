@@ -1,6 +1,6 @@
 # S3 Explorer v0.5–v0.8 功能对标与交付路线图
 
-本文以 2026-07-27 的仓库状态为基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档，规划 S3 Explorer 后续版本。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
+本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.3。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
 
 参考资料：
 
@@ -20,18 +20,18 @@
 5. GUI、CLI 和同步任务共享 Core 模型与服务，不维护三套行为不一致的实现。
 6. 每个版本必须同步维护 `docs/versions/`，并通过全量测试、Release 构建、CLI 冒烟、UI 冒烟和发布包检查。
 
-## 当前能力快照
+## 当前能力快照（v0.7.3，2026-08-07）
 
 | 领域 | 已完成 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- |
-| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；Region 自动处理；指定 Bucket；DPAPI；连接包导入导出；复制与健康状态 | AWS Profile/SSO/AssumeRole；账户分组；代理 | P1 |
-| Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership | CORS、版本控制、生命周期、默认加密、标签、日志、Object Lock | P1–P2 |
-| 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、预签名 URL | 版本管理、Tagging、存储类型、跨账户复制、拖放、直接打开/编辑 | P1–P2 |
-| 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、批次失败明细 | 完整性校验报告、冲突策略、临时空间检查、后台托盘 | P1–P2 |
-| 文件夹同步 | 持久任务、单向镜像、分析后执行、排除规则、可选哈希、删除传播 | 逐项勾选、分析缓存、冲突策略、计划任务、报告导出、增量扫描 | P1 |
-| 自动化 | 独立 CLI、JSON、退出码、连接/Bucket/对象/同步命令 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
-| 内容分发 | CDN Profile、独立凭据、Bucket/最长前缀关联、URL、Range 探测、HTTP 预热、通用刷新 | 厂商签名 Provider、Prefix Purge、持久作业、上传后自动化、CLI | P1–P2 |
-| 交付 | 本地构建/发布脚本、发布包检查、UI 自动化、Pages、GitHub Release、客户端更新检查 | 代码签名、SBOM、可复现构建 | P2 |
+| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；Region 自动处理；DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 统一 Provider capability registry；代理；更多兼容服务的持续实测 | P1 |
+| Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership、CORS、版本控制、默认加密、标签、日志、生命周期与 Object Lock 入口 | 跨 Provider 能力差异统一表达；MinIO 等兼容服务的高级能力边界继续收口 | P1–P2 |
+| 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、Tags、版本浏览/恢复、预签名 URL、发布 Header 规则 | 跨账户复制、拖放、直接打开/编辑、大规模对象列表性能 | P1–P2 |
+| 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、回读校验、批次失败明细、托盘驻留 | 关键状态机覆盖率继续提升；临时空间与极端中断恢复诊断 | P1–P2 |
+| 文件夹同步 | 持久任务、单向镜像、逐项选择、分析缓存、排除规则、可选哈希、删除传播、结果导出与失败重试 | 计划任务、增量扫描、双向/冲突策略 | P1 |
+| 自动化 | 独立 CLI、稳定 JSON、退出码、连接/Bucket/对象/同步/发布/验证/CDN 命令、超时与外部取消 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
+| 内容分发 | CDN Profile、独立凭据、Bucket/最长前缀关联、URL、Range 探测、证书诊断、持久作业、上传后自动化、CLI、HTTP 预热与通用刷新 | CloudFront/Cloudflare/阿里云/腾讯云签名 Provider；Prefix Purge | P1–P2 |
+| 交付 | 锁定依赖、Release 构建/测试门禁、UI 自动化、ZIP、双 MSI、Pages、GitHub Release、SHA-256 校验、安装版用户确认升级 | 受信代码签名、SBOM、可复现构建 | P2 |
 
 优先级定义：P0 是交付基础；P1 是近期高价值；P2 是增强能力；P3 是高复杂度或平台相关能力。
 
@@ -121,7 +121,7 @@
 
 ## v0.5.8：CDN 运维与上传自动化
 
-状态：已完成开发，待正式发布（2026-07-28）。
+状态：正式发布（2026-07-28）。
 
 - CDN Profile 增加非敏感备注，配置中心提供只执行 TLS 握手的 HTTPS 证书有效期、域名和证书链诊断。
 - 预热和刷新统一进入持久 CDN 作业队列，支持幂等键、活动 URL 去重、指数退避与抖动、失败重试、取消、历史清理和程序重启恢复。
@@ -133,7 +133,7 @@
 
 ## v0.5.9：连接导入预览与幂等合并
 
-状态：已完成开发，待正式发布（2026-07-28）。
+状态：正式发布（2026-07-28）。
 
 - 导入预览将对象存储连接和 CDN 配置拆为两个标签页，可分别全选、全不选和逐项选择。
 - 对象存储已保存密钥与 CDN Token/Header 凭据改为两个独立的显式选项，默认均关闭。
@@ -145,7 +145,7 @@
 
 ## v0.5.10：单文件便携包、MSI 与签名发布链
 
-状态：已完成开发，待正式发布（2026-07-28）。
+状态：正式发布（2026-07-28）。
 
 - framework-dependent 与 self-contained 两个便携 ZIP 都只暴露桌面端和 CLI 的单文件 EXE，不再散放项目 DLL。
 - 新增 x64 MSI 安装包，使用 self-contained 产物安装到 Program Files，并创建开始菜单入口；与便携包共享同一版本号。
