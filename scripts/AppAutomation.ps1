@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("Start", "Status", "Stop", "Smoke", "CorruptSmoke", "Version", "Help")]
+    [ValidateSet("Start", "Status", "Stop", "Smoke", "CorruptSmoke", "SingleInstanceSmoke", "Version", "Help")]
     [string]$Command = "Help",
 
     [ValidateRange(1, 300)]
@@ -10,6 +10,24 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($null -eq ("S3ExplorerAutomationNative" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class S3ExplorerAutomationNative
+{
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr windowHandle);
+}
+"@
+}
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
@@ -106,13 +124,32 @@ function Wait-AutomationState {
     throw "Timed out waiting for application state: $($Expected -join ', ')."
 }
 
+function Wait-WindowVisibility {
+    param(
+        [Parameter(Mandatory)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory)][bool]$Visible,
+        [Parameter(Mandatory)][int]$Timeout
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
+    do {
+        if ([S3ExplorerAutomationNative]::IsWindowVisible($WindowHandle) -eq $Visible) {
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Timed out waiting for window visibility=$Visible."
+}
+
 function Start-ApplicationProcess {
     param(
         [Parameter(Mandatory)][string]$State,
         [Parameter(Mandatory)][string]$Report,
         [Parameter(Mandatory)][string]$Screenshot,
         [Parameter(Mandatory)][string]$Data,
-        [switch]$Smoke
+        [switch]$Smoke,
+        [string]$InstanceKey = ""
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -121,6 +158,10 @@ function Start-ApplicationProcess {
     $startInfo.UseShellExecute = $true
     if ($Smoke) {
         [void]$startInfo.ArgumentList.Add("--automation-smoke")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstanceKey)) {
+        [void]$startInfo.ArgumentList.Add("--automation-instance-key")
+        [void]$startInfo.ArgumentList.Add($InstanceKey)
     }
     foreach ($argument in @(
         "--automation-state", $State,
@@ -307,6 +348,80 @@ switch ($Command) {
         })
     }
 
+    "SingleInstanceSmoke" {
+        Ensure-ApplicationBuild
+        $runRoot = Join-Path $automationRoot ("single-instance-" + [Guid]::NewGuid().ToString("N"))
+        $runState = Join-Path $runRoot "state.json"
+        $runReport = Join-Path $runRoot "report.json"
+        $runScreenshot = Join-Path $runRoot "screenshot.png"
+        $runData = Join-Path $runRoot "data"
+        $instanceKey = "automation." + [Guid]::NewGuid().ToString("N")
+        New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+
+        $primary = $null
+        try {
+            $primary = Start-ApplicationProcess -State $runState -Report $runReport -Screenshot $runScreenshot -Data $runData -InstanceKey $instanceKey
+            $state = Wait-AutomationState -Path $runState -Expected @("ready", "failed") -Timeout $TimeoutSeconds
+            if ([string]$state.status -eq "failed" -or -not [bool]$state.passed) {
+                throw "Primary single-instance startup failed: $($state.error)"
+            }
+            $verifiedPrimary = Get-VerifiedApplicationProcess -State $state
+            if ($null -eq $verifiedPrimary -or $verifiedPrimary.Id -ne $primary.Id) {
+                throw "Primary single-instance process identity verification failed."
+            }
+
+            $windowHandle = [IntPtr][long]$state.windowHandle
+            if ($windowHandle -eq [IntPtr]::Zero) {
+                throw "Primary single-instance window handle is missing."
+            }
+            [void][S3ExplorerAutomationNative]::ShowWindow($windowHandle, 0)
+            Wait-WindowVisibility -WindowHandle $windowHandle -Visible $false -Timeout $TimeoutSeconds
+
+            $secondaryExitCodes = @()
+            foreach ($attempt in 1..2) {
+                $secondary = Start-ApplicationProcess -State $runState -Report $runReport -Screenshot $runScreenshot -Data $runData -InstanceKey $instanceKey
+                if (-not $secondary.WaitForExit($TimeoutSeconds * 1000)) {
+                    throw "Secondary single-instance process $attempt did not exit."
+                }
+                $secondaryExitCodes += $secondary.ExitCode
+                if ($secondary.ExitCode -ne 0) {
+                    throw "Secondary single-instance process $attempt exited with code $($secondary.ExitCode)."
+                }
+                if ($secondary.Id -eq $primary.Id) {
+                    throw "Secondary single-instance process reused the primary PID unexpectedly."
+                }
+                if ($attempt -eq 1) {
+                    Wait-WindowVisibility -WindowHandle $windowHandle -Visible $true -Timeout $TimeoutSeconds
+                }
+            }
+
+            $stateAfterActivation = Read-AutomationState -Path $runState
+            $verifiedAfterActivation = Get-VerifiedApplicationProcess -State $stateAfterActivation
+            if ($null -eq $verifiedAfterActivation -or $verifiedAfterActivation.Id -ne $primary.Id) {
+                throw "Primary process identity changed after secondary activation."
+            }
+
+            Write-JsonResult ([ordered]@{
+                command = "SingleInstanceSmoke"
+                status = "passed"
+                passed = $true
+                primaryPid = $primary.Id
+                secondaryExitCodes = $secondaryExitCodes
+                existingWindowRestored = $true
+                instanceKey = $instanceKey
+                statePath = $runState
+            })
+        }
+        finally {
+            if ($null -ne $primary -and -not $primary.HasExited) {
+                [void]$primary.CloseMainWindow()
+                if (-not $primary.WaitForExit($TimeoutSeconds * 1000)) {
+                    throw "Primary single-instance process did not exit cleanly."
+                }
+            }
+        }
+    }
+
     "Version" {
         [xml]$properties = Get-Content -LiteralPath (Join-Path $repositoryRoot "Directory.Build.props") -Raw
         Write-JsonResult ([ordered]@{ command = "Version"; version = [string]$properties.Project.PropertyGroup.Version })
@@ -321,6 +436,7 @@ switch ($Command) {
                 "Stop   - gracefully close the verified app process",
                 "Smoke  - run isolated UI checks and create a screenshot",
                 "CorruptSmoke - prove malformed user-state files do not block startup",
+                "SingleInstanceSmoke - launch three times and verify one process remains",
                 "Version - print the repository application version",
                 "Help   - print this fixed command list"
             )

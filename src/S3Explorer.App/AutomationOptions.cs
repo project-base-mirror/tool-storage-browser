@@ -8,6 +8,7 @@ internal sealed record AutomationOptions
     public string ReportPath { get; init; } = string.Empty;
     public string ScreenshotPath { get; init; } = string.Empty;
     public string DataDirectory { get; init; } = string.Empty;
+    public string InstanceKey { get; init; } = string.Empty;
 
     public static AutomationOptions Parse(string[] args)
     {
@@ -34,6 +35,9 @@ internal sealed record AutomationOptions
                 case "--automation-data-dir":
                     options = options with { DataDirectory = ReadAbsolutePath(args, ref index, "--automation-data-dir") };
                     break;
+                case "--automation-instance-key":
+                    options = options with { InstanceKey = ReadInstanceKey(args, ref index) };
+                    break;
                 default:
                     throw new ArgumentException($"不支持的命令行参数: {args[index]}");
             }
@@ -45,6 +49,17 @@ internal sealed record AutomationOptions
             throw new ArgumentException("UI 冒烟模式必须提供 --automation-report 和 --automation-screenshot。");
 
         return options;
+    }
+
+    private static string ReadInstanceKey(string[] args, ref int index)
+    {
+        if (++index >= args.Length || string.IsNullOrWhiteSpace(args[index]))
+            throw new ArgumentException("--automation-instance-key 缺少参数。");
+        var value = args[index].Trim();
+        if (value.Length > 128 || value.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_' and not '.'))
+            throw new ArgumentException("--automation-instance-key 只能包含 ASCII 字母、数字、点、短横线和下划线，且最长 128 个字符。");
+        return value;
     }
 
     private static string ReadAbsolutePath(string[] args, ref int index, string option)

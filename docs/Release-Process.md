@@ -58,6 +58,7 @@ dotnet build .\S3Explorer.sln -c Release --no-restore
 & .\src\S3Explorer.Cli\bin\Release\net10.0-windows\win-x64\s3explorer-cli.exe version --output json
 pwsh .\scripts\AppAutomation.ps1 Smoke
 pwsh .\scripts\AppAutomation.ps1 CorruptSmoke
+pwsh .\scripts\AppAutomation.ps1 SingleInstanceSmoke
 pwsh .\scripts\Publish.ps1 -NoOpen
 pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive

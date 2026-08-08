@@ -14,6 +14,15 @@ internal static class Program
         try
         {
             var options = AutomationOptions.Parse(args);
+            var instanceKey = options.Enabled
+                ? options.InstanceKey
+                : SingleInstanceCoordinator.ApplicationInstanceKey;
+            using var singleInstance = string.IsNullOrEmpty(instanceKey)
+                ? null
+                : SingleInstanceCoordinator.Acquire(instanceKey);
+            if (singleInstance is { IsPrimary: false })
+                return 0;
+
             ApplicationConfiguration.Initialize();
             automation = options.Enabled ? new AutomationSession(options) : null;
 
@@ -105,6 +114,21 @@ internal static class Program
                 cdnCertificateInspector,
                 configurationTransactions,
                 automation);
+            if (singleInstance is not null)
+            {
+                _ = form.Handle;
+                singleInstance.StartListening(() =>
+                {
+                    if (form.IsDisposed || form.Disposing || !form.IsHandleCreated)
+                        return;
+                    try
+                    {
+                        form.BeginInvoke(new Action(form.ActivateFromSecondaryInstance));
+                    }
+                    catch (ObjectDisposedException) { }
+                    catch (InvalidOperationException) { }
+                });
+            }
             Application.Run(form);
             return Environment.ExitCode;
         }

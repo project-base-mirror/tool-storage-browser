@@ -86,6 +86,7 @@ internal sealed partial class MainForm : Form
     private readonly OperationCancellation _navigationCancellation = new();
     private readonly CancellationTokenSource _updateCancellation = new();
     private NotifyIcon? _trayIcon;
+    private TrayNotificationForm? _trayNotification;
 
     private IReadOnlyList<ConnectionProfile> _profiles = [];
     private IReadOnlyList<ConnectionGroup> _profileGroups = [];
@@ -105,7 +106,6 @@ internal sealed partial class MainForm : Form
     private ObjectClipboardPayload? _objectClipboard;
     private bool _updateCheckInProgress;
     private bool _exitRequested;
-    private bool _trayHintShown;
     private int _trayCompletedTransfers;
     private int _trayFailedTransfers;
 
@@ -197,6 +197,8 @@ internal sealed partial class MainForm : Form
                 _trayIcon.Visible = false;
                 _trayIcon.Dispose();
             }
+            _trayNotification?.Close();
+            _trayNotification?.Dispose();
             _trayNotificationTimer.Dispose();
             _automation?.MarkStopped(this);
         };
@@ -748,7 +750,7 @@ internal sealed partial class MainForm : Form
                     _automation is not null,
                     _closing))
             {
-                BeginInvoke(new Action(() => HideToTray(showHint: true)));
+                BeginInvoke(new Action(HideToTray));
             }
         };
 
@@ -998,6 +1000,12 @@ internal sealed partial class MainForm : Form
     {
         if (_trayIcon is null) return;
         _trayIcon.Visible = _settings.KeepRunningInTray && !_closing;
+        if (!_settings.KeepRunningInTray || !_settings.ShowTrayTransferNotifications)
+        {
+            _trayNotification?.Close();
+            _trayNotification?.Dispose();
+            _trayNotification = null;
+        }
         UpdateTrayStatus();
     }
 
@@ -1010,21 +1018,12 @@ internal sealed partial class MainForm : Form
             : "S3 Explorer - 空闲";
     }
 
-    private void HideToTray(bool showHint)
+    private void HideToTray()
     {
         if (_trayIcon is null || !_settings.KeepRunningInTray || _closing) return;
         _trayIcon.Visible = true;
         Hide();
         UpdateTrayStatus();
-        if (showHint && !_trayHintShown)
-        {
-            _trayHintShown = true;
-            _trayIcon.ShowBalloonTip(
-                2500,
-                "S3 Explorer 已驻留托盘",
-                "传输任务会继续运行；使用托盘菜单中的“退出”可安全结束程序。",
-                ToolTipIcon.Info);
-        }
     }
 
     private void ShowMainWindow()
@@ -1035,6 +1034,12 @@ internal sealed partial class MainForm : Form
             WindowState = FormWindowState.Normal;
         Activate();
         BringToFront();
+    }
+
+    internal void ActivateFromSecondaryInstance()
+    {
+        if (_closing) return;
+        ShowMainWindow();
     }
 
     private void RequestExit()
@@ -1078,11 +1083,24 @@ internal sealed partial class MainForm : Form
             completed + failed == 0)
             return;
 
-        _trayIcon.ShowBalloonTip(
-            4000,
+        ShowTrayTransferNotification(
             failed == 0 ? "传输已完成" : "传输任务已结束",
             $"成功 {completed:N0} 项，失败 {failed:N0} 项。",
-            failed == 0 ? ToolTipIcon.Info : ToolTipIcon.Warning);
+            failed > 0);
+    }
+
+    private void ShowTrayTransferNotification(string title, string message, bool warning)
+    {
+        _trayNotification?.Close();
+        _trayNotification?.Dispose();
+        var notification = new TrayNotificationForm(title, message, warning, ShowMainWindow);
+        _trayNotification = notification;
+        notification.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_trayNotification, notification))
+                _trayNotification = null;
+        };
+        notification.Show();
     }
 
     private void PopulateProfiles()
@@ -2813,7 +2831,7 @@ internal sealed partial class MainForm : Form
                 e.CloseReason))
         {
             e.Cancel = true;
-            HideToTray(showHint: true);
+            HideToTray();
             return;
         }
         if (_closing) return;

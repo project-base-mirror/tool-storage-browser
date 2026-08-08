@@ -18,7 +18,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 对象属性、可编辑 Header/Metadata、Object Tags、批量 Metadata 重写和预签名下载 URL。
 - WinForms 主窗口、连接管理、设置、日志和错误详情。
 - 当前列表过滤、导航历史、布局与列设置持久化。
-- 可选托盘驻留：关闭或最小化主窗口后继续传输，显式退出仍安全暂停并保存队列；完成与失败通知会合并显示，避免批量任务刷屏。
+- 单实例托盘驻留：重复启动只恢复已有窗口；关闭或最小化主窗口后继续传输，显式退出仍安全暂停并保存队列。驻留动作本身不弹系统气泡，完成与失败结果使用无焦点应用通知合并显示，避免 Windows 隐私占位和批量任务刷屏。
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象、同步、增量发布、远程验证和 CDN 自动化，支持稳定 JSON 输出、取消与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
@@ -146,10 +146,11 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
     pwsh .\scripts\AppAutomation.ps1 Stop
     pwsh .\scripts\AppAutomation.ps1 Smoke
     pwsh .\scripts\AppAutomation.ps1 CorruptSmoke
+    pwsh .\scripts\AppAutomation.ps1 SingleInstanceSmoke
 
 也可以使用 `scripts\app-automation.cmd`。`Start` 会在需要时构建 Release 版本，启动应用并等待窗口及核心控件就绪；`Status` 会校验 PID、进程路径和启动时间，避免误认同 PID 的其他进程；`Stop` 只发送正常窗口关闭请求，不强制终止进程。`CorruptSmoke` 会在隔离数据目录中预置损坏存储，验证应用仍能打开主窗口并保留损坏证据。
 
-`Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏、CDN 命令注册和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。
+`Smoke` 使用 `artifacts\automation` 下的隔离数据目录，不读取或覆盖 `%APPDATA%\S3Explorer` 中的真实连接配置。它会验证主窗口、菜单、工具栏、地址栏、连接树、对象列表、传输队列、状态栏、CDN 命令注册和 `..` 上级目录行，并输出 JSON 报告和 PNG 截图。`SingleInstanceSmoke` 使用独立实例键连续启动三次，要求两个后续进程立即退出、首个 PID 保持不变，并验证隐藏的首个窗口会被后续启动重新显示。
 
 ## 发布
 

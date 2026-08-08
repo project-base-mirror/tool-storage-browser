@@ -15,7 +15,8 @@ public sealed class AutomationOptionsTests
             "--automation-state", Path.Combine(root, "state.json"),
             "--automation-report", Path.Combine(root, "report.json"),
             "--automation-screenshot", Path.Combine(root, "screenshot.png"),
-            "--automation-data-dir", Path.Combine(root, "data")
+            "--automation-data-dir", Path.Combine(root, "data"),
+            "--automation-instance-key", "smoke_123.test"
         ]);
 
         Assert.True(options.Enabled);
@@ -24,6 +25,7 @@ public sealed class AutomationOptionsTests
         Assert.Equal(Path.Combine(root, "report.json"), options.ReportPath);
         Assert.Equal(Path.Combine(root, "screenshot.png"), options.ScreenshotPath);
         Assert.Equal(Path.Combine(root, "data"), options.DataDirectory);
+        Assert.Equal("smoke_123.test", options.InstanceKey);
     }
 
     [Fact]
@@ -53,5 +55,21 @@ public sealed class AutomationOptionsTests
             AutomationOptions.Parse(["--execute", "anything"]));
 
         Assert.Contains("不支持", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("contains space")]
+    [InlineData("contains/slash")]
+    public void RejectsUnsafeInstanceKeys(string value)
+    {
+        var state = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "s3explorer-state.json"));
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            AutomationOptions.Parse([
+                "--automation-state", state,
+                "--automation-instance-key", value
+            ]));
+
+        Assert.Contains("automation-instance-key", exception.Message);
     }
 }
