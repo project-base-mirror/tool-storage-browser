@@ -177,6 +177,79 @@ public sealed class CdnJobQueueTests
         Assert.Contains(secondProfile, executor.StartedProfiles);
     }
 
+    [Fact]
+    public async Task ManualRetryResetsAllAttemptScopedFields()
+    {
+        var now = DateTimeOffset.Parse("2026-08-08T00:00:00Z");
+        var failed = Job("manual-retry") with
+        {
+            State = CdnJobState.Failed,
+            AttemptCount = 4,
+            ProviderTaskId = "provider-task",
+            LastMessage = "failed",
+            LastError = "error",
+            LastStatusCode = 503,
+            BytesRead = 2048,
+            NextAttemptAt = now.AddMinutes(1),
+            StartedAt = now.AddMinutes(-2),
+            CompletedAt = now.AddMinutes(-1)
+        };
+        var store = new MemoryStore(new CdnJobStoreSnapshot { Jobs = [failed] });
+        var executor = new BlockingExecutor();
+        await using var queue = new PersistentCdnJobQueue(store, executor, clock: () => now);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+
+        await queue.RetryAsync(failed.Id, TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        var retried = Assert.Single(queue.Snapshot.Jobs);
+        Assert.Equal(CdnJobState.Running, retried.State);
+        Assert.Equal(1, retried.AttemptCount);
+        Assert.Equal(string.Empty, retried.ProviderTaskId);
+        Assert.Equal(string.Empty, retried.LastError);
+        Assert.Null(retried.LastStatusCode);
+        Assert.Equal(0, retried.BytesRead);
+        Assert.Null(retried.CompletedAt);
+    }
+
+    [Fact]
+    public async Task CancellingTerminalJobsIsIdempotentAndDoesNotPersistAgain()
+    {
+        var now = DateTimeOffset.Parse("2026-08-08T00:00:00Z");
+        var completed = Job("completed") with { State = CdnJobState.Completed, CompletedAt = now };
+        var cancelled = Job("cancelled") with { State = CdnJobState.Cancelled, CompletedAt = now };
+        var store = new MemoryStore(new CdnJobStoreSnapshot { Jobs = [completed, cancelled] });
+        await using var queue = new PersistentCdnJobQueue(store, new SequenceExecutor());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var savesBeforeCancel = store.SaveCount;
+
+        await queue.CancelAsync(completed.Id, TestContext.Current.CancellationToken);
+        await queue.CancelAsync(cancelled.Id, TestContext.Current.CancellationToken);
+
+        Assert.Equal(savesBeforeCancel, store.SaveCount);
+        Assert.Equal(CdnJobState.Completed, queue.Snapshot.Jobs.Single(job => job.Id == completed.Id).State);
+        Assert.Equal(CdnJobState.Cancelled, queue.Snapshot.Jobs.Single(job => job.Id == cancelled.Id).State);
+    }
+
+    [Fact]
+    public async Task DisposePersistsRunningJobAsPendingForNextStart()
+    {
+        var now = DateTimeOffset.Parse("2026-08-08T00:00:00Z");
+        var store = new MemoryStore();
+        var executor = new BlockingExecutor();
+        var queue = new PersistentCdnJobQueue(store, executor, clock: () => now);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(Job("shutdown"), TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        await queue.DisposeAsync();
+
+        var persisted = Assert.Single(store.Snapshot.Jobs);
+        Assert.Equal(CdnJobState.Pending, persisted.State);
+        Assert.Equal(now, persisted.NextAttemptAt);
+        Assert.Contains("下次启动", persisted.LastMessage, StringComparison.Ordinal);
+    }
+
     private static CdnJobRecord Job(string key) => new()
     {
         IdempotencyKey = key,
@@ -190,6 +263,7 @@ public sealed class CdnJobQueueTests
     {
         private CdnJobStoreSnapshot _snapshot;
         public int SaveCount { get; private set; }
+        public CdnJobStoreSnapshot Snapshot => _snapshot;
 
         public MemoryStore(CdnJobStoreSnapshot? snapshot = null) =>
             _snapshot = snapshot ?? new CdnJobStoreSnapshot();

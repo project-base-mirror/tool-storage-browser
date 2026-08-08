@@ -379,27 +379,13 @@ internal static class Program
         bool json,
         CancellationToken cancellationToken)
     {
-        if (verb != "test") throw new CliUsageException("用法：connection test <name-or-id> | connection test --profile <name-or-id>");
-        var profileName = args.Optional("profile") is { Length: > 0 } optionProfile
-            ? optionProfile
-            : RequirePositional(args, 2, "connection test <name-or-id> 或 connection test --profile <name-or-id>");
-        var profile = ResolveProfile(await store.LoadAsync(cancellationToken), profileName);
-        var result = await storage.TestConnectionAsync(profile, cancellationToken);
-        if (!result.Success)
-        {
-            WriteOperationFailure(json, result.Message, OperationFailed, result);
-            return OperationFailed;
-        }
-        var identityText = result.AwsIdentity is null
-            ? string.Empty
-            : $"\n源身份: {result.AwsIdentity.SourceIdentity}" +
-              (string.IsNullOrWhiteSpace(result.AwsIdentity.TargetRoleArn) ? string.Empty : $"\n目标 Role: {result.AwsIdentity.TargetRoleArn}") +
-              (result.AwsIdentity.Source == CredentialSourceKind.AwsAssumeRole ? $"\nExternal ID: {(result.AwsIdentity.ExternalIdConfigured ? "已配置" : "未配置")}" : string.Empty) +
-              (result.AwsIdentity.SessionExpiresAtUtc is { } expiration ? $"\n会话到期: {expiration.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}" : string.Empty) +
-              (result.AwsIdentity.UserLoginMayBeRequired ? "\nSSO: 需要用户触发登录或刷新" : string.Empty);
-        WriteSuccess(json, result,
-            $"{result.Message}\n凭据来源: {result.CredentialSource ?? profile.CredentialSourceDisplayName}{identityText}\n耗时: {result.Elapsed.TotalMilliseconds:N0} ms\nBucket: {result.BucketCount}\nHTTP: {result.HttpStatusCode?.ToString() ?? "-"}");
-        return 0;
+        var result = await ConnectionCommands.RunTestAsync(
+            verb, args, store, storage, cancellationToken);
+        if (result.ExitCode == 0)
+            WriteSuccess(json, result.Data, result.Text);
+        else
+            WriteOperationFailure(json, result.Text, result.ExitCode, result.Data);
+        return result.ExitCode;
     }
 
     private static async Task<int> RunBucketAsync(

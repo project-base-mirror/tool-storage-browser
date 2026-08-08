@@ -435,7 +435,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             {
                 Tasks = _snapshot.Tasks.Select(task =>
                     task.State is TransferTaskState.Queued or TransferTaskState.Paused or TransferTaskState.RetryPending or
-                        TransferTaskState.Interrupted or TransferTaskState.Failed or TransferTaskState.CleanupPending
+                        TransferTaskState.Interrupted
                         ? TransferTaskStateMachine.Transition(task, TransferTaskState.Cancelled, now)
                         : task).ToArray()
             };

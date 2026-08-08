@@ -187,6 +187,81 @@ public sealed class PersistentTransferQueueTests
     }
 
     [Fact]
+    public async Task RetryRejectsNonFailedTaskWithoutChangingPersistedState()
+    {
+        var paused = CreateTask(TransferTaskState.Paused);
+        var store = new MemoryStore(new TransferStoreSnapshot { Tasks = [paused] });
+        await using var queue = new PersistentTransferQueue(store, new BlockingExecutor());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            queue.RetryAsync(paused.Id, TestContext.Current.CancellationToken));
+
+        Assert.Equal(TransferTaskState.Paused, Assert.Single(store.Snapshot.Tasks).State);
+    }
+
+    [Fact]
+    public async Task CancelAllPreservesFailureHistoryAndMultipartCleanupWork()
+    {
+        var paused = CreateTask(TransferTaskState.Paused);
+        var interrupted = CreateTask(TransferTaskState.Interrupted);
+        var failed = CreateTask(TransferTaskState.Failed) with
+        {
+            Failure = new TransferFailureInfo("failed", Retryable: true)
+        };
+        var cleanup = CreateMultipartTask() with
+        {
+            State = TransferTaskState.CleanupPending,
+            Failure = new TransferFailureInfo("abort failed", Retryable: true),
+            MultipartCheckpoint = CreateMultipartTask().MultipartCheckpoint! with { CleanupPending = true }
+        };
+        var completed = CreateTask(TransferTaskState.Completed) with { TransferredBytes = 10 };
+        var store = new MemoryStore(new TransferStoreSnapshot
+        {
+            Tasks = [paused, interrupted, failed, cleanup, completed]
+        });
+        await using var queue = new PersistentTransferQueue(store, new BlockingExecutor());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+
+        await queue.CancelAllAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TransferTaskState.Cancelled, TaskState(paused.Id));
+        Assert.Equal(TransferTaskState.Cancelled, TaskState(interrupted.Id));
+        Assert.Equal(TransferTaskState.Failed, TaskState(failed.Id));
+        Assert.Equal(TransferTaskState.CleanupPending, TaskState(cleanup.Id));
+        Assert.True(queue.Snapshot.Tasks.Single(task => task.Id == cleanup.Id).MultipartCheckpoint!.CleanupPending);
+        Assert.Equal(TransferTaskState.Completed, TaskState(completed.Id));
+
+        TransferTaskState TaskState(Guid id) =>
+            queue.Snapshot.Tasks.Single(task => task.Id == id).State;
+    }
+
+    [Fact]
+    public async Task RecoveryOnlyInterruptsPreviouslyRunningTasks()
+    {
+        var running = CreateTask(TransferTaskState.Running) with { AttemptCount = 2 };
+        var retry = CreateTask(TransferTaskState.RetryPending) with
+        {
+            AttemptCount = 1,
+            NextAttemptAt = DateTimeOffset.UtcNow.AddDays(1),
+            Failure = new TransferFailureInfo("retry", Retryable: true)
+        };
+        var failed = CreateTask(TransferTaskState.Failed) with
+        {
+            Failure = new TransferFailureInfo("failed", Retryable: false)
+        };
+        var store = new MemoryStore(new TransferStoreSnapshot { Tasks = [running, retry, failed] });
+        await using var queue = new PersistentTransferQueue(store, new BlockingExecutor());
+
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(TransferTaskState.Interrupted, queue.Snapshot.Tasks.Single(task => task.Id == running.Id).State);
+        Assert.Equal(2, queue.Snapshot.Tasks.Single(task => task.Id == running.Id).AttemptCount);
+        Assert.Equal(TransferTaskState.RetryPending, queue.Snapshot.Tasks.Single(task => task.Id == retry.Id).State);
+        Assert.Equal(TransferTaskState.Failed, queue.Snapshot.Tasks.Single(task => task.Id == failed.Id).State);
+    }
+
+    [Fact]
     public async Task ExecutorCanPersistDestinationSnapshotBeforeUploadCompletes()
     {
         var store = new MemoryStore();

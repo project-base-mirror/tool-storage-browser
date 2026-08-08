@@ -268,20 +268,7 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
         {
             if (job.State != CdnJobState.Failed)
                 throw new InvalidOperationException("只有失败的 CDN 任务可以重试。");
-            var now = _clock();
-            return job with
-            {
-                State = CdnJobState.Pending,
-                AttemptCount = 0,
-                ProviderTaskId = string.Empty,
-                LastError = string.Empty,
-                LastMessage = "等待重试。",
-                LastStatusCode = null,
-                NextAttemptAt = now,
-                StartedAt = null,
-                CompletedAt = null,
-                UpdatedAt = now
-            };
+            return PrepareManualRetry(job, _clock());
         }, cancellationToken);
 
     public async Task RetryAllFailedAsync(CancellationToken cancellationToken = default)
@@ -292,19 +279,7 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             EnsureInitialized();
             var now = _clock();
             var jobs = _snapshot.Jobs.Select(job => job.State == CdnJobState.Failed
-                ? job with
-                {
-                    State = CdnJobState.Pending,
-                    AttemptCount = 0,
-                    ProviderTaskId = string.Empty,
-                    LastError = string.Empty,
-                    LastMessage = "等待重试。",
-                    LastStatusCode = null,
-                    NextAttemptAt = now,
-                    StartedAt = null,
-                    CompletedAt = null,
-                    UpdatedAt = now
-                }
+                ? PrepareManualRetry(job, now)
                 : job).ToArray();
             await CommitLockedAsync(_snapshot with { Jobs = jobs }, cancellationToken).ConfigureAwait(false);
         }
@@ -566,6 +541,21 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             CompletedAt = now
         };
     }
+
+    private static CdnJobRecord PrepareManualRetry(CdnJobRecord job, DateTimeOffset now) => job with
+    {
+        State = CdnJobState.Pending,
+        AttemptCount = 0,
+        ProviderTaskId = string.Empty,
+        LastError = string.Empty,
+        LastMessage = "等待重试。",
+        LastStatusCode = null,
+        BytesRead = 0,
+        NextAttemptAt = now,
+        StartedAt = null,
+        CompletedAt = null,
+        UpdatedAt = now
+    };
 
     private async Task MutateAsync(
         Guid jobId,
