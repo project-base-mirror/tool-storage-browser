@@ -57,7 +57,7 @@ Release 工作流会：
 3. 生成带版本号的 framework-dependent、自包含、Unity Contracts SDK ZIP、self-contained MSI、framework-dependent MSI、`release-metrics.json` 和 `SHA256SUMS.txt`。
 4. 保存 Actions artifact，并创建同名 GitHub Release；重新运行时覆盖同名资产，不创建重复 Release。
 
-发布后的默认验收使用 `scripts/Verify-RemoteRelease.ps1`：小文件、普通 ZIP 与轻量 framework-dependent MSI 会实际下载并执行检查，大型 self-contained ZIP 与 self-contained MSI 使用 GitHub 资产 SHA-256 digest 对照 `SHA256SUMS.txt`。安装器、签名或打包链发生变化时使用 `-FullDownload`；要求检查签名时同时使用 `-RequireSigning`。
+发布后的默认验收使用 `scripts/Verify-RemoteRelease.ps1`：只下载小型元数据、普通 framework-dependent ZIP 与 Contracts SDK 执行结构、版本和冒烟检查；所有 MSI、self-contained ZIP 以及其他 5 MiB 以上资产都不做远端下载重验，而是使用 GitHub 资产 SHA-256 digest 对照 `SHA256SUMS.txt`，digest 缺失或不一致即验收失败。日常发布和自动化不得使用 `-FullDownload` 或手工重试下载大资产；仅当当前任务中用户明确要求逐字节验证时才允许使用。安装器与签名验收应优先在本地发布产物或 GitHub Actions Runner 内完成。
 
 也可以手工运行 **Publish GitHub Release**，但输入必须是已经存在的 tag。工作流不会替用户创建或移动 tag。
 

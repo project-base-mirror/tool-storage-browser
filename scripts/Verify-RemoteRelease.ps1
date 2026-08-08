@@ -119,10 +119,8 @@ try {
     $metricsPath = Download-Asset -Name "release-metrics.json" -Destination $temporaryRoot
     $frameworkPath = Download-Asset -Name $frameworkName -Destination $temporaryRoot
     $contractsPath = Download-Asset -Name $contractsName -Destination $temporaryRoot
-    $frameworkInstallerPath = Download-Asset -Name $frameworkInstallerName -Destination $temporaryRoot
     Assert-FileHash -Path $frameworkPath -Expected ([string]$checksums[$frameworkName])
     Assert-FileHash -Path $contractsPath -Expected ([string]$checksums[$contractsName])
-    Assert-FileHash -Path $frameworkInstallerPath -Expected ([string]$checksums[$frameworkInstallerName])
 
     $frameworkEntries = Get-ZipEntries -Path $frameworkPath
     $expectedApplicationEntries = @("S3Explorer.exe", "s3explorer-cli.exe") | Sort-Object
@@ -157,8 +155,10 @@ try {
     if ($FullDownload) {
         $selfContainedPath = Download-Asset -Name $selfContainedName -Destination $temporaryRoot
         $installerPath = Download-Asset -Name $installerName -Destination $temporaryRoot
+        $frameworkInstallerPath = Download-Asset -Name $frameworkInstallerName -Destination $temporaryRoot
         Assert-FileHash -Path $selfContainedPath -Expected ([string]$checksums[$selfContainedName])
         Assert-FileHash -Path $installerPath -Expected ([string]$checksums[$installerName])
+        Assert-FileHash -Path $frameworkInstallerPath -Expected ([string]$checksums[$frameworkInstallerName])
         $selfContainedEntries = Get-ZipEntries -Path $selfContainedPath
         Assert-True -Condition (($selfContainedEntries -join '|') -ceq ($expectedApplicationEntries -join '|')) -Message (
             "$selfContainedName contains unexpected entries: $($selfContainedEntries -join ', ')")

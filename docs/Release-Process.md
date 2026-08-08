@@ -132,9 +132,9 @@ Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release
 pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z
 ```
 
-脚本下载 `SHA256SUMS.txt`、`release-metrics.json`、framework-dependent ZIP、很小的 Contracts SDK ZIP 和轻量的 framework-dependent MSI，检查资产集合、状态、大小、GitHub 提供的 SHA-256 digest、ZIP 结构、CLI 版本、Contracts 程序集版本以及 Pages。大型 self-contained ZIP 和 self-contained MSI 默认不再重复下载；它们的 GitHub digest 必须与 `SHA256SUMS.txt` 一致，否则验收失败，不能静默跳过。
+脚本只下载 `SHA256SUMS.txt`、`release-metrics.json`、framework-dependent ZIP 和很小的 Contracts SDK ZIP，检查资产集合、状态、大小、GitHub 提供的 SHA-256 digest、ZIP 结构、CLI 版本、Contracts 程序集版本以及 Pages。所有 MSI、self-contained ZIP 和其他 5 MiB 以上资产不再重复下载；它们的 GitHub digest 必须与 `SHA256SUMS.txt` 一致，否则验收失败，不能静默跳过。
 
-安装器、签名、打包格式或发布工作流发生变化时，以及周期性审计时，执行完整下载：
+日常发布和自动化不得下载大资产，也不得使用以下参数。只有当前任务中用户明确要求逐字节或 Authenticode 远端验证时才执行完整下载：
 
 ```powershell
 pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z -FullDownload
@@ -145,7 +145,7 @@ pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z -FullDownload -RequireSignin
 
 - [Latest Release](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) 指向新版本。
 - 版本化的两个应用 ZIP、Contracts SDK ZIP 和两个 MSI 可下载，名称、大小和 Content-Type 正常。
-- 默认验收以 GitHub 资产 digest 校验大型 self-contained ZIP/MSI，并实际下载轻量 MSI；完整验收下载三个 ZIP 和两个 MSI 后计算 SHA-256，与 `SHA256SUMS.txt` 完全一致。要求签名的版本还需验证 GUI、CLI 与两个 MSI 的 Authenticode 签名。
+- 默认验收以 GitHub 资产 digest 校验所有 MSI 和大型 self-contained ZIP，只下载小文件和普通 framework-dependent ZIP；仅在用户明确要求的完整验收中下载三个 ZIP 和两个 MSI 后计算 SHA-256。要求签名的完整验收还需验证 GUI、CLI 与两个 MSI 的 Authenticode 签名。
 - [项目主页](https://project-base-mirror.github.io/tool-storage-browser/) 显示新版本和正确下载地址。
 - [`update.json`](https://project-base-mirror.github.io/tool-storage-browser/update.json) 的版本、tag、Release 页面与下载 URL 一致，客户端检查更新可读取。
 - `robots.txt`、`sitemap.xml` 和 `assets/social-card.png` 均返回 HTTP 200。
