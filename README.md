@@ -2,7 +2,7 @@
 
 S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工具。它使用 C#、.NET 10、WinForms 和 AWS SDK for .NET 构建，不依赖浏览器、Electron、Node.js、WebView 或数据库。
 
-[项目主页](https://project-base-mirror.github.io/tool-storage-browser/) · [下载最新版本](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) · [功能路线图](docs/Roadmap-v0.5-v0.8.md) · [逐版本记录](docs/versions/README.md) · [正式发布流程](docs/Release-Process.md)
+[项目主页](https://project-base-mirror.github.io/tool-storage-browser/) · [下载最新版本](https://github.com/project-base-mirror/tool-storage-browser/releases/latest) · [文档导航](docs/README.md) · [未发布变更](docs/versions/next.md) · [逐版本记录](docs/versions/README.md) · [功能路线图](docs/Roadmap-v0.5-v0.8.md)
 
 当前阶段聚焦 Amazon S3 与 S3-compatible object storage，不集成 rclone、WebDAV、FTP 或 SFTP。
 
@@ -87,19 +87,11 @@ MinIO/S3 集成测试是显式 opt-in，不会自动连接生产服务。未配�
 
 测试账户应使用隔离的临时服务和最小权限凭据。
 
-局域网 MinIO 环境、凭据获取、临时测试账户、真实 CRUD 测试和 UI 回归步骤见 [`docs/MinIO-Testing.md`](docs/MinIO-Testing.md)。
+详细文档统一从 [`docs/README.md`](docs/README.md) 进入，并按凭据与迁移、兼容性与测试、发布与自动化、交付与版本分类维护。
 
-`0.2.1` 至 `0.3.4` 的版本边界、需求拆分、验收标准和实时完成情况见 [`docs/Release-Plan-v0.2-v0.3.md`](docs/Release-Plan-v0.2-v0.3.md)。
-
-逐小版本的交付内容、兼容性、验证和已知限制见 [`docs/versions/`](docs/versions/README.md)。
-
-基于 S3 Browser 功能对标的 `0.5` 至 `0.8` 详细路线见 [`docs/Roadmap-v0.5-v0.8.md`](docs/Roadmap-v0.5-v0.8.md)。
-
-连接包的导出范围、迁移密码、导入预览和重名策略见 [`docs/Connection-Import-Export.md`](docs/Connection-Import-Export.md)。
-
-CDN 配置、独立凭据、Bucket/前缀关联、下载探测、预热/刷新边界和后续厂商 Provider 计划见 [`docs/Cdn-Delivery-Integration.md`](docs/Cdn-Delivery-Integration.md)。
-
-AWS shared credentials/config、环境变量与角色凭据的选择、诊断、安全边界和 CLI 参数见 [`docs/Aws-Credential-Sources.md`](docs/Aws-Credential-Sources.md)。
+- 已合入 `main` 但尚未进入正式 tag 的变化见 [`docs/versions/next.md`](docs/versions/next.md)。
+- 已发布版本的交付内容、兼容性、验证和已知限制见 [`docs/versions/`](docs/versions/README.md)。
+- `v0.5`–`v0.8` 的后续规划与明确延后项见 [`docs/Roadmap-v0.5-v0.8.md`](docs/Roadmap-v0.5-v0.8.md)。
 
 ## 对象存储命令行 API
 

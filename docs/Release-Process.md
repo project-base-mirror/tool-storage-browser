@@ -7,6 +7,7 @@
 - 每个版本的功能需求各自保持 1–2 个提交；版本号、版本记录、更新清单和发布文档作为一个发布提交收口。
 - 只从通过完整验证的 `main` 提交创建 annotated tag。
 - `Directory.Build.props`、`docs/versions/vX.Y.Z.md`、`docs/site/update.json`、Pages 下载链接和 Release 资产名必须使用同一个版本。
+- `docs/versions/next.md` 只记录已进入 `main`、尚未进入正式 tag 的变化；已发布的 `vX.Y.Z.md` 作为历史快照，不用后续修复回写。
 - 已推送的正式 tag 不移动、不覆盖；发布后发现问题时提交修复并发布下一个补丁版本。
 - GitHub Actions 是 Release 资产与 Pages 部署的唯一正式生成入口，本地包只用于发布前验证。
 - PR 和 `main` 推送会运行锁定依赖恢复、Release `-warnaserror` 构建、默认完整测试与重点覆盖率门禁；真实 MinIO、CLI 独立进程、GUI/损坏配置 Smoke、安装器生命周期与完整发布打包仍在发布前或专用工作流中执行，正式 tag 发布工作流会再次复验不可变发布树。
@@ -28,12 +29,13 @@ git ls-remote --tags origin
 
 一次性更新以下位置：
 
-1. `Directory.Build.props` 中的 `Version`、`AssemblyVersion` 和 `FileVersion`。
-2. 新建 `docs/versions/vX.Y.Z.md`，记录范围、行为变化、兼容性、安全边界、验证、已知限制和关联提交。
-3. 在 `docs/versions/README.md` 顶部加入版本索引。
-4. 更新 `docs/site/update.json` 的 tag、版本、Release 页面、版本化下载地址、说明和发布时间；启用安装版静默升级的版本使用 Schema 3，并把 `checksumsUrl` 固定到同一 tag 的 `SHA256SUMS.txt`。
-5. 更新 `docs/site/index.html` 的稳定版本、下载地址和与本版本相关的功能说明。
-6. 更新 README 中的发布包示例；路线图中已完成的版本也要同步标记。
+1. 先审阅 `docs/versions/next.md`，把属于本次发布的条目整理进新的 `docs/versions/vX.Y.Z.md`；确认没有遗漏后，在同一发布提交中把 `next.md` 重置为未发布模板。
+2. 更新 `Directory.Build.props` 中的 `Version`、`AssemblyVersion` 和 `FileVersion`。
+3. 新建 `docs/versions/vX.Y.Z.md`，记录范围、行为变化、兼容性、安全边界、验证、已知限制和关联提交。
+4. 在 `docs/versions/README.md` 顶部加入版本索引。
+5. 更新 `docs/site/update.json` 的 tag、版本、Release 页面、版本化下载地址、说明和发布时间；启用安装版静默升级的版本使用 Schema 3，并把 `checksumsUrl` 固定到同一 tag 的 `SHA256SUMS.txt`。
+6. 更新 `docs/site/index.html` 的稳定版本、下载地址和与本版本相关的功能说明。
+7. 更新 README 中的发布包示例；路线图中已完成的版本也要同步标记。
 
 先运行静态一致性检查：
 
