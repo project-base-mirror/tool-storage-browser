@@ -1,6 +1,6 @@
 # S3 Explorer v0.5–v0.8 功能对标与交付路线图
 
-本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.5。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
+本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.6。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
 
 参考资料：
 
@@ -20,14 +20,14 @@
 5. GUI、CLI 和同步任务共享 Core 模型与服务，不维护三套行为不一致的实现。
 6. 每个版本必须同步维护 `docs/versions/`，并通过全量测试、Release 构建、CLI 冒烟、UI 冒烟和发布包检查。
 
-## 当前能力快照（v0.7.5，2026-08-08）
+## 当前能力快照（v0.7.6，2026-08-09）
 
 | 领域 | 已完成 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- |
 | 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；统一 Provider capability registry；Region 自动处理；DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 代理；更多兼容服务的持续实测 | P1 |
 | Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership、CORS、版本控制、默认加密、标签、生命周期与 Object Lock 入口 | Bucket Logging、Transfer Acceleration、Replication；MinIO 等兼容服务的高级能力边界继续收口 | P1–P2 |
 | 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、Tags、版本浏览/恢复、预签名 URL、发布 Header 规则 | 跨账户复制、拖放、直接打开/编辑、大规模对象列表性能 | P1–P2 |
-| 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、回读校验、批次失败明细、托盘驻留 | 关键状态机覆盖率继续提升；临时空间与极端中断恢复诊断 | P1–P2 |
+| 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、回读校验、批次失败明细、单实例托盘驻留 | 关键状态机覆盖率继续提升；临时空间与极端中断恢复诊断 | P1–P2 |
 | 文件夹同步 | 持久任务、单向镜像、逐项选择、分析缓存、排除规则、可选哈希、删除传播、结果导出与失败重试 | 计划任务、增量扫描、双向/冲突策略 | P1 |
 | 自动化 | 独立 CLI、稳定 JSON、退出码、连接/Bucket/对象/同步/发布/验证/CDN 命令、超时与外部取消 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
 | 内容分发 | CDN Profile、独立凭据、Bucket/最长前缀关联、URL、Range 探测、证书诊断、持久作业、上传后自动化、CLI、HTTP 预热与通用刷新 | CloudFront/Cloudflare/阿里云/腾讯云签名 Provider；Prefix Purge | P1–P2 |
@@ -359,6 +359,15 @@
 - xUnit v3 测试体系补齐取消令牌与自定义 Fact 源码信息，Release `-warnaserror` 保持 0 警告。
 
 发布状态（2026-08-08）：上述范围已完成并进入 v0.7.5 正式发布。Bucket Logging、Transfer Acceleration、Replication、网络代理、临时目录和磁盘空间预检继续留在后续版本。
+
+### v0.7.6 单实例托盘与发布一致性维护
+
+- Mirror 发布先上传并回读新 Manifest，再删除远端孤儿；失败时优先保证 Manifest 不引用已删除对象。
+- 桌面端保持会话内单实例，后续启动恢复已有窗口；托盘驻留不再触发传统系统气泡，传输结果改用无焦点应用通知。
+- 建立 Next / Unreleased 与文档索引，正式版本记录保持不可回写；导航历史状态从 MainForm 下沉到独立协调类。
+- 远端 Release 默认对大资产执行 GitHub digest 与 `SHA256SUMS.txt` 对照，不重复下载 MSI 和 self-contained ZIP。
+
+发布状态（2026-08-09）：上述维护已完成并进入 v0.7.6 正式发布；Contract API、Manifest Schema 与持久化格式保持兼容。
 
 ## v0.8：规模化与平台集成
 
