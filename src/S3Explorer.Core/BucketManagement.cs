@@ -2,10 +2,27 @@ using System.Text.Json;
 
 namespace S3Explorer.Core;
 
-public sealed record BucketFeatureSupport(bool Supported, string Reason)
+public enum ProviderCapabilityAccess
 {
-    public static BucketFeatureSupport Yes(string reason = "支持") => new(true, reason);
-    public static BucketFeatureSupport No(string reason) => new(false, reason);
+    Unsupported,
+    ReadOnly,
+    ReadWrite
+}
+
+public sealed record BucketFeatureSupport(ProviderCapabilityAccess Access, string Reason)
+{
+    public bool Supported => Access != ProviderCapabilityAccess.Unsupported;
+    public bool CanWrite => Access == ProviderCapabilityAccess.ReadWrite;
+    public bool IsReadOnly => Access == ProviderCapabilityAccess.ReadOnly;
+
+    public static BucketFeatureSupport Yes(string reason = "支持") =>
+        new(ProviderCapabilityAccess.ReadWrite, reason);
+
+    public static BucketFeatureSupport ReadOnly(string reason) =>
+        new(ProviderCapabilityAccess.ReadOnly, reason);
+
+    public static BucketFeatureSupport No(string reason) =>
+        new(ProviderCapabilityAccess.Unsupported, reason);
 }
 
 public sealed record BucketCapabilities(
@@ -22,54 +39,8 @@ public sealed record BucketCapabilities(
     BucketFeatureSupport LifecycleStorageTransitions,
     BucketFeatureSupport LifecycleMultipartCleanup,
     BucketFeatureSupport ObjectLock,
+    BucketFeatureSupport Logging,
     BucketFeatureSupport EmptyBucket);
-
-public static class BucketCapabilityMatrix
-{
-    public static BucketCapabilities For(S3ServiceType serviceType) => serviceType switch
-    {
-        S3ServiceType.AmazonS3 => new(
-            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes(),
-            BucketFeatureSupport.Yes()),
-        S3ServiceType.MinIO => new(
-            BucketFeatureSupport.Yes("MinIO 支持 Bucket Policy"),
-            BucketFeatureSupport.Yes("MinIO 支持 S3 ACL；服务端策略可能限制公开 ACL"),
-            BucketFeatureSupport.No("MinIO 不提供 AWS Public Access Block API"),
-            BucketFeatureSupport.No("MinIO 不提供 AWS Object Ownership API"),
-            BucketFeatureSupport.No("MinIO Community 不支持 Bucket 级 CORS；请使用服务端全局 CORS，AIStor 用户可改用自定义兼容类型"),
-            BucketFeatureSupport.Yes("MinIO 支持 S3 Versioning API"),
-            BucketFeatureSupport.Yes("MinIO 支持 Bucket 默认加密；服务端必须已配置密钥管理"),
-            BucketFeatureSupport.Yes("MinIO 支持 SSE-KMS；保存前请确认服务端 KMS 与 Key 已就绪"),
-            BucketFeatureSupport.Yes("MinIO 支持 S3 Bucket Tagging API"),
-            BucketFeatureSupport.Yes("MinIO 已验证对象过期与非当前版本生命周期规则"),
-            BucketFeatureSupport.No("MinIO 存储类型转换需要服务端远程分层配置，当前客户端未启用"),
-            BucketFeatureSupport.No("当前锁定的 MinIO 版本不会可靠保存 AbortIncompleteMultipartUpload 规则"),
-            BucketFeatureSupport.No("当前客户端尚未验证 MinIO Object Lock 创建与管理流程"),
-            BucketFeatureSupport.Yes()),
-        _ => new(
-            BucketFeatureSupport.No("该兼容服务的 Bucket Policy API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的 ACL API 尚未验证"),
-            BucketFeatureSupport.No("仅 AWS S3 支持此控制项"),
-            BucketFeatureSupport.No("仅 AWS S3 支持此控制项"),
-            BucketFeatureSupport.No("该兼容服务的 CORS API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的版本 API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的加密配置 API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的 SSE-KMS 配置 API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的 Tagging API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的生命周期 API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的生命周期存储类型转换尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的 Multipart 生命周期清理尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的 Object Lock API 尚未验证"),
-            BucketFeatureSupport.Yes("普通对象与未完成分片可安全清理；版本能力需扫描确认"))
-    };
-}
 
 public enum BucketAclMode
 {

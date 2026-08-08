@@ -65,7 +65,7 @@ public sealed class BucketManagementTests
     [Fact]
     public void MinioCapabilitiesExposeVerifiedFeaturesOnly()
     {
-        var capabilities = BucketCapabilityMatrix.For(S3ServiceType.MinIO);
+        var capabilities = S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Bucket;
 
         Assert.True(capabilities.Policy.Supported);
         Assert.True(capabilities.Acl.Supported);
@@ -138,7 +138,7 @@ public sealed class BucketManagementTests
     [Fact]
     public void AmazonS3CapabilitiesEnableAdvancedAccessControls()
     {
-        var capabilities = BucketCapabilityMatrix.For(S3ServiceType.AmazonS3);
+        var capabilities = S3ProviderCapabilityRegistry.For(S3ServiceType.AmazonS3).Bucket;
 
         Assert.True(capabilities.PublicAccessBlock.Supported);
         Assert.True(capabilities.ObjectOwnership.Supported);
@@ -158,7 +158,7 @@ public sealed class BucketManagementTests
     [Fact]
     public void UnverifiedCompatibleProviderDoesNotEnableManagementRequests()
     {
-        var capabilities = BucketCapabilityMatrix.For(S3ServiceType.AliyunOss);
+        var capabilities = S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Bucket;
 
         Assert.False(capabilities.Policy.Supported);
         Assert.False(capabilities.Acl.Supported);

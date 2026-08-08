@@ -61,7 +61,7 @@ public sealed class ProviderMatrixIntegrationTests
 
             var specialKey = Key("folder/中文 space+%.txt");
             keys.Add(specialKey);
-            var objectCapabilities = ObjectCapabilityMatrix.For(profile.ServiceType);
+            var objectCapabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Object;
             var uploadHeaders = new ObjectWriteHeaders(
                 ContentType: "text/plain",
                 CacheControl: "no-cache",

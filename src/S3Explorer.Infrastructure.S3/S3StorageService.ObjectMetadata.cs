@@ -45,7 +45,7 @@ public sealed partial class S3StorageService
         ObjectWriteHeaders headers,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).MetadataRewrite, "对象 Metadata 替换");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.MetadataRewrite, "对象 Metadata 替换");
         headers = headers.ValidateAndNormalize();
         using var client = _factory.Create(profile);
         var existing = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
@@ -81,7 +81,7 @@ public sealed partial class S3StorageService
         string? versionId,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Tagging, "对象 Tags");
         using var client = _factory.Create(profile);
         var response = await client.GetObjectTaggingAsync(new GetObjectTaggingRequest
         {
@@ -103,7 +103,7 @@ public sealed partial class S3StorageService
         IReadOnlyCollection<ObjectTag> tags,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Tagging, "对象 Tags");
         var validated = ObjectTagValidator.Validate(tags);
         if (validated.Count == 0)
         {
@@ -130,7 +130,7 @@ public sealed partial class S3StorageService
         string? versionId,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(ObjectCapabilityMatrix.For(profile.ServiceType).Tagging, "对象 Tags");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Tagging, "对象 Tags");
         using var client = _factory.Create(profile);
         await client.DeleteObjectTaggingAsync(new DeleteObjectTaggingRequest
         {
@@ -147,7 +147,7 @@ public sealed partial class S3StorageService
         string? versionId,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Lock");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.ObjectLock, "Object Lock");
         using var client = _factory.Create(profile);
         ObjectLockRetention? retention = null;
         ObjectLockLegalHold? legalHold = null;
@@ -192,7 +192,7 @@ public sealed partial class S3StorageService
         ObjectRetentionConfiguration retention,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Retention");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.ObjectLock, "Object Retention");
         var current = await GetObjectLockAsync(profile, bucket, key, versionId, cancellationToken)
             .ConfigureAwait(false);
         retention.Validate(current);
@@ -221,7 +221,7 @@ public sealed partial class S3StorageService
         bool enabled,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Legal Hold");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.ObjectLock, "Object Legal Hold");
         using var client = _factory.Create(profile);
         await client.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
         {
@@ -237,6 +237,9 @@ public sealed partial class S3StorageService
 
     public string CreatePresignedUrl(ConnectionProfile profile, string bucket, string key, TimeSpan lifetime)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.PresignedUrl,
+            "预签名 URL");
         if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromDays(7))
             throw new ArgumentOutOfRangeException(nameof(lifetime), "有效期必须大于 0 且不超过 7 天。");
 

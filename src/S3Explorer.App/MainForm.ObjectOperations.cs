@@ -327,7 +327,7 @@ internal sealed partial class MainForm
             var versioningWarning = "版本控制状态未确认；普通删除在版本化 Bucket 中可能创建 Delete Marker。";
             try
             {
-                if (BucketCapabilityMatrix.For(_currentProfile!.ServiceType).Versioning.Supported)
+                if (S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.VersionOperations.Supported)
                 {
                     var state = await _storage.GetBucketVersioningAsync(
                         _currentProfile, _currentBucket!, CancellationToken.None);
@@ -604,7 +604,7 @@ internal sealed partial class MainForm
         if (!EnsureLocation()) return;
         var selected = SelectedEntries().Where(entry => !entry.IsDirectory).ToArray();
         if (selected.Length == 0) return;
-        var capability = ObjectCapabilityMatrix.For(_currentProfile!.ServiceType).MetadataRewrite;
+        var capability = S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.MetadataRewrite;
         if (!capability.Supported)
         {
             MessageBox.Show(this, capability.Reason, "批量 Header / Metadata", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -662,6 +662,12 @@ internal sealed partial class MainForm
     private void ShowPresignedUrl()
     {
         if (!EnsureLocation()) return;
+        var support = S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.PresignedUrl;
+        if (!support.Supported)
+        {
+            MessageBox.Show(this, support.Reason, "预签名 URL", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         var selected = SelectedEntries();
         if (selected.Count != 1 || selected[0].IsDirectory) return;
         var entry = selected[0];

@@ -106,21 +106,8 @@ public static class ObjectMetadataValidator
 
 public sealed record ObjectCapabilities(
     BucketFeatureSupport Tagging,
-    BucketFeatureSupport MetadataRewrite);
-
-public static class ObjectCapabilityMatrix
-{
-    public static ObjectCapabilities For(S3ServiceType serviceType) => serviceType switch
-    {
-        S3ServiceType.AmazonS3 => new(BucketFeatureSupport.Yes(), BucketFeatureSupport.Yes()),
-        S3ServiceType.MinIO => new(
-            BucketFeatureSupport.Yes("MinIO 支持 S3 Object Tagging API"),
-            BucketFeatureSupport.Yes("MinIO 支持通过原地 Copy 替换对象 Metadata")),
-        S3ServiceType.AliyunOss => new(
-            BucketFeatureSupport.Yes("阿里云 OSS S3 兼容接口支持对象 Tagging"),
-            BucketFeatureSupport.Yes("阿里云 OSS S3 兼容接口支持原地 Copy Metadata")),
-        _ => new(
-            BucketFeatureSupport.No("该兼容服务的对象 Tagging API 尚未验证"),
-            BucketFeatureSupport.No("该兼容服务的对象 Metadata 原地替换尚未验证"))
-    };
-}
+    BucketFeatureSupport MetadataRewrite,
+    BucketFeatureSupport Acl,
+    BucketFeatureSupport PresignedUrl,
+    BucketFeatureSupport VersionOperations,
+    BucketFeatureSupport ObjectLock);

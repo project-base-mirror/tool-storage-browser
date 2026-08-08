@@ -30,9 +30,9 @@ public sealed class ObjectMetadataTests
     [Fact]
     public void ObjectCapabilitiesRemainConservativeForUnverifiedProviders()
     {
-        Assert.True(ObjectCapabilityMatrix.For(S3ServiceType.AmazonS3).Tagging.Supported);
-        Assert.True(ObjectCapabilityMatrix.For(S3ServiceType.MinIO).MetadataRewrite.Supported);
-        Assert.True(ObjectCapabilityMatrix.For(S3ServiceType.AliyunOss).Tagging.Supported);
-        Assert.False(ObjectCapabilityMatrix.For(S3ServiceType.CloudflareR2).MetadataRewrite.Supported);
+        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AmazonS3).Object.Tagging.Supported);
+        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Object.MetadataRewrite.Supported);
+        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Object.Tagging.Supported);
+        Assert.False(S3ProviderCapabilityRegistry.For(S3ServiceType.CloudflareR2).Object.MetadataRewrite.Supported);
     }
 }

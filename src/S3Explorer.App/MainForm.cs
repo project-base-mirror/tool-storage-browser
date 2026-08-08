@@ -484,12 +484,18 @@ internal sealed partial class MainForm : Form
         _objectMenu.Items.Add(BuildObjectCdnContextMenu());
         _objectMenu.Opening += (_, _) =>
         {
-            var any = SelectedEntries().Count > 0;
+            var entries = SelectedEntries();
+            var any = entries.Count > 0;
+            var oneFile = entries.Count == 1 && !entries[0].IsDirectory;
+            var capabilities = _currentProfile is null
+                ? null
+                : S3ProviderCapabilityRegistry.For(_currentProfile.ServiceType).Object;
             _objectMenu.Items[0].Enabled = any;
             _objectMenu.Items[1].Enabled = any;
             _objectMenu.Items[2].Enabled = _objectClipboard is not null && EnsureClipboardProfile(false);
             _objectMenu.Items[4].Enabled = any;
             _objectMenu.Items[5].Enabled = any;
+            _objectMenu.Items[11].Enabled = oneFile && capabilities?.VersionOperations.Supported == true;
             UpdateCdnContextCommandStates();
         };
     }
@@ -2151,6 +2157,12 @@ internal sealed partial class MainForm : Form
     private async Task ShowObjectVersionsAsync(bool selectedOnly)
     {
         if (!EnsureLocation()) return;
+        var support = S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.VersionOperations;
+        if (!support.Supported)
+        {
+            MessageBox.Show(this, support.Reason, "对象版本", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         var prefix = _currentPrefix;
         if (selectedOnly)
         {
@@ -2735,6 +2747,11 @@ internal sealed partial class MainForm : Form
         var oneFile = selected.Count == 1 && !selected[0].IsDirectory;
         var any = selected.Count > 0;
         var bucketSelected = _tree.SelectedNode?.Tag is BucketNodeTag;
+        var objectCapabilities = _currentProfile is null
+            ? null
+            : S3ProviderCapabilityRegistry.For(_currentProfile.ServiceType).Object;
+        var versionOperations = inBucket && objectCapabilities?.VersionOperations.Supported == true;
+        var presignedUrl = oneFile && objectCapabilities?.PresignedUrl.Supported == true;
 
         SetEnabled("edit-connection", profileSelected);
         SetEnabled("copy-connection", profileSelected);
@@ -2777,7 +2794,9 @@ internal sealed partial class MainForm : Form
         SetEnabled("properties-toolbar", oneFile);
         SetEnabled("metadata", oneFile);
         SetEnabled("batch-metadata", selected.Any(entry => !entry.IsDirectory));
-        SetEnabled("presign", oneFile);
+        SetEnabled("show-versions", versionOperations);
+        SetEnabled("object-versions", oneFile && versionOperations);
+        SetEnabled("presign", presignedUrl);
         SetEnabled("copy-path", any);
         SetEnabled("copy-url", any);
         SetEnabled("copy-key", any);

@@ -252,11 +252,13 @@ internal sealed partial class BucketManagementDialog : Form
         AppendCapability(text, "Lifecycle Storage Transitions", value.Capabilities.LifecycleStorageTransitions);
         AppendCapability(text, "Lifecycle Multipart Cleanup", value.Capabilities.LifecycleMultipartCleanup);
         AppendCapability(text, "Object Lock", value.Capabilities.ObjectLock);
+        AppendCapability(text, "Bucket Logging", value.Capabilities.Logging);
         AppendCapability(text, "安全清空", value.Capabilities.EmptyBucket);
         _overview.Text = text.ToString();
 
         _policyReason.Text = value.Capabilities.Policy.Reason;
-        SetControls(value.Capabilities.Policy.Supported, _policy, _policyReload, _policyFormat, _policySave, _policyDelete);
+        SetControls(value.Capabilities.Policy.Supported, _policy, _policyReload, _policyFormat);
+        SetControls(value.Capabilities.Policy.CanWrite, _policySave, _policyDelete);
 
         _aclSummary.Text = $"所有者：{value.Acl.Owner}；当前：{value.Acl.Summary}；{value.Capabilities.Acl.Reason}";
         _aclMode.SelectedIndex = value.Acl.Mode == BucketAclMode.PublicRead ? 1 : 0;
@@ -267,7 +269,8 @@ internal sealed partial class BucketManagementDialog : Form
             item.SubItems.Add(grant.Permission);
             _aclGrants.Items.Add(item);
         }
-        SetControls(value.Capabilities.Acl.Supported, _aclMode, _aclSave);
+        SetControls(value.Capabilities.Acl.Supported, _aclMode);
+        SetControls(value.Capabilities.Acl.CanWrite, _aclSave);
 
         var pab = value.PublicAccessBlock;
         _blockPublicAcls.Checked = pab?.BlockPublicAcls ?? false;
@@ -275,9 +278,11 @@ internal sealed partial class BucketManagementDialog : Form
         _blockPublicPolicy.Checked = pab?.BlockPublicPolicy ?? false;
         _restrictPublicBuckets.Checked = pab?.RestrictPublicBuckets ?? false;
         var pabSupported = value.Capabilities.PublicAccessBlock.Supported;
-        SetControls(pabSupported, _blockPublicAcls, _ignorePublicAcls, _blockPublicPolicy, _restrictPublicBuckets, _accessSave);
+        SetControls(pabSupported, _blockPublicAcls, _ignorePublicAcls, _blockPublicPolicy, _restrictPublicBuckets);
+        SetControls(value.Capabilities.PublicAccessBlock.CanWrite, _accessSave);
         var ownershipSupported = value.Capabilities.ObjectOwnership.Supported;
-        SetControls(ownershipSupported, _ownership, _ownershipSave);
+        SetControls(ownershipSupported, _ownership);
+        SetControls(value.Capabilities.ObjectOwnership.CanWrite, _ownershipSave);
         if (value.ObjectOwnership is not null) _ownership.SelectedItem = value.ObjectOwnership.Value;
         _accessReason.Text = $"Public Access Block：{value.Capabilities.PublicAccessBlock.Reason}\r\nObject Ownership：{value.Capabilities.ObjectOwnership.Reason}";
         ApplyConfigurationCapabilities(value.Capabilities);
@@ -405,7 +410,12 @@ internal sealed partial class BucketManagementDialog : Form
         string.Equals(_emptyConfirmation.Text, _bucket, StringComparison.Ordinal);
 
     private static void AppendCapability(StringBuilder text, string name, BucketFeatureSupport support) =>
-        text.AppendLine($"- {name}：{(support.Supported ? "支持" : "不支持")}；{support.Reason}");
+        text.AppendLine($"- {name}：{support.Access switch
+        {
+            ProviderCapabilityAccess.ReadWrite => "支持",
+            ProviderCapabilityAccess.ReadOnly => "只读",
+            _ => "不支持"
+        }}；{support.Reason}");
 
     private static void SetControls(bool enabled, params Control[] controls)
     {

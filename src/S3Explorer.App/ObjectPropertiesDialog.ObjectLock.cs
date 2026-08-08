@@ -74,7 +74,7 @@ internal sealed partial class ObjectPropertiesDialog
 
         var capability = _profile is null
             ? BucketFeatureSupport.No("当前调用未提供连接上下文，仅显示属性占位")
-            : BucketCapabilityMatrix.For(_profile.ServiceType).ObjectLock;
+            : S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.ObjectLock;
         _objectLockReason.Text = capability.Reason;
 
         _retentionAuthorized.CheckedChanged += (_, _) => UpdateObjectLockActions();
@@ -146,7 +146,7 @@ internal sealed partial class ObjectPropertiesDialog
             return;
         if (!force && _bucketObjectLock is not null)
             return;
-        var capability = BucketCapabilityMatrix.For(_profile.ServiceType).ObjectLock;
+        var capability = S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.ObjectLock;
         if (!capability.Supported)
             return;
 

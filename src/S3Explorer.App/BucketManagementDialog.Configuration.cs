@@ -189,23 +189,23 @@ internal sealed partial class BucketManagementDialog
     private void ApplyConfigurationCapabilities(BucketCapabilities capabilities)
     {
         _corsReason.Text = capabilities.Cors.Reason;
-        SetControls(capabilities.Cors.Supported,
-            _corsViews, _corsReload, _corsValidate, _corsSave, _corsDelete);
+        SetControls(capabilities.Cors.Supported, _corsViews, _corsReload, _corsValidate);
+        SetControls(capabilities.Cors.CanWrite, _corsSave, _corsDelete);
         _versioningReason.Text = capabilities.Versioning.Reason;
-        SetControls(capabilities.Versioning.Supported,
-            _versioningMode, _versioningReload, _versioningSave);
+        SetControls(capabilities.Versioning.Supported, _versioningMode, _versioningReload);
+        SetControls(capabilities.Versioning.CanWrite, _versioningSave);
         _encryptionReason.Text = $"{capabilities.Encryption.Reason}\r\nSSE-KMS：{capabilities.KmsEncryption.Reason}";
-        SetControls(capabilities.Encryption.Supported,
-            _encryptionMode, _encryptionReload, _encryptionSave, _encryptionDelete);
+        SetControls(capabilities.Encryption.Supported, _encryptionMode, _encryptionReload);
+        SetControls(capabilities.Encryption.CanWrite, _encryptionSave, _encryptionDelete);
         _tagsReason.Text = $"{capabilities.Tagging.Reason}\r\n最多 50 个 Tag，Key 不可重复。成本分配标签需要在云厂商控制台另行激活。";
-        SetControls(capabilities.Tagging.Supported,
-            _tagsGrid, _tagsReload, _tagsSave, _tagsDelete);
+        SetControls(capabilities.Tagging.Supported, _tagsGrid, _tagsReload);
+        SetControls(capabilities.Tagging.CanWrite, _tagsSave, _tagsDelete);
         _lifecycleReason.Text = $"{capabilities.Lifecycle.Reason}\r\n" +
             $"存储类型转换：{capabilities.LifecycleStorageTransitions.Reason}\r\n" +
             $"未完成 Multipart 清理：{capabilities.LifecycleMultipartCleanup.Reason}\r\n" +
             "JSON 支持 prefix、tags、transitions、expirationDays、noncurrentVersionTransitions、noncurrentVersionExpirationDays 与 abortIncompleteMultipartUploadDays。";
-        SetControls(capabilities.Lifecycle.Supported,
-            _lifecycleJson, _lifecycleReload, _lifecycleValidate, _lifecycleSave, _lifecycleDelete);
+        SetControls(capabilities.Lifecycle.Supported, _lifecycleJson, _lifecycleReload, _lifecycleValidate);
+        SetControls(capabilities.Lifecycle.CanWrite, _lifecycleSave, _lifecycleDelete);
         _objectLockReason.Text = $"{capabilities.ObjectLock.Reason}\r\n此页只探测 Bucket Object Lock 与默认保留期，不修改 Bucket 配置。";
         SetControls(capabilities.ObjectLock.Supported, _objectLockSummary, _objectLockReload);
         UpdateKmsControls();
@@ -397,8 +397,8 @@ internal sealed partial class BucketManagementDialog
 
     private void UpdateKmsControls()
     {
-        _kmsKeyId.Enabled = _properties?.Capabilities.Encryption.Supported == true &&
-            _properties.Capabilities.KmsEncryption.Supported &&
+        _kmsKeyId.Enabled = _properties?.Capabilities.Encryption.CanWrite == true &&
+            _properties.Capabilities.KmsEncryption.CanWrite &&
             _encryptionMode.SelectedIndex == (int)BucketEncryptionMode.SseKms;
     }
 

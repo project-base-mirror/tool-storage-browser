@@ -50,7 +50,7 @@ public sealed partial class S3StorageService
     public async Task<BucketPropertiesSnapshot> GetBucketPropertiesAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        var capabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket;
         var policy = capabilities.Policy.Supported
             ? await GetBucketPolicyAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
             : null;
@@ -78,7 +78,7 @@ public sealed partial class S3StorageService
     public async Task<string?> GetBucketPolicyAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Policy, "Bucket Policy");
         using var client = _factory.Create(profile);
         try
         {
@@ -101,7 +101,7 @@ public sealed partial class S3StorageService
     public async Task PutBucketPolicyAsync(
         ConnectionProfile profile, string bucket, string policyJson, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Policy, "Bucket Policy");
         var normalized = BucketPolicyDocument.ValidateAndNormalize(policyJson);
         using var client = _factory.Create(profile);
         await client.PutBucketPolicyAsync(new PutBucketPolicyRequest
@@ -120,7 +120,7 @@ public sealed partial class S3StorageService
     public async Task DeleteBucketPolicyAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Policy, "Bucket Policy");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Policy, "Bucket Policy");
         using var client = _factory.Create(profile);
         try
         {
@@ -137,7 +137,7 @@ public sealed partial class S3StorageService
     public async Task<BucketAclSnapshot> GetBucketAclAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Acl, "Bucket ACL");
         using var client = _factory.Create(profile);
         var response = await client.GetBucketAclAsync(new GetBucketAclRequest
         {
@@ -159,7 +159,7 @@ public sealed partial class S3StorageService
     public async Task PutBucketAclAsync(
         ConnectionProfile profile, string bucket, BucketAclMode mode, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Acl, "Bucket ACL");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Acl, "Bucket ACL");
         using var client = _factory.Create(profile);
         await client.PutBucketAclAsync(new PutBucketAclRequest
         {
@@ -174,7 +174,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
         EnsureBucketFeature(
-            BucketCapabilityMatrix.For(profile.ServiceType).PublicAccessBlock,
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.PublicAccessBlock,
             "Public Access Block");
         using var client = _factory.Create(profile);
         try
@@ -201,7 +201,7 @@ public sealed partial class S3StorageService
         BucketPublicAccessBlockSnapshot configuration, CancellationToken cancellationToken)
     {
         EnsureBucketFeature(
-            BucketCapabilityMatrix.For(profile.ServiceType).PublicAccessBlock,
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.PublicAccessBlock,
             "Public Access Block");
         using var client = _factory.Create(profile);
         await client.PutPublicAccessBlockAsync(new PutPublicAccessBlockRequest
@@ -221,7 +221,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
         EnsureBucketFeature(
-            BucketCapabilityMatrix.For(profile.ServiceType).ObjectOwnership,
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.ObjectOwnership,
             "Object Ownership");
         using var client = _factory.Create(profile);
         try
@@ -249,7 +249,7 @@ public sealed partial class S3StorageService
         BucketObjectOwnershipMode mode, CancellationToken cancellationToken)
     {
         EnsureBucketFeature(
-            BucketCapabilityMatrix.For(profile.ServiceType).ObjectOwnership,
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.ObjectOwnership,
             "Object Ownership");
         using var client = _factory.Create(profile);
         await client.PutBucketOwnershipControlsAsync(new PutBucketOwnershipControlsRequest
@@ -277,7 +277,7 @@ public sealed partial class S3StorageService
     public async Task<BucketCorsConfiguration> GetBucketCorsAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Cors, "Bucket CORS");
         using var client = _factory.Create(profile);
         try
         {
@@ -301,7 +301,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, BucketCorsConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Cors, "Bucket CORS");
         var normalized = BucketCorsDocument.Validate(configuration);
         if (normalized.Rules.Count == 0)
             throw new ArgumentException("CORS 规则为空时请使用删除配置。", nameof(configuration));
@@ -330,7 +330,7 @@ public sealed partial class S3StorageService
     public async Task DeleteBucketCorsAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Cors, "Bucket CORS");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Cors, "Bucket CORS");
         using var client = _factory.Create(profile);
         try
         {
@@ -345,7 +345,7 @@ public sealed partial class S3StorageService
     public async Task<BucketVersioningState> GetBucketVersioningAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "Bucket Versioning");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Versioning, "Bucket Versioning");
         using var client = _factory.Create(profile);
         var response = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest
         {
@@ -363,7 +363,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, BucketVersioningState state,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "Bucket Versioning");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Versioning, "Bucket Versioning");
         if (state == BucketVersioningState.Disabled)
             throw new ArgumentException("版本控制启用后不能恢复到从未启用状态，只能暂停。", nameof(state));
         using var client = _factory.Create(profile);
@@ -382,7 +382,7 @@ public sealed partial class S3StorageService
     public async Task<BucketEncryptionConfiguration> GetBucketEncryptionAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Encryption, "Bucket 默认加密");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Encryption, "Bucket 默认加密");
         using var client = _factory.Create(profile);
         try
         {
@@ -411,7 +411,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, BucketEncryptionConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        var capabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket;
         EnsureBucketFeature(capabilities.Encryption, "Bucket 默认加密");
         configuration.Validate(capabilities.KmsEncryption.Supported);
         if (configuration.Mode == BucketEncryptionMode.None)
@@ -444,7 +444,7 @@ public sealed partial class S3StorageService
     public async Task DeleteBucketEncryptionAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Encryption, "Bucket 默认加密");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Encryption, "Bucket 默认加密");
         using var client = _factory.Create(profile);
         try
         {
@@ -459,7 +459,7 @@ public sealed partial class S3StorageService
     public async Task<IReadOnlyList<BucketTag>> GetBucketTagsAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Tagging, "Bucket Tagging");
         using var client = _factory.Create(profile);
         try
         {
@@ -480,7 +480,7 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, IReadOnlyCollection<BucketTag> tags,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Tagging, "Bucket Tagging");
         var normalized = BucketTagValidator.Validate(tags);
         if (normalized.Count == 0)
             throw new ArgumentException("Tag 为空时请使用删除配置。", nameof(tags));
@@ -499,7 +499,7 @@ public sealed partial class S3StorageService
     public async Task DeleteBucketTagsAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Tagging, "Bucket Tagging");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Tagging, "Bucket Tagging");
         using var client = _factory.Create(profile);
         try
         {
@@ -514,7 +514,7 @@ public sealed partial class S3StorageService
     public async Task<BucketLifecycleConfiguration> GetBucketLifecycleAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        var capabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket;
         EnsureBucketFeature(capabilities.Lifecycle, "Bucket 生命周期");
         using var client = _factory.Create(profile);
         try
@@ -540,7 +540,7 @@ public sealed partial class S3StorageService
         BucketLifecycleConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        var capabilities = BucketCapabilityMatrix.For(profile.ServiceType);
+        var capabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket;
         EnsureBucketFeature(capabilities.Lifecycle, "Bucket 生命周期");
         var normalized = BucketLifecycleDocument.Validate(
             configuration,
@@ -568,7 +568,7 @@ public sealed partial class S3StorageService
     public async Task DeleteBucketLifecycleAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Lifecycle, "Bucket 生命周期");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Lifecycle, "Bucket 生命周期");
         using var client = _factory.Create(profile);
         try
         {
@@ -582,7 +582,7 @@ public sealed partial class S3StorageService
     public async Task<BucketObjectLockSnapshot> GetBucketObjectLockAsync(
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).ObjectLock, "Object Lock");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.ObjectLock, "Object Lock");
         using var client = _factory.Create(profile);
         try
         {

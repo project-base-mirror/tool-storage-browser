@@ -26,7 +26,7 @@ internal sealed partial class ObjectPropertiesDialog
         ApplyMetadata(value);
         var capability = _profile is null
             ? BucketFeatureSupport.No("当前调用未提供连接上下文，仅显示现有 Header 与 Metadata")
-            : ObjectCapabilityMatrix.For(_profile.ServiceType).MetadataRewrite;
+            : S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.MetadataRewrite;
         _metadataReason.Text = capability.Reason;
         _metadataSave.Enabled = capability.Supported && _storage is not null;
         _metadataSave.Click += async (_, _) => await SaveMetadataAsync();
@@ -80,7 +80,7 @@ internal sealed partial class ObjectPropertiesDialog
     {
         var capability = _profile is null
             ? BucketFeatureSupport.No("当前调用未提供连接上下文，不能读取对象 Tags")
-            : ObjectCapabilityMatrix.For(_profile.ServiceType).Tagging;
+            : S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.Tagging;
         _tagsReason.Text = capability.Reason;
         _tagsReload.Click += async (_, _) => await LoadObjectTagsAsync(force: true);
         _tagsSave.Click += async (_, _) => await SaveObjectTagsAsync();

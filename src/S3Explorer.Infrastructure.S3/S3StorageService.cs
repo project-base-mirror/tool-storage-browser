@@ -165,7 +165,7 @@ public sealed partial class S3StorageService : IS3StorageService
         int pageSize,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(BucketCapabilityMatrix.For(profile.ServiceType).Versioning, "对象版本列表");
+        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations, "对象版本列表");
         using var client = _factory.Create(profile);
         var response = await client.ListVersionsAsync(new ListVersionsRequest
         {
@@ -287,6 +287,9 @@ public sealed partial class S3StorageService : IS3StorageService
         ObjectAclMode mode,
         CancellationToken cancellationToken)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Acl,
+            "对象 ACL");
         if (string.IsNullOrWhiteSpace(bucket))
             throw new ArgumentException("Bucket 不能为空。", nameof(bucket));
         if (string.IsNullOrWhiteSpace(key))
@@ -332,6 +335,9 @@ public sealed partial class S3StorageService : IS3StorageService
         TransferOperationContext transferContext,
         CancellationToken cancellationToken)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations,
+            "对象版本下载");
         if (string.IsNullOrWhiteSpace(versionId))
             throw new ArgumentException("Version ID 不能为空。", nameof(versionId));
         return DownloadFileInternalAsync(
@@ -618,6 +624,9 @@ public sealed partial class S3StorageService : IS3StorageService
         ConnectionProfile profile, string bucket, string key, string versionId,
         CancellationToken cancellationToken)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations,
+            "对象版本删除");
         if (string.IsNullOrWhiteSpace(versionId))
             throw new ArgumentException("Version ID 不能为空。", nameof(versionId));
         using var client = _factory.Create(profile);
@@ -634,6 +643,9 @@ public sealed partial class S3StorageService : IS3StorageService
         IReadOnlyCollection<ObjectVersionIdentity> versions,
         CancellationToken cancellationToken)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations,
+            "批量对象版本删除");
         var unique = versions
             .Where(item => !string.IsNullOrWhiteSpace(item.Key) && !string.IsNullOrWhiteSpace(item.VersionId))
             .Distinct()
@@ -668,6 +680,9 @@ public sealed partial class S3StorageService : IS3StorageService
         ConnectionProfile profile, string bucket, string key, string versionId,
         CancellationToken cancellationToken)
     {
+        EnsureBucketFeature(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations,
+            "对象版本恢复");
         if (string.IsNullOrWhiteSpace(key))
             throw new ArgumentException("对象 Key 不能为空。", nameof(key));
         if (string.IsNullOrWhiteSpace(versionId))
