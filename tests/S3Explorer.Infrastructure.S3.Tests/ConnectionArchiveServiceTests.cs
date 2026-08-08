@@ -104,11 +104,13 @@ public sealed class ConnectionArchiveServiceTests
     public void TamperedCiphertextDoesNotImport()
     {
         var archive = _service.Export([CreateProfile()], includeCredentials: true, password: "portable-password");
-        var text = Encoding.UTF8.GetString(archive);
-        var payloadMarker = "\"encryptedPayload\": \"";
-        var payloadStart = text.IndexOf(payloadMarker, StringComparison.Ordinal) + payloadMarker.Length;
-        var changed = text[payloadStart] == 'A' ? 'B' : 'A';
-        var tampered = Encoding.UTF8.GetBytes(text[..payloadStart] + changed + text[(payloadStart + 1)..]);
+        var document = Assert.IsType<JsonObject>(JsonNode.Parse(Encoding.UTF8.GetString(archive)));
+        var encryptedPayload = Assert.IsAssignableFrom<JsonValue>(document["encryptedPayload"])
+            .GetValue<string>();
+        var ciphertext = Convert.FromBase64String(encryptedPayload);
+        ciphertext[0] ^= 0x01;
+        document["encryptedPayload"] = Convert.ToBase64String(ciphertext);
+        var tampered = Encoding.UTF8.GetBytes(document.ToJsonString());
 
         Assert.Throws<ConnectionArchiveAuthenticationException>(() =>
             _service.Import(tampered, "portable-password"));
