@@ -11,8 +11,8 @@ public sealed class CdnUploadAutomationTests
         var fixture = await CreateAsync(CdnUploadAction.Warmup, CdnUploadAction.PurgeThenWarmup);
         var task = UploadTask(fixture.StorageProfileId, fixture.AutomationStartedAt.AddMinutes(1), destinationExisted: false);
 
-        var jobs = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration);
-        await fixture.Queue.WaitForIdleAsync();
+        var jobs = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration, TestContext.Current.CancellationToken);
+        await fixture.Queue.WaitForIdleAsync(TestContext.Current.CancellationToken);
 
         var job = Assert.Single(jobs);
         Assert.Equal(CdnJobAction.Warmup, job.Action);
@@ -28,7 +28,7 @@ public sealed class CdnUploadAutomationTests
         var fixture = await CreateAsync(CdnUploadAction.None, CdnUploadAction.PurgeThenWarmup);
         var task = UploadTask(fixture.StorageProfileId, fixture.AutomationStartedAt.AddMinutes(1), destinationExisted: true);
 
-        var jobs = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration);
+        var jobs = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration, TestContext.Current.CancellationToken);
 
         Assert.Equal(CdnJobAction.PurgeThenWarmup, Assert.Single(jobs).Action);
         await fixture.DisposeAsync();
@@ -44,7 +44,7 @@ public sealed class CdnUploadAutomationTests
 
         var jobs = await fixture.Coordinator.ProcessCompletedUploadsAsync(
             [old, unknown, current],
-            fixture.Configuration);
+            fixture.Configuration, TestContext.Current.CancellationToken);
 
         Assert.Single(jobs);
         Assert.Equal(current.Id, jobs[0].TransferTaskId);
@@ -57,8 +57,8 @@ public sealed class CdnUploadAutomationTests
         var fixture = await CreateAsync(CdnUploadAction.Warmup, CdnUploadAction.None);
         var task = UploadTask(fixture.StorageProfileId, fixture.AutomationStartedAt.AddMinutes(1), destinationExisted: false);
 
-        var first = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration);
-        var second = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration);
+        var first = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration, TestContext.Current.CancellationToken);
+        var second = await fixture.Coordinator.ProcessCompletedUploadAsync(task, fixture.Configuration, TestContext.Current.CancellationToken);
 
         Assert.Equal(Assert.Single(first).Id, Assert.Single(second).Id);
         Assert.Single(fixture.Queue.Snapshot.Jobs);

@@ -23,10 +23,11 @@ public sealed class UpdateDownloadServiceTests
             using var client = new HttpClient(handler);
             using var service = new UpdateDownloadService(client, root);
 
-            var package = await service.DownloadAsync(release);
+            var package = await service.DownloadAsync(
+                release, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(hash, package.Sha256);
-            Assert.Equal(packageBytes, await File.ReadAllBytesAsync(package.PackagePath));
+            Assert.Equal(packageBytes, await File.ReadAllBytesAsync(package.PackagePath, TestContext.Current.CancellationToken));
             Assert.Equal([release.ChecksumsDownload!, release.PreferredDownload!], handler.Requests);
         }
         finally
@@ -48,7 +49,8 @@ public sealed class UpdateDownloadServiceTests
             using var client = new HttpClient(handler);
             using var service = new UpdateDownloadService(client, root);
 
-            await Assert.ThrowsAsync<InvalidDataException>(() => service.DownloadAsync(release));
+            await Assert.ThrowsAsync<InvalidDataException>(() => service.DownloadAsync(
+                release, cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Empty(Directory.EnumerateFiles(root, "*.partial", SearchOption.AllDirectories));
             Assert.Empty(Directory.EnumerateFiles(root, "*.msi", SearchOption.AllDirectories));
@@ -110,7 +112,8 @@ public sealed class UpdateDownloadServiceTests
         {
             using var service = new UpdateDownloadService(downloadRoot: root);
 
-            var package = await service.DownloadAsync(release);
+            var package = await service.DownloadAsync(
+                release, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.True(package.Bytes > 1024 * 1024);
             Assert.Equal(64, package.Sha256.Length);

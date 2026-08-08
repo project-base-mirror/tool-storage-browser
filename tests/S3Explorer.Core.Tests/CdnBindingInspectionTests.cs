@@ -42,7 +42,7 @@ public sealed class CdnBindingInspectionTests
                 return Task.FromResult(new CdnProbeResult(
                     url, url, 200, "OK", TimeSpan.Zero, TimeSpan.Zero, 0, 12,
                     "application/json", "HIT", new Dictionary<string, string>()));
-            });
+            }, TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.Equal(["deploy/", "deploy/game/"], requestedPrefixes);
@@ -71,7 +71,7 @@ public sealed class CdnBindingInspectionTests
             {
                 probeCalled = true;
                 throw new InvalidOperationException(url.AbsoluteUri);
-            });
+            }, TestContext.Current.CancellationToken);
 
         Assert.Null(result);
         Assert.False(probeCalled);

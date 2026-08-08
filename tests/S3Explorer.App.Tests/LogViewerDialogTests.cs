@@ -18,10 +18,10 @@ public sealed class LogViewerDialogTests
                 FileAccess.Write,
                 FileShare.ReadWrite | FileShare.Delete);
             var bytes = Encoding.UTF8.GetBytes("first line\r\nlatest line\r\n");
-            await writer.WriteAsync(bytes);
-            await writer.FlushAsync();
+            await writer.WriteAsync(bytes, TestContext.Current.CancellationToken);
+            await writer.FlushAsync(TestContext.Current.CancellationToken);
 
-            var snapshot = await LogFileReader.ReadAsync(path, 4096);
+            var snapshot = await LogFileReader.ReadAsync(path, 4096, TestContext.Current.CancellationToken);
 
             Assert.True(snapshot.Exists);
             Assert.False(snapshot.IsTruncated);
@@ -41,9 +41,9 @@ public sealed class LogViewerDialogTests
         try
         {
             var lines = Enumerable.Range(0, 100).Select(index => $"line-{index:D3}-content");
-            await File.WriteAllLinesAsync(path, lines);
+            await File.WriteAllLinesAsync(path, lines, TestContext.Current.CancellationToken);
 
-            var snapshot = await LogFileReader.ReadAsync(path, 96);
+            var snapshot = await LogFileReader.ReadAsync(path, 96, TestContext.Current.CancellationToken);
 
             Assert.True(snapshot.IsTruncated);
             Assert.DoesNotContain("line-000", snapshot.Content);

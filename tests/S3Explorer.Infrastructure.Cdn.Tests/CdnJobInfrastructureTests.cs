@@ -31,9 +31,9 @@ public sealed class CdnJobInfrastructureTests
             };
             var store = new JsonCdnJobStore(path, () => now);
 
-            await store.SaveAsync(snapshot);
-            var text = await File.ReadAllTextAsync(path);
-            var loaded = await store.LoadAsync();
+            await store.SaveAsync(snapshot, TestContext.Current.CancellationToken);
+            var text = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+            var loaded = await store.LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.Contains("\"purgeThenWarmup\"", text, StringComparison.Ordinal);
             var loadedJob = Assert.Single(loaded.Jobs);

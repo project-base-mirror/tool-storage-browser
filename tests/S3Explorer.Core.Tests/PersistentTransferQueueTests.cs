@@ -14,10 +14,10 @@ public sealed class PersistentTransferQueueTests
         {
             var store = new JsonTransferTaskStore(path);
             var task = CreateTask() with { VersionId = "historical-version-id" };
-            await store.SaveAsync(new TransferStoreSnapshot { Tasks = [task] });
+            await store.SaveAsync(new TransferStoreSnapshot { Tasks = [task] }, TestContext.Current.CancellationToken);
 
-            var loaded = await store.LoadAsync();
-            var json = await File.ReadAllTextAsync(path);
+            var loaded = await store.LoadAsync(TestContext.Current.CancellationToken);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
 
             Assert.Single(loaded.Tasks);
             Assert.Equal(task.Id, loaded.Tasks[0].Id);
@@ -39,10 +39,10 @@ public sealed class PersistentTransferQueueTests
         var root = Path.Combine(Path.GetTempPath(), "s3explorer-tests", Guid.NewGuid().ToString("N"));
         var path = Path.Combine(root, "transfers.json");
         Directory.CreateDirectory(root);
-        await File.WriteAllTextAsync(path, "{not-json");
+        await File.WriteAllTextAsync(path, "{not-json", TestContext.Current.CancellationToken);
         try
         {
-            var loaded = await new JsonTransferTaskStore(path).LoadAsync();
+            var loaded = await new JsonTransferTaskStore(path).LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.Empty(loaded.Tasks);
             Assert.False(File.Exists(path));
@@ -62,7 +62,7 @@ public sealed class PersistentTransferQueueTests
         var store = new MemoryStore(new TransferStoreSnapshot { Tasks = [running] });
         await using var queue = new PersistentTransferQueue(store, new BlockingExecutor());
 
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(TransferTaskState.Interrupted, queue.Snapshot.Tasks.Single().State);
         Assert.Equal(TransferTaskState.Interrupted, store.Snapshot.Tasks.Single().State);
@@ -74,13 +74,13 @@ public sealed class PersistentTransferQueueTests
         var executor = new SequencedExecutor();
         var store = new MemoryStore();
         await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
         var failed = CreateTask();
         var completed = CreateTask();
         executor.FailTaskId = failed.Id;
-        await queue.EnqueueAsync(failed);
-        await queue.EnqueueAsync(completed);
+        await queue.EnqueueAsync(failed, TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(completed, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.Equal(TransferTaskState.Failed, queue.Snapshot.Tasks.Single(task => task.Id == failed.Id).State);
@@ -93,23 +93,23 @@ public sealed class PersistentTransferQueueTests
         var executor = new BlockingExecutor();
         var store = new MemoryStore();
         await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
         var task = CreateTask();
-        await queue.EnqueueAsync(task);
-        await executor.Started.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.PauseAsync(task.Id);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
+        await executor.Started.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.PauseAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Paused);
 
         executor.Release();
-        await queue.ResumeAsync(task.Id);
+        await queue.ResumeAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Completed);
 
         executor.Reset();
         var cancelled = CreateTask();
-        await queue.EnqueueAsync(cancelled);
-        await executor.Started.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.CancelAsync(cancelled.Id);
+        await queue.EnqueueAsync(cancelled, TestContext.Current.CancellationToken);
+        await executor.Started.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.CancelAsync(cancelled.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single(item => item.Id == cancelled.Id).State == TransferTaskState.Cancelled);
         Assert.Equal(TransferTaskState.Cancelled, store.Snapshot.Tasks.Single(item => item.Id == cancelled.Id).State);
     }
@@ -119,12 +119,12 @@ public sealed class PersistentTransferQueueTests
     {
         var executor = new MultipartBlockingExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var task = CreateMultipartTask();
 
-        await queue.EnqueueAsync(task);
-        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.CancelAsync(task.Id);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.CancelAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Cancelled);
 
         var result = queue.Snapshot.Tasks.Single();
@@ -137,12 +137,12 @@ public sealed class PersistentTransferQueueTests
     {
         var executor = new MultipartBlockingExecutor { FailAbort = true };
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var task = CreateMultipartTask();
 
-        await queue.EnqueueAsync(task);
-        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.CancelAsync(task.Id);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.CancelAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.CleanupPending);
 
         var result = queue.Snapshot.Tasks.Single();
@@ -157,12 +157,12 @@ public sealed class PersistentTransferQueueTests
     {
         var executor = new MultipartBlockingExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var task = CreateMultipartTask();
 
-        await queue.EnqueueAsync(task);
-        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.PauseAsync(task.Id);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.PauseAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Paused);
 
         Assert.Equal(0, executor.AbortCount);
@@ -174,13 +174,13 @@ public sealed class PersistentTransferQueueTests
     {
         var executor = new SequencedExecutor { FailAll = true };
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 2);
-        await queue.InitializeAsync();
-        await queue.EnqueueAsync(CreateTask());
-        await queue.EnqueueAsync(CreateTask());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(CreateTask(), TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(CreateTask(), TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         executor.FailAll = false;
-        await queue.RetryAllFailedAsync();
+        await queue.RetryAllFailedAsync(TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.All(queue.Snapshot.Tasks, task => Assert.Equal(TransferTaskState.Completed, task.State));
@@ -267,9 +267,9 @@ public sealed class PersistentTransferQueueTests
         var store = new MemoryStore();
         var executor = new DestinationSnapshotExecutor();
         await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
-        await queue.EnqueueAsync(CreateTask());
+        await queue.EnqueueAsync(CreateTask(), TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         var task = Assert.Single(store.Snapshot.Tasks);

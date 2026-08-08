@@ -20,12 +20,13 @@ public sealed class DurableJsonFileTests
         try
         {
             var file = new DurableJsonFile(path);
-            await file.SaveAsync(new TestDocument { Value = "first" }, Options, Validate);
-            await file.SaveAsync(new TestDocument { Value = "second" }, Options, Validate);
-            await File.WriteAllTextAsync(path, "{truncated");
+            await file.SaveAsync(new TestDocument { Value = "first" }, Options, Validate, TestContext.Current.CancellationToken);
+            await file.SaveAsync(new TestDocument { Value = "second" }, Options, Validate, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(path, "{truncated", TestContext.Current.CancellationToken);
 
             var loaded = await file.LoadAsync(
-                static () => new TestDocument(), Options, Validate);
+                static () => new TestDocument(), Options, Validate,
+                cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal("first", loaded.Value);
             Assert.True(file.LastRecovery?.RestoredFromBackup);
@@ -44,7 +45,7 @@ public sealed class DurableJsonFileTests
     {
         var root = TemporaryDirectory();
         var path = Path.Combine(root, "state.json");
-        await File.WriteAllTextAsync(path, "null");
+        await File.WriteAllTextAsync(path, "null", TestContext.Current.CancellationToken);
         try
         {
             var file = new DurableJsonFile(path);
@@ -53,7 +54,7 @@ public sealed class DurableJsonFileTests
                 static () => new TestDocument { Value = "default" },
                 Options,
                 Validate,
-                useDefaultWhenUnrecoverable: true);
+                useDefaultWhenUnrecoverable: true, TestContext.Current.CancellationToken);
 
             Assert.Equal("default", loaded.Value);
             Assert.True(file.LastRecovery?.UsedDefault);
@@ -75,7 +76,7 @@ public sealed class DurableJsonFileTests
         try
         {
             var file = new DurableJsonFile(path);
-            await file.SaveAsync(new TestDocument { Value = "stable" }, Options, Validate);
+            await file.SaveAsync(new TestDocument { Value = "stable" }, Options, Validate, TestContext.Current.CancellationToken);
             using var cancellation = new CancellationTokenSource();
             cancellation.Cancel();
 
@@ -127,10 +128,12 @@ public sealed class DurableJsonFileTests
         try
         {
             var file = new DurableJsonFile(path);
-            await file.SaveAsync(new TestDocument { Value = "stable" }, Options, Validate);
-            await File.WriteAllTextAsync(path + ".tmp", "{stale");
+            await file.SaveAsync(new TestDocument { Value = "stable" }, Options, Validate, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(path + ".tmp", "{stale", TestContext.Current.CancellationToken);
 
-            var loaded = await file.LoadAsync(static () => new TestDocument(), Options, Validate);
+            var loaded = await file.LoadAsync(
+                static () => new TestDocument(), Options, Validate,
+                cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal("stable", loaded.Value);
             Assert.False(File.Exists(path + ".tmp"));
@@ -146,13 +149,13 @@ public sealed class DurableJsonFileTests
     {
         var root = TemporaryDirectory();
         var parentFile = Path.Combine(root, "not-a-directory");
-        await File.WriteAllTextAsync(parentFile, "blocker");
+        await File.WriteAllTextAsync(parentFile, "blocker", TestContext.Current.CancellationToken);
         try
         {
             var file = new DurableJsonFile(Path.Combine(parentFile, "state.json"));
 
             await Assert.ThrowsAnyAsync<IOException>(() =>
-                file.SaveAsync(new TestDocument { Value = "value" }, Options, Validate));
+                file.SaveAsync(new TestDocument { Value = "value" }, Options, Validate, TestContext.Current.CancellationToken));
         }
         finally
         {

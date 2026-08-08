@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
@@ -5,7 +6,11 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
 public sealed class ConfiguredProviderFactAttribute : FactAttribute
 {
-    public ConfiguredProviderFactAttribute(string? providerId = null)
+    public ConfiguredProviderFactAttribute(
+        string? providerId = null,
+        [CallerFilePath] string sourceFilePath = "",
+        [CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         var provider = string.IsNullOrWhiteSpace(providerId)
             ? ProviderMatrixCase.Selected()

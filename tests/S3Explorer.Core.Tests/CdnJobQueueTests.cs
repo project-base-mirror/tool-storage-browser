@@ -12,12 +12,12 @@ public sealed class CdnJobQueueTests
         var executor = new SequenceExecutor(
             new CdnProviderResult(CdnProviderOperationState.Completed, "done"));
         await using var queue = new PersistentCdnJobQueue(store, executor);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var first = Job("same-key");
 
-        var created = await queue.EnqueueAsync(first);
-        var duplicate = await queue.EnqueueAsync(Job("same-key"));
-        await queue.WaitForIdleAsync();
+        var created = await queue.EnqueueAsync(first, TestContext.Current.CancellationToken);
+        var duplicate = await queue.EnqueueAsync(Job("same-key"), TestContext.Current.CancellationToken);
+        await queue.WaitForIdleAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(created.Id, duplicate.Id);
         Assert.Single(queue.Snapshot.Jobs);
@@ -38,8 +38,8 @@ public sealed class CdnJobQueueTests
             executor,
             clock: () => now,
             jitter: () => 0);
-        await queue.InitializeAsync();
-        await queue.EnqueueAsync(Job("retry") with { RetryBaseDelaySeconds = 0 });
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(Job("retry") with { RetryBaseDelaySeconds = 0 }, TestContext.Current.CancellationToken);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await queue.WaitForIdleAsync(timeout.Token);
@@ -73,7 +73,7 @@ public sealed class CdnJobQueueTests
             clock: () => now,
             jitter: () => 0);
 
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await queue.WaitForIdleAsync(timeout.Token);
 
@@ -96,8 +96,8 @@ public sealed class CdnJobQueueTests
             executor,
             clock: () => now,
             jitter: () => 0);
-        await queue.InitializeAsync();
-        await queue.EnqueueAsync(Job("async"));
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(Job("async"), TestContext.Current.CancellationToken);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while (queue.Snapshot.Jobs.FirstOrDefault()?.State != CdnJobState.WaitingProvider)
@@ -116,12 +116,12 @@ public sealed class CdnJobQueueTests
     {
         var executor = new BlockingExecutor();
         await using var queue = new PersistentCdnJobQueue(new MemoryStore(), executor);
-        await queue.InitializeAsync();
-        var job = await queue.EnqueueAsync(Job("cancel"));
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var job = await queue.EnqueueAsync(Job("cancel"), TestContext.Current.CancellationToken);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await executor.Started.Task.WaitAsync(timeout.Token);
-        await queue.CancelAsync(job.Id);
+        await queue.CancelAsync(job.Id, TestContext.Current.CancellationToken);
         await Task.Delay(100, timeout.Token);
 
         Assert.Equal(CdnJobState.Cancelled, Assert.Single(queue.Snapshot.Jobs).State);
@@ -132,9 +132,9 @@ public sealed class CdnJobQueueTests
     {
         var executor = new BlockingExecutor();
         await using var queue = new PersistentCdnJobQueue(new MemoryStore(), executor);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var first = Job("first");
-        var created = await queue.EnqueueAsync(first);
+        var created = await queue.EnqueueAsync(first, TestContext.Current.CancellationToken);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await executor.Started.Task.WaitAsync(timeout.Token);
@@ -143,7 +143,7 @@ public sealed class CdnJobQueueTests
             CdnProfileId = first.CdnProfileId,
             Action = first.Action,
             Urls = first.Urls
-        });
+        }, TestContext.Current.CancellationToken);
 
         Assert.Equal(created.Id, duplicate.Id);
         Assert.Single(queue.Snapshot.Jobs);
@@ -158,16 +158,16 @@ public sealed class CdnJobQueueTests
             executor,
             maxConcurrency: 4,
             maxConcurrencyPerProfile: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var firstProfile = Guid.NewGuid();
         var secondProfile = Guid.NewGuid();
-        await queue.EnqueueAsync(Job("first") with { CdnProfileId = firstProfile });
+        await queue.EnqueueAsync(Job("first") with { CdnProfileId = firstProfile }, TestContext.Current.CancellationToken);
         await queue.EnqueueAsync(Job("blocked-same-profile") with
         {
             CdnProfileId = firstProfile,
             Urls = ["https://cdn.example/second.bin"]
-        });
-        await queue.EnqueueAsync(Job("other-profile") with { CdnProfileId = secondProfile });
+        }, TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(Job("other-profile") with { CdnProfileId = secondProfile }, TestContext.Current.CancellationToken);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await executor.TwoProfilesStarted.Task.WaitAsync(timeout.Token);

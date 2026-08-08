@@ -36,12 +36,12 @@ public sealed class ProfileStoreTests
 
         try
         {
-            await store.SaveAsync([profile]);
-            var json = await File.ReadAllTextAsync(path);
+            await store.SaveAsync([profile], TestContext.Current.CancellationToken);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
             Assert.DoesNotContain("plain-secret", json);
             Assert.DoesNotContain("plain-session", json);
 
-            var loaded = Assert.Single(await store.LoadAsync());
+            var loaded = Assert.Single(await store.LoadAsync(TestContext.Current.CancellationToken));
             Assert.Equal("plain-secret", loaded.SecretKey);
             Assert.Equal("custom-signing-region", loaded.SignatureRegion);
             Assert.Equal("storage.internal:9000", loaded.CustomHostHeader);
@@ -78,14 +78,14 @@ public sealed class ProfileStoreTests
 
         try
         {
-            await store.SaveAsync([profile]);
-            var json = await File.ReadAllTextAsync(path);
+            await store.SaveAsync([profile], TestContext.Current.CancellationToken);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
 
             Assert.Contains("awsSharedProfile", json, StringComparison.Ordinal);
             Assert.Contains("production-readonly", json, StringComparison.Ordinal);
             Assert.DoesNotContain("must-not-persist", json, StringComparison.Ordinal);
 
-            var loaded = Assert.Single(await store.LoadAsync());
+            var loaded = Assert.Single(await store.LoadAsync(TestContext.Current.CancellationToken));
             Assert.Equal(CredentialSourceKind.AwsSharedProfile, loaded.CredentialSource);
             Assert.Equal("production-readonly", loaded.AwsProfileName);
             Assert.Empty(loaded.AccessKey);
@@ -123,12 +123,12 @@ public sealed class ProfileStoreTests
                 }
               ]
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         var store = new JsonProfileStore(new FakeProtector(), path);
 
         try
         {
-            var loaded = Assert.Single(await store.LoadAsync());
+            var loaded = Assert.Single(await store.LoadAsync(TestContext.Current.CancellationToken));
 
             Assert.Equal(S3ServiceType.Custom, loaded.ServiceType);
             Assert.Equal("https://oss-cn-shenzhen.aliyuncs.com", loaded.Endpoint);
@@ -165,14 +165,14 @@ public sealed class ProfileStoreTests
 
         try
         {
-            await store.SaveConfigurationAsync(new ConnectionProfileConfiguration([profile], [group]));
-            var json = await File.ReadAllTextAsync(path);
+            await store.SaveConfigurationAsync(new ConnectionProfileConfiguration([profile], [group]), TestContext.Current.CancellationToken);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
 
             Assert.Contains("\"version\": 4", json, StringComparison.Ordinal);
             Assert.Contains("Production", json, StringComparison.Ordinal);
             Assert.DoesNotContain("plain-external-id", json, StringComparison.Ordinal);
 
-            var loaded = await store.LoadConfigurationAsync();
+            var loaded = await store.LoadConfigurationAsync(TestContext.Current.CancellationToken);
             var loadedGroup = Assert.Single(loaded.Groups);
             var loadedProfile = Assert.Single(loaded.Profiles);
             Assert.Equal(group.Id, loadedGroup.Id);

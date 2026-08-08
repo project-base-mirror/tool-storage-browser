@@ -34,10 +34,10 @@ public sealed class ConfigurationTransactionCoordinatorTests
                 });
 
             await Assert.ThrowsAsync<ConfigurationTransactionInterruptedException>(() =>
-                interrupted.SaveAsync(previous, target));
+                interrupted.SaveAsync(previous, target, TestContext.Current.CancellationToken));
 
             Assert.True(File.Exists(journalPath));
-            var journal = await File.ReadAllTextAsync(journalPath);
+            var journal = await File.ReadAllTextAsync(journalPath, TestContext.Current.CancellationToken);
             Assert.DoesNotContain("old-storage-secret", journal, StringComparison.Ordinal);
             Assert.DoesNotContain("new-storage-secret", journal, StringComparison.Ordinal);
             Assert.DoesNotContain("cdn-secret", journal, StringComparison.Ordinal);
@@ -48,7 +48,7 @@ public sealed class ConfigurationTransactionCoordinatorTests
                 credentials,
                 new TestProtector(),
                 journalPath);
-            Assert.True(await recovery.RecoverPendingAsync());
+            Assert.True(await recovery.RecoverPendingAsync(TestContext.Current.CancellationToken));
 
             Assert.Equal("new", Assert.Single(profiles.Value).Name);
             Assert.Equal("new-cdn", Assert.Single(configuration.Value.Profiles).Name);
@@ -85,7 +85,7 @@ public sealed class ConfigurationTransactionCoordinatorTests
                 journalPath);
 
             var error = await Assert.ThrowsAsync<IOException>(() =>
-                coordinator.SaveAsync(previous, target));
+                coordinator.SaveAsync(previous, target, TestContext.Current.CancellationToken));
 
             Assert.Contains("已恢复保存前配置", error.Message, StringComparison.Ordinal);
             Assert.Equal("old", Assert.Single(profiles.Value).Name);
@@ -114,7 +114,7 @@ public sealed class ConfigurationTransactionCoordinatorTests
                 new TestProtector(),
                 Path.Combine(root, "configuration-transaction.json"));
 
-            Assert.False(await coordinator.RecoverPendingAsync());
+            Assert.False(await coordinator.RecoverPendingAsync(TestContext.Current.CancellationToken));
         }
         finally
         {

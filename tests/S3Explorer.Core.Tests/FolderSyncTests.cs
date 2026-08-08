@@ -128,9 +128,9 @@ public sealed class FolderSyncTests
         {
             var store = new JsonFolderSyncJobStore(Path.Combine(directory, "jobs.json"));
             var expected = Job() with { ExclusionPatterns = ["bin/**", "*.tmp"] };
-            await store.SaveAsync([expected]);
+            await store.SaveAsync([expected], TestContext.Current.CancellationToken);
 
-            var actual = Assert.Single(await store.LoadAsync());
+            var actual = Assert.Single(await store.LoadAsync(TestContext.Current.CancellationToken));
             Assert.Equal(expected.Id, actual.Id);
             Assert.Equal(expected.Name, actual.Name);
             Assert.Equal(expected.LocalDirectory, actual.LocalDirectory);
@@ -151,10 +151,10 @@ public sealed class FolderSyncTests
         try
         {
             var path = Path.Combine(directory, "jobs.json");
-            await System.IO.File.WriteAllTextAsync(path, "{\"version\":2,\"jobs\":[]}");
+            await System.IO.File.WriteAllTextAsync(path, "{\"version\":2,\"jobs\":[]}", TestContext.Current.CancellationToken);
 
             var error = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => new JsonFolderSyncJobStore(path).LoadAsync());
+                () => new JsonFolderSyncJobStore(path).LoadAsync(TestContext.Current.CancellationToken));
 
             Assert.Contains("不支持的同步任务存储版本", error.Message);
         }

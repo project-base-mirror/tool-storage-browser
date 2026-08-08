@@ -110,10 +110,10 @@ public sealed class TransferExecutionTests
     {
         var executor = new RetryOnceExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var task = CreateTask() with { MaxAttempts = 2, RetryBaseDelaySeconds = 0 };
 
-        await queue.EnqueueAsync(task);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         var result = queue.Snapshot.Tasks.Single();
@@ -127,9 +127,9 @@ public sealed class TransferExecutionTests
     {
         var executor = new NonRetryableExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
-        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 5, RetryBaseDelaySeconds = 0 });
+        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 5, RetryBaseDelaySeconds = 0 }, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         var result = queue.Snapshot.Tasks.Single();
@@ -144,12 +144,12 @@ public sealed class TransferExecutionTests
         var executor = new CheckpointBlockingExecutor();
         var store = new MemoryStore();
         await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var task = CreateTask() with { Direction = TransferDirection.Download, TotalBytes = 100 };
 
-        await queue.EnqueueAsync(task);
-        await executor.CheckpointWritten.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.PauseAsync(task.Id);
+        await queue.EnqueueAsync(task, TestContext.Current.CancellationToken);
+        await executor.CheckpointWritten.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.PauseAsync(task.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Paused);
 
         var saved = store.Snapshot.Tasks.Single();
@@ -182,9 +182,9 @@ public sealed class TransferExecutionTests
     {
         var executor = new FaultOnceExecutor(CreateFault(fault));
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
-        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 2, RetryBaseDelaySeconds = 0 });
+        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 2, RetryBaseDelaySeconds = 0 }, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         var result = Assert.Single(queue.Snapshot.Tasks);
@@ -197,9 +197,9 @@ public sealed class TransferExecutionTests
     {
         var executor = new FaultOnceExecutor(CreateFault("disk"));
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
 
-        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 4, RetryBaseDelaySeconds = 0 });
+        await queue.EnqueueAsync(CreateTask() with { MaxAttempts = 4, RetryBaseDelaySeconds = 0 }, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         var result = Assert.Single(queue.Snapshot.Tasks);

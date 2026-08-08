@@ -30,7 +30,7 @@ public sealed class RecursiveObjectListingTests
             {
                 calls.Add((prefix, token));
                 return Task.FromResult(pages[(prefix, token)]);
-            });
+            }, TestContext.Current.CancellationToken);
 
         Assert.Equal(
             ["root/a.txt", "root/second/d.txt", "root/first/b.txt", "root/first/deep/c.txt"],
@@ -46,7 +46,7 @@ public sealed class RecursiveObjectListingTests
         {
             await RecursiveObjectListing.ListFilesAsync(
                 string.Empty, 10, 100,
-                (_, _, _) => Task.FromResult(Page([], "same", true)));
+                (_, _, _) => Task.FromResult(Page([], "same", true)), TestContext.Current.CancellationToken);
         });
 
         Assert.Contains("分页令牌", exception.Message);
@@ -59,7 +59,7 @@ public sealed class RecursiveObjectListingTests
         {
             await RecursiveObjectListing.ListFilesAsync(
                 string.Empty, 10, 1,
-                (_, _, _) => Task.FromResult(Page([Directory("a/"), Directory("b/")])));
+                (_, _, _) => Task.FromResult(Page([Directory("a/"), Directory("b/")])), TestContext.Current.CancellationToken);
         });
     }
 

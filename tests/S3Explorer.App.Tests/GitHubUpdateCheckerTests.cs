@@ -111,7 +111,7 @@ public sealed class GitHubUpdateCheckerTests
             using var client = new HttpClient(handler);
             using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(2));
 
-            var release = await checker.GetLatestAsync();
+            var release = await checker.GetLatestAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(UpdateReleaseSource.PagesManifest, release.Source);
             Assert.True(File.Exists(cachePath));
@@ -135,7 +135,7 @@ public sealed class GitHubUpdateCheckerTests
             using var client = new HttpClient(handler);
             using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(2));
 
-            var release = await checker.GetLatestAsync();
+            var release = await checker.GetLatestAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(UpdateReleaseSource.GitHubApi, release.Source);
             Assert.Equal([ProjectLinks.UpdateManifest, ProjectLinks.LatestReleaseApi],
@@ -156,7 +156,7 @@ public sealed class GitHubUpdateCheckerTests
             using (var seedClient = new HttpClient(new QueueHandler(
                        JsonResponse(HttpStatusCode.OK, Manifest("v0.5.5")))))
             using (var seedChecker = new GitHubUpdateChecker(seedClient, cachePath, TimeSpan.FromSeconds(2)))
-                await seedChecker.GetLatestAsync();
+                await seedChecker.GetLatestAsync(TestContext.Current.CancellationToken);
 
             var limited = new HttpResponseMessage(HttpStatusCode.Forbidden);
             limited.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", "0");
@@ -167,7 +167,7 @@ public sealed class GitHubUpdateCheckerTests
             using var client = new HttpClient(handler);
             using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(2));
 
-            var release = await checker.GetLatestAsync();
+            var release = await checker.GetLatestAsync(TestContext.Current.CancellationToken);
 
             Assert.True(release.IsFromCache);
             Assert.Equal(UpdateReleaseSource.Cache, release.Source);
@@ -193,7 +193,7 @@ public sealed class GitHubUpdateCheckerTests
             using var client = new HttpClient(handler);
             using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(2));
 
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => checker.GetLatestAsync());
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => checker.GetLatestAsync(TestContext.Current.CancellationToken));
 
             Assert.Contains("HTTP 429", exception.Message);
             Assert.Contains("3 分钟后重试", exception.Message);

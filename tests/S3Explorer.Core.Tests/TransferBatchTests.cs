@@ -76,21 +76,23 @@ public sealed class TransferBatchTests
     {
         var executor = new BatchExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 2);
-        await queue.InitializeAsync();
-        var batch = await queue.CreateBatchAsync(CreateBatch());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var batch = await queue.CreateBatchAsync(CreateBatch(), TestContext.Current.CancellationToken);
         var retryable = CreateTask(batch, "retryable.bin", 10) with { MaxAttempts = 1 };
         var denied = CreateTask(batch, "denied.bin", 20) with { MaxAttempts = 1 };
         var success = CreateTask(batch, "success.bin", 30);
         executor.Failures[retryable.Id] = new TransferFailureInfo("temporary", TransferFailureCategory.Network, Retryable: true);
         executor.Failures[denied.Id] = new TransferFailureInfo("denied", TransferFailureCategory.Authorization, Retryable: false);
 
-        await queue.AddBatchTasksAsync(batch.Id, [retryable, denied, success]);
-        await queue.CompleteBatchDiscoveryAsync(batch.Id);
+        await queue.AddBatchTasksAsync(batch.Id, [retryable, denied, success], TestContext.Current.CancellationToken);
+        await queue.CompleteBatchDiscoveryAsync(
+            batch.Id, cancellationToken: TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.Equal(TransferTaskState.Completed, queue.Snapshot.Tasks.Single(task => task.Id == success.Id).State);
         executor.Failures.Remove(retryable.Id);
-        var retried = await queue.RetryBatchFailuresAsync(batch.Id);
+        var retried = await queue.RetryBatchFailuresAsync(
+            batch.Id, cancellationToken: TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.Equal(1, retried);
@@ -100,7 +102,7 @@ public sealed class TransferBatchTests
         Assert.Equal(2, summary.CompletedFiles);
         Assert.Equal(1, summary.FailedFiles);
 
-        await queue.RemoveCompletedAsync();
+        await queue.RemoveCompletedAsync(TestContext.Current.CancellationToken);
         Assert.Equal(3, queue.Snapshot.Tasks.Count);
     }
 
@@ -109,20 +111,21 @@ public sealed class TransferBatchTests
     {
         var executor = new BatchExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 2);
-        await queue.InitializeAsync();
-        var batch = await queue.CreateBatchAsync(CreateBatch());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var batch = await queue.CreateBatchAsync(CreateBatch(), TestContext.Current.CancellationToken);
         var first = CreateTask(batch, "first.bin", 10) with { MaxAttempts = 1 };
         var second = CreateTask(batch, "second.bin", 10) with { MaxAttempts = 1 };
         var failure = new TransferFailureInfo("temporary", TransferFailureCategory.Service, Retryable: true);
         executor.Failures[first.Id] = failure;
         executor.Failures[second.Id] = failure;
 
-        await queue.AddBatchTasksAsync(batch.Id, [first, second]);
-        await queue.CompleteBatchDiscoveryAsync(batch.Id);
+        await queue.AddBatchTasksAsync(batch.Id, [first, second], TestContext.Current.CancellationToken);
+        await queue.CompleteBatchDiscoveryAsync(
+            batch.Id, cancellationToken: TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
         executor.Failures.Remove(first.Id);
 
-        var retried = await queue.RetryBatchFailuresAsync(batch.Id, [first.Id]);
+        var retried = await queue.RetryBatchFailuresAsync(batch.Id, [first.Id], TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.Equal(1, retried);
@@ -135,15 +138,16 @@ public sealed class TransferBatchTests
     {
         var executor = new BlockingBatchExecutor();
         await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
-        await queue.InitializeAsync();
-        var batch = await queue.CreateBatchAsync(CreateBatch());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var batch = await queue.CreateBatchAsync(CreateBatch(), TestContext.Current.CancellationToken);
         var running = CreateTask(batch, "running.bin", 10);
         var queued = CreateTask(batch, "queued.bin", 10);
 
-        await queue.AddBatchTasksAsync(batch.Id, [running, queued]);
-        await queue.CompleteBatchDiscoveryAsync(batch.Id);
-        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await queue.CancelBatchAsync(batch.Id);
+        await queue.AddBatchTasksAsync(batch.Id, [running, queued], TestContext.Current.CancellationToken);
+        await queue.CompleteBatchDiscoveryAsync(
+            batch.Id, cancellationToken: TestContext.Current.CancellationToken);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await queue.CancelBatchAsync(batch.Id, TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => queue.ActiveCount == 0);
 
         Assert.All(queue.Snapshot.Tasks, task => Assert.Equal(TransferTaskState.Cancelled, task.State));

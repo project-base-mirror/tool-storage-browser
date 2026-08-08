@@ -28,9 +28,9 @@ public sealed class AppSettingsStoreTests
                   "objectColumnWidths": [1],
                   "sortColumn": 99
                 }
-                """);
+                """, TestContext.Current.CancellationToken);
 
-            var settings = await new AppSettingsStore(path).LoadAsync();
+            var settings = await new AppSettingsStore(path).LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(960, settings.WindowWidth);
             Assert.Equal(600, settings.WindowHeight);
@@ -58,12 +58,12 @@ public sealed class AppSettingsStoreTests
     {
         var root = TemporaryDirectory();
         var path = Path.Combine(root, "settings.json");
-        await File.WriteAllTextAsync(path, "{truncated");
+        await File.WriteAllTextAsync(path, "{truncated", TestContext.Current.CancellationToken);
         try
         {
             var store = new AppSettingsStore(path);
 
-            var settings = await store.LoadAsync();
+            var settings = await store.LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(1280, settings.WindowWidth);
             Assert.True(store.LastRecovery?.UsedDefault);
@@ -83,7 +83,7 @@ public sealed class AppSettingsStoreTests
         try
         {
             var store = new AppSettingsStore(path);
-            var defaults = await store.LoadAsync();
+            var defaults = await store.LoadAsync(TestContext.Current.CancellationToken);
             Assert.True(defaults.KeepRunningInTray);
             Assert.True(defaults.ShowTrayTransferNotifications);
 
@@ -91,9 +91,9 @@ public sealed class AppSettingsStoreTests
             {
                 KeepRunningInTray = false,
                 ShowTrayTransferNotifications = false
-            });
+            }, TestContext.Current.CancellationToken);
 
-            var restored = await store.LoadAsync();
+            var restored = await store.LoadAsync(TestContext.Current.CancellationToken);
             Assert.False(restored.KeepRunningInTray);
             Assert.False(restored.ShowTrayTransferNotifications);
         }

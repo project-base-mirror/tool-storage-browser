@@ -37,8 +37,8 @@ public sealed class CdnInfrastructureTests
             var store = new JsonCdnConfigurationStore(path);
 
             await store.SaveAsync(
-                new CdnConfiguration([profile], [binding]));
-            var loaded = await store.LoadAsync();
+                new CdnConfiguration([profile], [binding]), TestContext.Current.CancellationToken);
+            var loaded = await store.LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(profile, Assert.Single(loaded.Profiles));
             Assert.Equal(binding, Assert.Single(loaded.Bindings));
@@ -75,8 +75,8 @@ public sealed class CdnInfrastructureTests
             };
             var store = new JsonCdnConfigurationStore(path);
 
-            await store.SaveAsync(new CdnConfiguration([profile], []));
-            var loaded = Assert.Single((await store.LoadAsync()).Profiles).LastCertificateCheck;
+            await store.SaveAsync(new CdnConfiguration([profile], []), TestContext.Current.CancellationToken);
+            var loaded = Assert.Single((await store.LoadAsync(TestContext.Current.CancellationToken)).Profiles).LastCertificateCheck;
 
             Assert.NotNull(loaded);
             Assert.Equal(result.Endpoint, loaded.Endpoint);
@@ -130,9 +130,9 @@ public sealed class CdnInfrastructureTests
                 Secret = "do-not-store-in-plaintext"
             };
 
-            await store.SaveAsync([credential]);
-            var json = await File.ReadAllTextAsync(path);
-            var loaded = await store.LoadAsync();
+            await store.SaveAsync([credential], TestContext.Current.CancellationToken);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+            var loaded = await store.LoadAsync(TestContext.Current.CancellationToken);
 
             Assert.DoesNotContain(
                 credential.Secret,
@@ -157,15 +157,15 @@ public sealed class CdnInfrastructureTests
         {
             await File.WriteAllTextAsync(
                 configurationPath,
-                "{\"version\":2,\"profiles\":[],\"bindings\":[]}");
+                "{\"version\":2,\"profiles\":[],\"bindings\":[]}", TestContext.Current.CancellationToken);
             await File.WriteAllTextAsync(
                 credentialPath,
-                "{\"version\":2,\"credentials\":[]}");
+                "{\"version\":2,\"credentials\":[]}", TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<InvalidDataException>(
-                () => new JsonCdnConfigurationStore(configurationPath).LoadAsync());
+                () => new JsonCdnConfigurationStore(configurationPath).LoadAsync(TestContext.Current.CancellationToken));
             await Assert.ThrowsAsync<InvalidDataException>(
-                () => new JsonCdnCredentialStore(new TestProtector(), credentialPath).LoadAsync());
+                () => new JsonCdnCredentialStore(new TestProtector(), credentialPath).LoadAsync(TestContext.Current.CancellationToken));
         }
         finally
         {
