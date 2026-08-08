@@ -81,7 +81,7 @@ internal sealed partial class MainForm : Form
     private readonly System.Windows.Forms.Timer _speedTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _trayNotificationTimer = new() { Interval = 750 };
     private readonly BoundedObjectCache _loadedItems = new(ObjectListingLimits.DefaultCacheLimit);
-    private readonly List<S3Location> _history = [];
+    private readonly NavigationHistoryCoordinator _navigationHistory = new();
     private readonly Dictionary<string, ToolStripItem> _commands = new(StringComparer.OrdinalIgnoreCase);
     private readonly OperationCancellation _navigationCancellation = new();
     private readonly CancellationTokenSource _updateCancellation = new();
@@ -96,7 +96,6 @@ internal sealed partial class MainForm : Form
     private string? _continuationToken;
     private bool _hasMore;
     private bool _objectLimitReached;
-    private int _historyIndex = -1;
     private int _sortColumn;
     private bool _sortAscending = true;
     private long _navigationRevision;
@@ -249,8 +248,8 @@ internal sealed partial class MainForm : Form
         view.DropDownItems.Add(Command("show-versions", "显示版本...", async (_, _) => await ShowObjectVersionsAsync(false)));
         view.DropDownItems.Add(Unsupported("列设置..."));
         view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.Add(Command("back", "返回", (_, _) => NavigateHistory(-1), Keys.Alt | Keys.Left));
-        view.DropDownItems.Add(Command("forward", "前进", (_, _) => NavigateHistory(1), Keys.Alt | Keys.Right));
+        view.DropDownItems.Add(Command("back", "返回", async (_, _) => await NavigateHistoryAsync(-1), Keys.Alt | Keys.Left));
+        view.DropDownItems.Add(Command("forward", "前进", async (_, _) => await NavigateHistoryAsync(1), Keys.Alt | Keys.Right));
         view.DropDownItems.Add(Command("up", "上一级", async (_, _) => await NavigateUpAsync(), Keys.Alt | Keys.Up));
 
         var bucket = new ToolStripMenuItem("Bucket(&B)");
@@ -319,8 +318,8 @@ internal sealed partial class MainForm : Form
             if (_currentProfile is null) await ConnectSelectedAsync(); else Disconnect();
         });
         _toolbar.Items.Add(new ToolStripSeparator());
-        AddToolbarButton("back-toolbar", "返回 (Alt+Left)", UiIconKind.Back, (_, _) => NavigateHistory(-1));
-        AddToolbarButton("forward-toolbar", "前进 (Alt+Right)", UiIconKind.Forward, (_, _) => NavigateHistory(1));
+        AddToolbarButton("back-toolbar", "返回 (Alt+Left)", UiIconKind.Back, async (_, _) => await NavigateHistoryAsync(-1));
+        AddToolbarButton("forward-toolbar", "前进 (Alt+Right)", UiIconKind.Forward, async (_, _) => await NavigateHistoryAsync(1));
         AddToolbarButton("up-toolbar", "上一级 (Alt+Up)", UiIconKind.Up, async (_, _) => await NavigateUpAsync());
         AddToolbarButton("refresh-toolbar", "刷新 (F5)", UiIconKind.Refresh, async (_, _) => await RefreshAsync());
         _toolbar.Items.Add(new ToolStripSeparator());
@@ -353,9 +352,9 @@ internal sealed partial class MainForm : Form
     private void BuildAddressBar()
     {
         var back = new ToolStripButton(UiIcons.Create(UiIconKind.Back, 18)) { ToolTipText = "返回" };
-        back.Click += (_, _) => NavigateHistory(-1);
+        back.Click += async (_, _) => await NavigateHistoryAsync(-1);
         var forward = new ToolStripButton(UiIcons.Create(UiIconKind.Forward, 18)) { ToolTipText = "前进" };
-        forward.Click += (_, _) => NavigateHistory(1);
+        forward.Click += async (_, _) => await NavigateHistoryAsync(1);
         var up = new ToolStripButton(UiIcons.Create(UiIconKind.Up, 18)) { ToolTipText = "上一级" };
         up.Click += async (_, _) => await NavigateUpAsync();
         var refresh = new ToolStripButton(UiIcons.Create(UiIconKind.Refresh, 18)) { ToolTipText = "刷新" };
@@ -2071,20 +2070,14 @@ internal sealed partial class MainForm : Form
 
     private void AddHistory(S3Location location)
     {
-        if (_historyIndex >= 0 && _history[_historyIndex] == location) return;
-        if (_historyIndex < _history.Count - 1)
-            _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1);
-        _history.Add(location);
-        _historyIndex = _history.Count - 1;
-        UpdateCommandStates();
+        if (_navigationHistory.Record(location))
+            UpdateCommandStates();
     }
 
-    private async void NavigateHistory(int delta)
+    private async Task NavigateHistoryAsync(int delta)
     {
-        var next = _historyIndex + delta;
-        if (next < 0 || next >= _history.Count) return;
-        _historyIndex = next;
-        var location = _history[next];
+        if (!_navigationHistory.TryMove(delta, out var location)) return;
+        UpdateCommandStates();
         var profile = _profiles.FirstOrDefault(item => string.Equals(item.Name, location.Profile, StringComparison.OrdinalIgnoreCase));
         if (profile is null) return;
         if (location.Bucket is null)
@@ -2800,8 +2793,8 @@ internal sealed partial class MainForm : Form
         SetEnabled("copy-path", any);
         SetEnabled("copy-url", any);
         SetEnabled("copy-key", any);
-        SetEnabled("back", _historyIndex > 0);
-        SetEnabled("forward", _historyIndex >= 0 && _historyIndex < _history.Count - 1);
+        SetEnabled("back", _navigationHistory.CanGoBack);
+        SetEnabled("forward", _navigationHistory.CanGoForward);
         SetEnabled("up", inBucket && _currentPrefix.Length > 0);
         UpdateCdnCommandStates(oneFile);
     }
