@@ -267,29 +267,6 @@ internal static class AutomationCommands
             }, cancellationToken);
         }
 
-        if (failures.Count == 0 && deletePlan.Count > 0)
-        {
-            try
-            {
-                await storage.DeleteObjectsAsync(
-                    profile,
-                    bucket,
-                    deletePlan.Select(value => value.Key).ToArray(),
-                    cancellationToken);
-                deletedFiles = deletePlan.Count;
-                deletedBytes = deleteBytes;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception exception)
-            {
-                failures.Add(new OperationFailure
-                {
-                    Path = prefix + "/",
-                    Message = SensitiveDataRedactor.Redact(exception.Message)
-                });
-            }
-        }
-
         var manifest = new PublishManifest
         {
             Project = project,
@@ -342,6 +319,29 @@ internal static class AutomationCommands
                 failures.Add(new OperationFailure
                 {
                     Path = DefaultManifestName,
+                    Message = SensitiveDataRedactor.Redact(exception.Message)
+                });
+            }
+        }
+
+        if (manifestPublished && failures.Count == 0 && deletePlan.Count > 0)
+        {
+            try
+            {
+                await storage.DeleteObjectsAsync(
+                    profile,
+                    bucket,
+                    deletePlan.Select(value => value.Key).ToArray(),
+                    cancellationToken);
+                deletedFiles = deletePlan.Count;
+                deletedBytes = deleteBytes;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception exception)
+            {
+                failures.Add(new OperationFailure
+                {
+                    Path = prefix + "/",
                     Message = SensitiveDataRedactor.Redact(exception.Message)
                 });
             }

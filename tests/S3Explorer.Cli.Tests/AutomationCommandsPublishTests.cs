@@ -9,7 +9,7 @@ namespace S3Explorer.Cli.Tests;
 public sealed class AutomationCommandsPublishTests
 {
     [Fact]
-    public async Task MirrorDeletesRemoteOnlyObjectsBeforePublishingManifest()
+    public async Task MirrorPublishesManifestBeforeDeletingRemoteOnlyObjects()
     {
         await using var context = await PublishTestContext.CreateAsync();
         context.Storage.Objects["releases/game/stale.bin"] = [1, 2, 3];
@@ -28,7 +28,7 @@ public sealed class AutomationCommandsPublishTests
 
         var deleteIndex = context.Storage.Operations.IndexOf("delete:releases/game/stale.bin");
         var manifestIndex = context.Storage.Operations.IndexOf("upload:releases/game/publish-manifest.json");
-        Assert.True(deleteIndex >= 0 && manifestIndex > deleteIndex);
+        Assert.True(manifestIndex >= 0 && deleteIndex > manifestIndex);
     }
 
     [Fact]
@@ -50,7 +50,25 @@ public sealed class AutomationCommandsPublishTests
     }
 
     [Fact]
-    public async Task MirrorDoesNotPublishManifestWhenDeleteFails()
+    public async Task MirrorDoesNotDeleteWhenManifestUploadFails()
+    {
+        await using var context = await PublishTestContext.CreateAsync();
+        context.Storage.Objects["releases/game/stale.bin"] = [1, 2, 3];
+        context.Storage.FailUploadKey = "releases/game/publish-manifest.json";
+
+        var command = await context.RunAsync("mirror");
+
+        Assert.Equal(4, command.ExitCode);
+        var result = Assert.IsType<PublishResult>(command.Data);
+        Assert.False(result.Success);
+        Assert.Equal(0, result.DeletedFiles);
+        Assert.Contains("releases/game/stale.bin", context.Storage.Objects.Keys);
+        Assert.DoesNotContain("releases/game/publish-manifest.json", context.Storage.Objects.Keys);
+        Assert.DoesNotContain(context.Storage.Operations, value => value.StartsWith("delete:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MirrorKeepsPublishedManifestWhenCleanupDeleteFails()
     {
         await using var context = await PublishTestContext.CreateAsync();
         context.Storage.Objects["releases/game/stale.bin"] = [1, 2, 3];
@@ -63,7 +81,7 @@ public sealed class AutomationCommandsPublishTests
         Assert.False(result.Success);
         Assert.Equal(0, result.DeletedFiles);
         Assert.Contains("releases/game/stale.bin", context.Storage.Objects.Keys);
-        Assert.DoesNotContain("releases/game/publish-manifest.json", context.Storage.Objects.Keys);
+        Assert.Contains("releases/game/publish-manifest.json", context.Storage.Objects.Keys);
     }
 
     [Fact]
