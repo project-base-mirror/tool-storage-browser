@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using S3Explorer.Cli;
 using S3Explorer.Contracts;
+using S3Explorer.Core;
 using Xunit;
 
 namespace S3Explorer.Cli.Tests;
@@ -83,19 +84,23 @@ public sealed class PublishManifestUtilityTests
         {
             var filePath = Path.Combine(directory, "config.bytes");
             var manifestPath = Path.Combine(directory, "publish-manifest.json");
-            await File.WriteAllTextAsync(filePath, "hello", Encoding.UTF8);
-            await File.WriteAllTextAsync(manifestPath, "{}", Encoding.UTF8);
+            await File.WriteAllTextAsync(
+                filePath, "hello", Encoding.UTF8, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(
+                manifestPath, "{}", Encoding.UTF8, TestContext.Current.CancellationToken);
 
             var files = await PublishManifestUtility.ScanAsync(
                 directory,
-                manifestPath);
+                manifestPath,
+                cancellationToken: TestContext.Current.CancellationToken);
 
             var file = Assert.Single(files);
             Assert.Equal("config.bytes", file.Entry.Path);
             Assert.Equal(new FileInfo(filePath).Length, file.Entry.Size);
             Assert.Equal(64, file.Entry.Sha256.Length);
             Assert.Equal(
-                await PublishManifestUtility.ComputeSha256Async(filePath),
+                await PublishManifestUtility.ComputeSha256Async(
+                    filePath, TestContext.Current.CancellationToken),
                 file.Entry.Sha256);
         }
         finally
@@ -186,6 +191,78 @@ public sealed class PublishManifestUtilityTests
         Assert.Throws<InvalidDataException>(() => PublishManifestUtility.ValidateManifest(manifest));
     }
 
+    [Fact]
+    public void CreateMirrorDeletePlanKeepsLocalFilesManifestAndDirectoryMarkers()
+    {
+        var plan = PublishManifestUtility.CreateMirrorDeletePlan(
+            [ManifestFile("keep.bin", 10, 'a')],
+            [
+                RemoteObject("releases/game/remove.bin", 30),
+                RemoteObject("releases/game/keep.bin", 10),
+                RemoteObject("releases/game/publish-manifest.json", 100),
+                RemoteObject("releases/game/folder/", 0, isDirectory: true),
+                RemoteObject("releases/game/also-remove.bin", -1)
+            ],
+            "releases/game",
+            "publish-manifest.json");
+
+        Assert.Collection(
+            plan,
+            item =>
+            {
+                Assert.Equal("also-remove.bin", item.Path);
+                Assert.Equal("releases/game/also-remove.bin", item.Key);
+                Assert.Equal(0, item.Size);
+            },
+            item =>
+            {
+                Assert.Equal("remove.bin", item.Path);
+                Assert.Equal("releases/game/remove.bin", item.Key);
+                Assert.Equal(30, item.Size);
+            });
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("/")]
+    [InlineData("releases/../game")]
+    [InlineData("releases//game")]
+    public void CreateMirrorDeletePlanRejectsUnsafePrefix(string prefix)
+    {
+        Assert.Throws<InvalidDataException>(() =>
+            PublishManifestUtility.CreateMirrorDeletePlan(
+                [],
+                [],
+                prefix,
+                "publish-manifest.json"));
+    }
+
+    [Fact]
+    public void CreateMirrorDeletePlanRejectsObjectsOutsidePrefix()
+    {
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            PublishManifestUtility.CreateMirrorDeletePlan(
+                [],
+                [RemoteObject("releases/other/file.bin", 1)],
+                "releases/game",
+                "publish-manifest.json"));
+
+        Assert.Contains("超出镜像发布前缀", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateMirrorDeletePlanRejectsNonCanonicalRemotePaths()
+    {
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            PublishManifestUtility.CreateMirrorDeletePlan(
+                [],
+                [RemoteObject("releases/game/folder//file.bin", 1)],
+                "releases/game",
+                "publish-manifest.json"));
+
+        Assert.Contains("路径", exception.Message, StringComparison.Ordinal);
+    }
+
     private static PublishManifestFile ManifestFile(string path, long size, char hash) =>
         new()
         {
@@ -196,4 +273,13 @@ public sealed class PublishManifestUtilityTests
 
     private static PublishPlanItem Item(PublishPlan plan, string path) =>
         Assert.Single(plan.Items, item => item.Path == path);
+
+    private static S3ObjectEntry RemoteObject(string key, long size, bool isDirectory = false) =>
+        new(
+            key,
+            S3Path.DisplayName(key, isDirectory),
+            size,
+            isDirectory,
+            DateTimeOffset.UtcNow,
+            "STANDARD");
 }

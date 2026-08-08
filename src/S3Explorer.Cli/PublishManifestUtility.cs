@@ -5,6 +5,7 @@ using S3Explorer.Core;
 namespace S3Explorer.Cli;
 
 public sealed record LocalPublishFile(string FullPath, PublishManifestFile Entry);
+public sealed record PublishMirrorDeleteCandidate(string Path, string Key, long Size);
 
 public static class PublishManifestUtility
 {
@@ -97,6 +98,54 @@ public static class PublishManifestUtility
         return plan;
     }
 
+    public static IReadOnlyList<PublishMirrorDeleteCandidate> CreateMirrorDeletePlan(
+        IReadOnlyCollection<PublishManifestFile> localFiles,
+        IReadOnlyCollection<S3ObjectEntry> remoteObjects,
+        string prefix,
+        string manifestName)
+    {
+        ArgumentNullException.ThrowIfNull(localFiles);
+        ArgumentNullException.ThrowIfNull(remoteObjects);
+        foreach (var file in localFiles)
+            ValidateFile(file);
+
+        var normalizedPrefix = prefix.Replace('\\', '/').Trim('/');
+        var canonicalPrefix = string.Join(
+            '/', normalizedPrefix.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        if (normalizedPrefix.Length == 0 ||
+            !string.Equals(normalizedPrefix, canonicalPrefix, StringComparison.Ordinal) ||
+            normalizedPrefix.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                .Any(segment => segment is "." or ".."))
+            throw new InvalidDataException("镜像发布需要安全的非空远程前缀。");
+
+        var rootPrefix = normalizedPrefix + "/";
+        var manifestKey = rootPrefix + NormalizeRelativePath(manifestName);
+        var localPaths = localFiles.Select(file => file.Path).ToHashSet(StringComparer.Ordinal);
+        var candidates = new List<PublishMirrorDeleteCandidate>();
+
+        foreach (var remote in remoteObjects.OrderBy(value => value.Key, StringComparer.Ordinal))
+        {
+            if (remote.IsDirectory || string.IsNullOrEmpty(remote.Key) || remote.Key.EndsWith('/'))
+                continue;
+            if (!remote.Key.StartsWith(rootPrefix, StringComparison.Ordinal))
+                throw new InvalidDataException($"远端对象超出镜像发布前缀：{remote.Key}");
+            if (string.Equals(remote.Key, manifestKey, StringComparison.Ordinal))
+                continue;
+
+            var relative = remote.Key[rootPrefix.Length..];
+            var normalizedRelative = NormalizeRelativePath(relative);
+            if (!string.Equals(relative, normalizedRelative, StringComparison.Ordinal))
+                throw new InvalidDataException($"远端对象路径不规范：{remote.Key}");
+            if (!localPaths.Contains(normalizedRelative))
+                candidates.Add(new PublishMirrorDeleteCandidate(
+                    normalizedRelative,
+                    remote.Key,
+                    Math.Max(0, remote.Size)));
+        }
+
+        return candidates;
+    }
+
     public static void ValidateManifest(PublishManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -118,7 +167,10 @@ public static class PublishManifestUtility
         if (string.IsNullOrWhiteSpace(path))
             throw new InvalidDataException("发布文件相对路径不能为空。");
         var normalized = path.Replace('\\', '/').TrimStart('/');
+        var canonical = string.Join(
+            '/', normalized.Split('/', StringSplitOptions.RemoveEmptyEntries));
         if (Path.IsPathFullyQualified(path) ||
+            !string.Equals(normalized, canonical, StringComparison.Ordinal) ||
             normalized.Split('/', StringSplitOptions.RemoveEmptyEntries)
                 .Any(segment => segment is "." or "..") ||
             normalized.EndsWith("/", StringComparison.Ordinal))

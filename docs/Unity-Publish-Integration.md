@@ -59,6 +59,12 @@ s3explorer-cli publish --profile minio-dev --source D:\Build\Windows --bucket ga
 
 最终生效的 Header、Metadata 与 Tags 会写入 Manifest Schema 2。增量计划同时比较文件 Size、SHA-256 和这些对象属性；只改缓存规则也会把对象标记为 `Modified`。Schema 1 Manifest 仍可读取，但需要解析 Schema 2 远端 Manifest 的 Unity 工具应更新 v0.7.1 Contracts DTO。
 
+构建产物目录需要与远端严格一致时，可显式增加：
+
+    s3explorer-cli publish ... --delete-mode mirror --output json --non-interactive
+
+默认 `--delete-mode none` 不删除任何远端对象。`mirror` 要求安全的非空 Prefix，实时递归扫描目标范围并在 dry-run 中返回删除计划；只有上传、SHA-256 回读验证和对象 ACL 全部成功后才执行删除，删除失败时不会发布新 `publish-manifest.json`。删除范围不包含 Prefix 外对象、目录标记和现有 Manifest，因此可以替代构建工具中“删除远端本地已不存在文件”的发布语义，而无需创建持久化 Folder Sync Job。
+
 Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥仍由 S3 Explorer 在 Windows 用户配置目录中保存并通过 DPAPI 保护，不应写入 Unity 工程、命令行或日志。
 
 ## CDN 匿名读取与缓存探测

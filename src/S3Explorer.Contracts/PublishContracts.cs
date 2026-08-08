@@ -59,6 +59,13 @@ public enum PublishAccessMode
     Private
 }
 
+/// <summary>Controls whether publishing retains remote-only objects or mirrors the local source.</summary>
+public enum PublishDeleteMode
+{
+    None,
+    Mirror
+}
+
 /// <summary>A versioned manifest shared by the CLI, Unity Editor and game runtime.</summary>
 public sealed class PublishManifest
 {
@@ -149,11 +156,14 @@ public sealed class PublishResult
     public string Bucket { get; set; } = string.Empty;
     public string Prefix { get; set; } = string.Empty;
     public PublishAccessMode AccessMode { get; set; } = PublishAccessMode.Preserve;
+    public PublishDeleteMode DeleteMode { get; set; } = PublishDeleteMode.None;
     public int AclUpdatedFiles { get; set; }
     public int UploadedFiles { get; set; }
+    public int DeletedFiles { get; set; }
     public int SkippedFiles { get; set; }
     public int FailedFiles { get; set; }
     public long UploadedBytes { get; set; }
+    public long DeletedBytes { get; set; }
     public string RemoteUri { get; set; } = string.Empty;
     public string CdnUrl { get; set; } = string.Empty;
     public string ManifestPath { get; set; } = string.Empty;

@@ -73,6 +73,24 @@ public sealed class CliArgumentsTests
         Assert.Contains("--access", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(null, PublishDeleteMode.None)]
+    [InlineData("none", PublishDeleteMode.None)]
+    [InlineData("mirror", PublishDeleteMode.Mirror)]
+    public void PublishDeleteModeIsParsed(string? value, PublishDeleteMode expected)
+    {
+        Assert.Equal(expected, AutomationCommands.ParseDeleteMode(value));
+    }
+
+    [Fact]
+    public void UnsupportedPublishDeleteModeIsRejected()
+    {
+        var exception = Assert.Throws<CliUsageException>(() =>
+            AutomationCommands.ParseDeleteMode("all"));
+
+        Assert.Contains("--delete-mode", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void CacheTestAcceptsOnlyCdnProbeOptions()
     {

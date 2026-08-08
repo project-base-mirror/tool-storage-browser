@@ -598,7 +598,14 @@ public sealed partial class S3StorageService : IS3StorageService
             };
             try
             {
-                await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+                var response = await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+                var deleteErrors = response.DeleteErrors ?? [];
+                if (deleteErrors.Count > 0)
+                {
+                    var first = deleteErrors[0];
+                    throw new InvalidOperationException(
+                        $"删除对象时有 {deleteErrors.Count:N0} 项失败；首项 Key={first.Key}，Code={first.Code}。");
+                }
             }
             catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.ShouldFallbackToSingleDelete(ex))
             {

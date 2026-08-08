@@ -137,9 +137,7 @@ internal static class AutomationCommands
                     "publish 需要 --prefix，或同时提供 --project、--product、--version。");
             prefix = NormalizePrefix($"{project}/{product}/{version}");
         }
-        var deleteMode = args.Optional("delete-mode")?.Trim().ToLowerInvariant() ?? "none";
-        if (deleteMode != "none")
-            throw new CliUsageException("第一阶段仅支持 --delete-mode none，不会删除远程对象。");
+        var deleteMode = ParseDeleteMode(args.Optional("delete-mode"));
         var accessMode = ParseAccessMode(args.Optional("access"));
         if (accessMode != PublishAccessMode.Preserve && !args.Flag("dry-run") && !args.Flag("yes"))
             throw new CliUsageException("修改对象 ACL 必须显式提供 --yes；程序不会修改 Bucket Policy 或 Public Access Block。");
@@ -154,6 +152,29 @@ internal static class AutomationCommands
                 storage, profile, bucket, CombineKey(prefix, DefaultManifestName), transfer, cancellationToken);
         var plan = PublishManifestUtility.CreatePlan(
             localFiles.Select(value => value.Entry).ToArray(), remoteManifest);
+        IReadOnlyList<PublishMirrorDeleteCandidate> deletePlan = [];
+        if (deleteMode == PublishDeleteMode.Mirror)
+        {
+            var rootPrefix = prefix + "/";
+            var remoteObjects = await RecursiveObjectListing.ListFilesAsync(
+                rootPrefix,
+                ObjectListingLimits.DefaultPageSize,
+                ObjectListingLimits.DefaultCacheLimit,
+                (currentPrefix, token, ct) => storage.ListObjectsAsync(
+                    profile,
+                    bucket,
+                    currentPrefix,
+                    token,
+                    ObjectListingLimits.DefaultPageSize,
+                    ct),
+                cancellationToken);
+            deletePlan = PublishManifestUtility.CreateMirrorDeletePlan(
+                localFiles.Select(value => value.Entry).ToArray(),
+                remoteObjects,
+                prefix,
+                DefaultManifestName);
+        }
+        var deleteBytes = deletePlan.Sum(value => value.Size);
 
         if (args.Flag("dry-run"))
         {
@@ -165,21 +186,31 @@ internal static class AutomationCommands
                 prefix,
                 remoteUri = BuildRemoteUri(profile, bucket, prefix),
                 accessMode,
+                deleteMode,
                 aclTargets = accessMode == PublishAccessMode.Preserve ? 0 : localFiles.Count + 1,
-                plan
+                plan,
+                deletePlan = new
+                {
+                    files = deletePlan.Count,
+                    bytes = deleteBytes,
+                    items = deletePlan
+                }
             };
             return new AutomationCommandResult(
                 0, preview,
                 $"发布预览：新增 {plan.NewFiles:N0}，修改 {plan.ModifiedFiles:N0}，" +
-                $"跳过 {plan.UnchangedFiles:N0}，待上传 {FileSizeFormatter.Format(plan.UploadBytes)}");
+                $"跳过 {plan.UnchangedFiles:N0}，待上传 {FileSizeFormatter.Format(plan.UploadBytes)}，" +
+                $"待删除 {deletePlan.Count:N0} 个对象（{FileSizeFormatter.Format(deleteBytes)}）");
         }
 
-        ConfirmPublish(args, jsonOutput, plan, bucket, prefix);
+        ConfirmPublish(args, jsonOutput, plan, deletePlan, bucket, prefix);
 
         var failures = new ConcurrentBag<OperationFailure>();
         var uploadedFiles = 0;
+        var deletedFiles = 0;
         var aclUpdatedFiles = 0;
         long uploadedBytes = 0;
+        long deletedBytes = 0;
         var changed = plan.Items
             .Where(value => value.Change != PublishChangeKind.Unchanged)
             .ToDictionary(value => value.Path, StringComparer.Ordinal);
@@ -234,6 +265,29 @@ internal static class AutomationCommands
                     });
                 }
             }, cancellationToken);
+        }
+
+        if (failures.Count == 0 && deletePlan.Count > 0)
+        {
+            try
+            {
+                await storage.DeleteObjectsAsync(
+                    profile,
+                    bucket,
+                    deletePlan.Select(value => value.Key).ToArray(),
+                    cancellationToken);
+                deletedFiles = deletePlan.Count;
+                deletedBytes = deleteBytes;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception exception)
+            {
+                failures.Add(new OperationFailure
+                {
+                    Path = prefix + "/",
+                    Message = SensitiveDataRedactor.Redact(exception.Message)
+                });
+            }
         }
 
         var manifest = new PublishManifest
@@ -319,11 +373,14 @@ internal static class AutomationCommands
             Bucket = bucket,
             Prefix = prefix,
             AccessMode = accessMode,
+            DeleteMode = deleteMode,
             AclUpdatedFiles = aclUpdatedFiles,
             UploadedFiles = uploadedFiles,
+            DeletedFiles = deletedFiles,
             SkippedFiles = plan.UnchangedFiles,
             FailedFiles = failures.Count,
             UploadedBytes = uploadedBytes,
+            DeletedBytes = deletedBytes,
             RemoteUri = BuildRemoteUri(profile, bucket, prefix),
             CdnUrl = cdnUrl,
             ManifestPath = manifestPath,
@@ -331,14 +388,14 @@ internal static class AutomationCommands
             Failures = failures.OrderBy(value => value.Path, StringComparer.Ordinal).ToList()
         };
         var text = result.Success
-            ? $"发布成功：上传 {result.UploadedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
+            ? $"发布成功：上传 {result.UploadedFiles:N0}，删除 {result.DeletedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
               $"失败 0，耗时 {stopwatch.Elapsed.TotalSeconds:N1} 秒。\n远程目录：{result.RemoteUri}" +
               (accessMode == PublishAccessMode.Preserve ? string.Empty : $"\n对象 ACL：{accessMode}，已更新 {aclUpdatedFiles:N0} 项") +
               (cdnUrl.Length > 0 ? $"\nCDN URL：{cdnUrl}" : string.Empty)
             : manifestPublished
                 ? $"资源与 Manifest 已发布，但后处理失败：上传 {result.UploadedFiles:N0}，" +
                   $"跳过 {result.SkippedFiles:N0}，失败 {result.FailedFiles:N0}。"
-                : $"发布未完成：上传 {result.UploadedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
+                : $"发布未完成：上传 {result.UploadedFiles:N0}，删除 {result.DeletedFiles:N0}，跳过 {result.SkippedFiles:N0}，" +
                   $"失败 {result.FailedFiles:N0}。Manifest 未发布。";
         return new AutomationCommandResult(result.Success ? 0 : OperationFailed, result, text);
     }
@@ -626,6 +683,7 @@ internal static class AutomationCommands
         CliArguments args,
         bool jsonOutput,
         PublishPlan plan,
+        IReadOnlyCollection<PublishMirrorDeleteCandidate> deletePlan,
         string bucket,
         string prefix)
     {
@@ -634,7 +692,8 @@ internal static class AutomationCommands
             throw new CliUsageException("非交互发布需要 --non-interactive 或 --yes。");
         Console.Write(
             $"将上传 {plan.NewFiles + plan.ModifiedFiles:N0} 个文件到 s3://{bucket}/{prefix}/，" +
-            $"共 {FileSizeFormatter.Format(plan.UploadBytes)}。继续？[y/N] ");
+            $"共 {FileSizeFormatter.Format(plan.UploadBytes)}；删除 {deletePlan.Count:N0} 个远端对象，" +
+            $"共 {FileSizeFormatter.Format(deletePlan.Sum(value => value.Size))}。继续？[y/N] ");
         var answer = Console.ReadLine()?.Trim();
         if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
@@ -679,6 +738,14 @@ internal static class AutomationCommands
             "anonymous-read" or "public-read" => PublishAccessMode.AnonymousRead,
             "private" => PublishAccessMode.Private,
             _ => throw new CliUsageException("--access 只能是 preserve、anonymous-read 或 private。")
+        };
+
+    internal static PublishDeleteMode ParseDeleteMode(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "none" => PublishDeleteMode.None,
+            "mirror" => PublishDeleteMode.Mirror,
+            _ => throw new CliUsageException("--delete-mode 只能是 none 或 mirror。")
         };
 
     private static ObjectAclMode ToObjectAclMode(PublishAccessMode value) => value switch

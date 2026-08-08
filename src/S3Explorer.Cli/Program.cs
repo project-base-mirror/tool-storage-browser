@@ -1103,7 +1103,7 @@ internal static class Program
           s3explorer-cli upload --profile <name> --source <path> --bucket <bucket> [--prefix <prefix>] [--verify]
           s3explorer-cli publish --profile <name> --source <folder> --bucket <bucket> --prefix <version-prefix>
               [--project <name> --product <platform> --version <version>] [--manifest <path>]
-              [--header-rules <json-file>] [--delete-mode none] [--access preserve|anonymous-read|private]
+              [--header-rules <json-file>] [--delete-mode none|mirror] [--access preserve|anonymous-read|private]
               [--full] [--dry-run]
               [--cdn-profile <name> --warmup]
           s3explorer-cli verify --manifest <publish-manifest.json> [--profile <name>] [--bucket <bucket>] [--prefix <prefix>]
