@@ -1,6 +1,6 @@
 # S3 Explorer v0.5–v0.8 功能对标与交付路线图
 
-本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.3。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
+本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.5。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
 
 参考资料：
 
@@ -20,12 +20,12 @@
 5. GUI、CLI 和同步任务共享 Core 模型与服务，不维护三套行为不一致的实现。
 6. 每个版本必须同步维护 `docs/versions/`，并通过全量测试、Release 构建、CLI 冒烟、UI 冒烟和发布包检查。
 
-## 当前能力快照（v0.7.3，2026-08-07）
+## 当前能力快照（v0.7.5，2026-08-08）
 
 | 领域 | 已完成 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- |
-| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；Region 自动处理；DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 统一 Provider capability registry；代理；更多兼容服务的持续实测 | P1 |
-| Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership、CORS、版本控制、默认加密、标签、日志、生命周期与 Object Lock 入口 | 跨 Provider 能力差异统一表达；MinIO 等兼容服务的高级能力边界继续收口 | P1–P2 |
+| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；统一 Provider capability registry；Region 自动处理；DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 代理；更多兼容服务的持续实测 | P1 |
+| Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership、CORS、版本控制、默认加密、标签、生命周期与 Object Lock 入口 | Bucket Logging、Transfer Acceleration、Replication；MinIO 等兼容服务的高级能力边界继续收口 | P1–P2 |
 | 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、Tags、版本浏览/恢复、预签名 URL、发布 Header 规则 | 跨账户复制、拖放、直接打开/编辑、大规模对象列表性能 | P1–P2 |
 | 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、回读校验、批次失败明细、托盘驻留 | 关键状态机覆盖率继续提升；临时空间与极端中断恢复诊断 | P1–P2 |
 | 文件夹同步 | 持久任务、单向镜像、逐项选择、分析缓存、排除规则、可选哈希、删除传播、结果导出与失败重试 | 计划任务、增量扫描、双向/冲突策略 | P1 |
@@ -343,17 +343,22 @@
 
 发布状态（2026-08-07）：测试基础设施、AWS SDK v4 兼容迁移和大文件拆分已完成，进入 v0.7.3 正式发布。
 
-### v0.7.4 跨账户与共享
+### v0.7.4 跨账户与共享（顺延）
 
 - 跨 Bucket/跨账户复制移动：先判断服务端 Copy 可行性，再回退到受控下载上传。
 - 外部 Bucket 向导、Requester Pays、共享 Bucket 权限说明。
 - Bucket Sharing Wizard 将授权对象、动作和资源范围可视化，最终仍以 Policy/ACL 差异确认。
 
-### v0.7.5 运维配置
+规划状态（2026-08-08）：此版本号未正式发布，跨账户与共享能力顺延，不与本轮发布自动化和稳定性修复混合。
 
-- Bucket Logging、Transfer Acceleration、Replication 的只读探测与分阶段编辑。
-- 统一 Provider capability registry；菜单按支持/只读/不支持显示原因。
-- 网络代理、临时目录、磁盘空间预检、数据完整性校验策略。
+### v0.7.5 发布自动化与 Provider 运维边界
+
+- `publish --delete-mode mirror` 在显式选择时安全删除 Prefix 内远端孤儿对象；上传、SHA-256 回读和 ACL 成功后才删除，删除全部成功后才发布新 Manifest。
+- 统一 Provider capability registry；Bucket 与对象能力共享支持/只读/不支持模型，GUI、CLI 与 Infrastructure 使用同一门禁和原因。
+- 加固传输/CDN 队列的重试、批量取消、恢复、终态幂等和 Dispose 持久化边界，并抽出独立 CLI connection test handler。
+- xUnit v3 测试体系补齐取消令牌与自定义 Fact 源码信息，Release `-warnaserror` 保持 0 警告。
+
+发布状态（2026-08-08）：上述范围已完成并进入 v0.7.5 正式发布。Bucket Logging、Transfer Acceleration、Replication、网络代理、临时目录和磁盘空间预检继续留在后续版本。
 
 ## v0.8：规模化与平台集成
 

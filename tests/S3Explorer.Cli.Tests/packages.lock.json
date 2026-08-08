@@ -208,10 +208,10 @@
       "s3explorer-cli": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Contracts": "[0.7.3, )",
-          "S3Explorer.Core": "[0.7.3, )",
-          "S3Explorer.Infrastructure.Cdn": "[0.7.3, )",
-          "S3Explorer.Infrastructure.S3": "[0.7.3, )"
+          "S3Explorer.Contracts": "[0.7.5, )",
+          "S3Explorer.Core": "[0.7.5, )",
+          "S3Explorer.Infrastructure.Cdn": "[0.7.5, )",
+          "S3Explorer.Infrastructure.S3": "[0.7.5, )"
         }
       },
       "s3explorer.contracts": {
@@ -223,7 +223,7 @@
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.7.3, )",
+          "S3Explorer.Core": "[0.7.5, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       },
@@ -234,7 +234,7 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.3, )",
+          "S3Explorer.Core": "[0.7.5, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }

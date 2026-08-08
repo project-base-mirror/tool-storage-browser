@@ -215,7 +215,7 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.3, )",
+          "S3Explorer.Core": "[0.7.5, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }

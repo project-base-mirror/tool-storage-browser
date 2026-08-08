@@ -45,7 +45,7 @@
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.7.2, )"
+          "S3Explorer.Core": "[0.7.5, )"
         }
       },
       "s3explorer.infrastructure.s3": {
@@ -55,7 +55,7 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.2, )"
+          "S3Explorer.Core": "[0.7.5, )"
         }
       }
     },
