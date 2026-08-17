@@ -1,6 +1,6 @@
 # CDN 内容交付集成设计与实施计划
 
-本文定义 S3 Explorer 的 CDN / 内容分发能力边界、第一阶段实现、后续 Provider 扩展方式和自动化路线。CDN 与对象存储有关联，但不是对象存储连接本身：对象存储负责原始对象和 S3 API，CDN 负责公网交付 URL、缓存刷新、缓存预热和下载质量探测。
+本文定义 S3 Explorer 的 CDN / 内容分发能力边界、当前实现、Provider 扩展方式和自动化路线。CDN 与对象存储有关联，但不是对象存储连接本身：对象存储负责原始对象和 S3 API，CDN 负责公网交付 URL、缓存刷新、缓存预热和下载质量探测。
 
 ## 1. 产品边界
 
@@ -11,13 +11,13 @@
 - 使用真实 HTTP GET + Range 请求测试 CDN 下载状态、响应头耗时、吞吐和缓存 Header。
 - 通过 HEAD、Range GET 或完整 GET 执行通用 HTTP 预热。
 - 通过用户配置的 HTTP 端点、方法和 Body 模板手动提交缓存刷新。
-- CDN 凭据与 S3 Access Key/SecretKey 分开保存和授权。
-- 保持 Provider 扩展点，后续接入 CloudFront、Cloudflare、阿里云 CDN、腾讯云 CDN 等原生 API。
+- CDN 与对象存储通过统一 Credential Vault 按 Provider/类型引用凭据；兼容的 Alibaba Cloud AccessKey 可以共享，其他协议保持隔离。
+- 通过 Provider 扩展点接入原生控制面；当前已实现 Alibaba Cloud CDN，CloudFront、Cloudflare 与腾讯云仍属后续范围。
 - 不改变现有 S3 下载、预签名 URL、上传队列和对象管理语义。
 
 ### 1.2 非目标
 
-第一阶段不创建或修改 CDN 分发、源站、证书、DNS、WAF、缓存规则、计费和日志服务，也不在上传完成时自动执行刷新或预热。完整 CloudFront/厂商控制台能力仍属于后续阶段。
+工具不创建或修改 CDN 分发、源站、证书、DNS、WAF、缓存规则、计费和日志服务。上传完成后的刷新/预热只对用户显式启用的 Bucket/前缀关联执行；完整厂商控制台能力不在范围内。
 
 ## 2. 为什么 CDN 不属于 S3 连接字段
 
@@ -39,11 +39,11 @@
 
 验收：
 
-- CDN 配置、独立凭据、Bucket/前缀关联有稳定 Core 模型。
-- 配置与凭据分文件持久化；秘密值不以明文落盘。
+- CDN 配置、统一凭据引用、Bucket/前缀关联有稳定 Core 模型。
+- 对象存储、CDN 配置与凭据由统一配置存储原子持久化；秘密值不以明文落盘。
 - URL 映射使用最长前缀规则，支持一个范围关联多个 CDN 和一个默认 CDN。
 - 下载探测、HTTP 预热和通用刷新均可独立测试。
-- 不依赖任何特定云厂商 SDK。
+- 通用 HTTP 基础能力不依赖特定云厂商 SDK；原生 Provider 将 SDK 依赖隔离在 `Infrastructure.Cdn`。
 
 最终提交：`feat(cdn): add profiles bindings and generic delivery services`
 
@@ -53,7 +53,7 @@
 
 - 顶级“CDN / 分发”菜单提供配置、URL、下载测试、预热和刷新。
 - Bucket 右键可直接打开关联管理；对象右键可执行交付动作。
-- CDN 配置中心统一管理配置、独立凭据和关联。
+- CDN 配置中心统一管理配置、Credential Vault 和关联。
 - 命令按当前对象是否存在有效关联、是否支持刷新自动启用。
 - 大字体和最小窗口尺寸下主要按钮可见、可读。
 - README、路线图和本文档反映真实实现与后续边界。
@@ -65,15 +65,18 @@
 ```text
 S3Explorer.Core
   CdnModels.cs
-    CdnProfile / CdnCredential / CdnBinding
-    ICdnConfigurationStore / ICdnCredentialStore
+    CdnProfile / CredentialProfile / CdnBinding
+    IExplorerConfigurationStore
     ICdnDeliveryService
     CdnUrlMapper / CdnConfigurationValidator
 
 S3Explorer.Infrastructure.Cdn
-  JsonCdnStores.cs
-  DpapiCdnCredentialProtector.cs
   GenericHttpCdnDeliveryService.cs
+  AliyunCdnProvider.cs
+
+S3Explorer.Infrastructure.Configuration
+  ExplorerConfigurationStore.cs
+  ExplorerConfigurationAdapters.cs
 
 S3Explorer.App
   CdnConfigurationDialog.cs
@@ -87,14 +90,14 @@ S3Explorer.App
 
 ### 5.1 CdnProfile
 
-CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途、负责人、域名变更窗口等运维信息。备注保存在 `cdn-config.json`，并随连接包迁移；不要在备注中填写 Token、Header secret 或其他凭据。
+CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途、负责人、域名变更窗口等运维信息。备注保存在统一加密配置中，并随连接包迁移；不要在备注中填写 Token、Header secret 或其他凭据。
 
 关键字段：
 
 - `Id`、`Name`、`Enabled`
-- `ProviderId`：第一阶段固定为 `generic-http`
+- `ProviderId`：`generic-http` 或 `aliyun-cdn`
 - `BaseUrl`：对象交付基础地址
-- `CredentialId`：可选独立凭据
+- `CredentialId`：可选统一凭据引用
 - `WarmupMode`：HEAD、Range GET、完整 GET
 - `WarmupRangeBytes`
 - `TimeoutSeconds`、`FollowRedirects`
@@ -103,15 +106,16 @@ CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途�
 
 能力由配置推导：所有通用 HTTP 配置支持 URL、探测和预热；只有设置刷新端点后才声明 `Purge`。
 
-### 5.2 CdnCredential
+### 5.2 CredentialProfile
 
-认证方式：
+认证方式由统一 `CredentialProfile` 的类型决定：
 
 - 无认证
 - `Authorization: Bearer <token>`
 - 自定义 Header
+- Alibaba Cloud AccessKeyPair
 
-第一阶段只解决通用 HTTP 鉴权，不假设 S3 密钥可复用。厂商签名 API 后续由 Provider 适配器使用专用凭据类型。
+通用 HTTP 使用 Bearer Token 或自定义 Header；Alibaba CDN 控制面使用 Alibaba Cloud AccessKeyPair，同一个凭据可以被 Alibaba OSS 连接和 Alibaba CDN Profile 共享引用。该 AccessKey 不会发送到 CDN 交付域名；其他 S3 Access Key 也不会自动复用为 CDN Token。
 
 ### 5.3 CdnBinding
 
@@ -149,16 +153,15 @@ ObjectKey:     assets/js/app 1.js
 
 ## 7. 配置与安全
 
-默认数据位置：
+当前统一数据位置：
 
 ```text
-%APPDATA%\S3Explorer\cdn-config.json
-%APPDATA%\S3Explorer\cdn-credentials.json
+%APPDATA%\S3Explorer\configuration.json
 ```
 
 自动化模式使用隔离数据目录中的同名文件，不读取真实用户配置。
 
-`cdn-config.json` 只保存非敏感配置和凭据 ID。`cdn-credentials.json` 的 Secret 使用 Windows DPAPI CurrentUser 加密，并使用与 S3 凭据不同的 entropy。结果只能由同一 Windows 用户上下文解密。
+`configuration.json` 整体使用 Windows DPAPI CurrentUser 保护，其中保存 CDN 配置、凭据和对象存储连接的统一图。旧的 `cdn-config.json` 与 `cdn-credentials.json` 仅在首次迁移时读取，随后移动到 `legacy-archive`，不会作为运行时回退。
 
 安全约束：
 
@@ -169,20 +172,20 @@ ObjectKey:     assets/js/app 1.js
 - 基础 URL 不允许内嵌用户名密码、查询参数或片段；鉴权秘密不允许换行，自定义 Header 名称必须符合 HTTP token 规则。
 - 配置与凭据 JSON 只读取当前明确支持的文档版本，未知版本会停止加载而不是静默误读。
 - 超时、Range 大小和 HTTP 方法在本地校验。
-- 删除仍被 CDN Profile 引用的凭据会被阻止。
+- 删除仍被 CDN Profile 或对象存储连接引用的凭据会被阻止。
 - 同一连接、Bucket、源前缀只能有一个默认 CDN。
 
 ## 8. 桌面工作流
 
 ### 8.1 CDN 配置中心
 
-三个页签：
+配置中心包含以下区域：
 
-1. **CDN 配置**：域名、预热行为、刷新端点、鉴权引用和超时。
-2. **独立凭据**：无认证、Bearer Token、自定义 Header。
+1. **CDN 配置**：域名、预热行为、刷新端点、凭据引用和超时。
+2. **凭据中心**：统一管理对象存储与 CDN 的 Access Key、Bearer Token、自定义 Header 等凭据。
 3. **Bucket / 前缀关联**：源连接、Bucket、源前缀、CDN、目标路径前缀和默认项。
 
-保存时统一运行模型校验；失败时不覆盖磁盘配置。保存顺序为凭据后配置，因此中途失败最多留下一个未被引用的凭据，不会让配置引用尚未落盘的秘密。
+保存时统一运行模型校验；失败时不覆盖磁盘配置。配置、引用和凭据作为一个图原子保存，不会让配置引用尚未落盘的秘密。
 
 ### 8.2 主菜单
 
@@ -240,7 +243,7 @@ CDN 配置列表对 HTTPS 基础 URL 提供“检测 HTTPS 证书”。检测直
 - **Range GET**：默认模式，读取有限字节，适合作为通用第一阶段能力。
 - **完整 GET**：确保拉取完整对象，但可能产生较高源站和 CDN 流量。
 
-预热成功只表示 HTTP 请求完成且状态码为 2xx/3xx，不保证所有边缘节点已经缓存。厂商原生预热任务在后续 Provider 中应返回任务 ID 和状态查询能力。
+通用 HTTP 预热成功只表示请求完成且状态码为 2xx/3xx，不保证所有边缘节点已经缓存。Alibaba CDN 使用 `PushObjectCache` 提交原生预热，按最多 100 个 URL 分批并返回任务 ID；持久队列会通过 `DescribeRefreshTaskById` 查询状态。
 
 ## 11. 通用 HTTP 刷新
 
@@ -255,7 +258,7 @@ Type:     application/json
 
 端点中的 `{url}` 和 `{path}`使用 URL 编码；Body 中使用 JSON 字符串内容转义。2xx 表示提交成功。没有端点时，UI 隐藏能力并禁用刷新命令。
 
-这是一种可配置适配层，不替代厂商签名逻辑。要求 HMAC、AWS SigV4、TC3 或 RPC 签名的 API 必须通过后续 Provider 实现，不能让用户把长期密钥拼进 URL 或 Body。
+这是一种可配置适配层，不替代厂商签名逻辑。Alibaba CDN 使用 `RefreshObjectCaches` 原生刷新，按最多 1000 个 URL 分批；其他要求 HMAC、AWS SigV4、TC3 或 RPC 签名的 API 必须通过专用 Provider 实现，不能让用户把长期密钥拼进 URL 或 Body。
 
 ## 12. 对象操作与未来自动化矩阵
 
@@ -314,7 +317,7 @@ Bucket/前缀关联默认不启用自动操作。用户可分别配置：新对�
 
 1. AWS CloudFront：Invalidation；预热仍可复用 HTTP GET。
 2. Cloudflare：Zone/R2 自定义域名、按 URL Purge；预热复用 GET。
-3. 阿里云 CDN：URL/目录刷新和原生预热。
+3. Alibaba Cloud CDN：URL 刷新和原生预热（已实现）。
 4. 腾讯云 CDN：URL/目录刷新和原生预热。
 
 ### 后续
@@ -340,19 +343,19 @@ QueryJobStatus
 
 ## 15. 配置版本与迁移
 
-JSON 文档当前为版本 1。新增字段必须提供兼容默认值；破坏性变化需要显式版本迁移。凭据文件和普通配置文件保持分离，迁移配置时不得把 DPAPI 密文当作跨机器可移植凭据。
+CDN 配置仍有独立的模型版本校验；新增字段必须提供兼容默认值，破坏性变化需要显式迁移。运行时由统一 `configuration.json` 原子保存，迁移连接包时不得把 DPAPI 密文当作跨机器可移植凭据。
 
-连接包格式 3 已支持 CDN 迁移：
+连接包格式 4 使用统一凭据模型，并继续兼容导入 v1-v3：
 
 - 单连接导出只携带该连接相关的 Profile/Binding；全部导出还携带未关联 Profile。
 - 默认只导出 Profile/Binding 非敏感字段，并移除凭据引用。
-- 独立凭据必须由用户显式选择，与 S3 已保存密钥一起使用迁移密码重新加密。
+- 统一凭据必须由用户显式选择，并使用迁移密码重新加密。
 - 导入时重新生成并映射 S3、CDN Profile、Credential 和 Binding ID；覆盖模式保留本机 ID。
-- 不导出本机 DPAPI 密文，导入后分别写入 S3 和 CDN 的独立 DPAPI 存储。
+- 不导出本机 DPAPI 密文，导入后写入目标用户的统一 DPAPI Vault。
 
 ## 16. 错误处理
 
-- 配置读取失败：记录脱敏错误，CDN 能力回退为空，不影响 S3 浏览。
+- 统一配置读取或解密失败：停止加载并显示脱敏错误，不以空 CDN 配置覆盖现有配置图。
 - 配置保存失败：显示错误，不更新内存状态。
 - 缺失凭据：禁用对象动作并提示修复。
 - 下载测试失败：保留窗口和 URL，允许重试。
@@ -374,11 +377,12 @@ Core：
 Infrastructure：
 
 - 配置和关联 round-trip
-- 凭据文件不出现明文秘密
+- 统一配置文件和连接包均不出现明文秘密
 - Range Header、缓存 Header 识别
 - 真实本地 TLS 握手、证书有效期、过期证书、域名和不受信任证书链识别
 - 完整 GET 预热
 - 刷新模板和 Bearer 鉴权
+- Alibaba CDN 刷新/预热分批、任务查询、精确域名权限检查和错误脱敏
 
 App：
 
@@ -397,10 +401,10 @@ App：
 
 ## 18. 已知限制
 
-- 第一阶段刷新仅支持不需要厂商签名的 HTTP API。
+- Alibaba CDN 权限检查只验证 `DescribeUserDomains` 的精确域名查询，不能无副作用证明刷新/预热写权限。
 - 下载测试的响应头耗时是 `SendAsync(ResponseHeadersRead)` 的客户端观测值，不是浏览器 Navigation Timing。
 - 单次本地预热无法证明全球边缘节点已缓存。
-- 暂无 CDN CLI。
+- CLI 已支持 `cdn test`、`cdn cache-test`、`cdn warmup` 与 `permission check --cdn-profile`；尚未暴露独立 purge 命令。
 - 暂无 Prefix Purge 的厂商统一抽象。
 - 暂无跨任务 URL/目录聚合和厂商配额窗口；当前每个 CDN Profile 同时执行一个任务。
 - 不创建、续期或修改 DNS、证书、源站和 CDN 分发；只提供当前 HTTPS 端点的即时只读证书检测。

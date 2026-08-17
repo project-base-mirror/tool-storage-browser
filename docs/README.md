@@ -11,6 +11,7 @@
 
 ## 凭据、连接与迁移
 
+- [`Credential-Center.md`](Credential-Center.md)：统一 Credential Vault、DPAPI 配置、旧文件一次性迁移、GUI/CLI 与权限探针安全边界。
 - [`Aws-Credential-Sources.md`](Aws-Credential-Sources.md)：AWS shared profile、环境/角色凭据、SSO、AssumeRole 与 Web Identity。
 - [`Connection-Import-Export.md`](Connection-Import-Export.md)：连接、凭据、CDN Profile 和 Binding 的导入导出与冲突策略。
 

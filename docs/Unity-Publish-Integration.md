@@ -65,7 +65,7 @@ s3explorer-cli publish --profile minio-dev --source D:\Build\Windows --bucket ga
 
 默认 `--delete-mode none` 不删除任何远端对象。`mirror` 要求安全的非空 Prefix，实时递归扫描目标范围并在 dry-run 中返回删除计划；只有上传、SHA-256 回读验证和对象 ACL 全部成功后才执行删除，删除失败时不会发布新 `publish-manifest.json`。删除范围不包含 Prefix 外对象、目录标记和现有 Manifest，因此可以替代构建工具中“删除远端本地已不存在文件”的发布语义，而无需创建持久化 Folder Sync Job。
 
-Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥仍由 S3 Explorer 在 Windows 用户配置目录中保存并通过 DPAPI 保护，不应写入 Unity 工程、命令行或日志。
+Unity 项目只保存 Profile ID/名称、Bucket、Prefix 和可选 CDN Profile ID。Access Key、Secret Key、Session Token 与 CDN 密钥由 S3 Explorer 统一 Credential Vault 保存在 `%APPDATA%\S3Explorer\configuration.json`，通过 Windows DPAPI CurrentUser 保护；它们不应写入 Unity 工程、命令行或日志。CI 应使用隔离 `--data-dir`，并通过环境变量向 `credential add` 提供秘密。
 
 ## CDN 匿名读取与缓存探测
 
