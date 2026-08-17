@@ -32,6 +32,7 @@ public static class S3ExplorerAutomationNative
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $solution = Join-Path $repositoryRoot "S3Explorer.sln"
 $applicationPath = Join-Path $repositoryRoot "src\S3Explorer.App\bin\Release\net10.0-windows\win-x64\S3Explorer.exe"
+$cliPath = Join-Path $repositoryRoot "src\S3Explorer.Cli\bin\Release\net10.0-windows\win-x64\s3explorer-cli.exe"
 $automationRoot = Join-Path $repositoryRoot "artifacts\automation"
 $currentRoot = Join-Path $automationRoot "current"
 $statePath = Join-Path $currentRoot "state.json"
@@ -45,7 +46,7 @@ function Write-JsonResult {
 }
 
 function Ensure-ApplicationBuild {
-    if (Test-Path -LiteralPath $applicationPath) {
+    if ((Test-Path -LiteralPath $applicationPath) -and (Test-Path -LiteralPath $cliPath)) {
         return
     }
 
@@ -59,6 +60,9 @@ function Ensure-ApplicationBuild {
     }
     if (-not (Test-Path -LiteralPath $applicationPath)) {
         throw "Application executable was not produced at the fixed Release path."
+    }
+    if (-not (Test-Path -LiteralPath $cliPath)) {
+        throw "CLI executable was not produced at the fixed Release path."
     }
 }
 
@@ -307,12 +311,16 @@ switch ($Command) {
         $runScreenshot = Join-Path $runRoot "screenshot.png"
         $runData = Join-Path $runRoot "data"
         New-Item -ItemType Directory -Path $runData -Force | Out-Null
+        & $cliPath credential list --data-dir $runData --output json --non-interactive | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create canonical automation configuration (exit code $LASTEXITCODE)."
+        }
+        $canonicalConfiguration = Join-Path $runData "configuration.json"
+        Copy-Item -LiteralPath $canonicalConfiguration -Destination ($canonicalConfiguration + ".bak") -Force
         foreach ($name in @(
-            "profiles.json",
+            "configuration.json",
             "settings.json",
             "transfers.json",
-            "cdn-config.json",
-            "cdn-credentials.json",
             "cdn-jobs.json"
         )) {
             Set-Content -LiteralPath (Join-Path $runData $name) -Value "{truncated" -Encoding utf8
@@ -333,8 +341,8 @@ switch ($Command) {
             throw "Corrupt-state UI smoke did not reach a usable main window."
         }
         $preserved = @(Get-ChildItem -LiteralPath $runData -File -Filter "*.corrupt-*" -ErrorAction SilentlyContinue)
-        if ($preserved.Count -lt 6) {
-            throw "Corrupt-state UI smoke preserved only $($preserved.Count) of 6 malformed stores."
+        if ($preserved.Count -lt 4) {
+            throw "Corrupt-state UI smoke preserved only $($preserved.Count) of 4 malformed stores."
         }
 
         Write-JsonResult ([ordered]@{
