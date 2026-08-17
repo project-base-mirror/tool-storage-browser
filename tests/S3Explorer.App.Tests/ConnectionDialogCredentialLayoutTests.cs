@@ -80,6 +80,105 @@ public sealed class ConnectionDialogCredentialLayoutTests
     }
 
     [Fact]
+    public void AmazonS3ExplainsWhenVaultHasOnlyIncompatibleCredentialsAndOffersQuickCreate()
+    {
+        RunSta(() =>
+        {
+            var aliyunCredential = new CredentialProfile
+            {
+                Name = "Aliyun deployment key",
+                Provider = CredentialProviderKind.AlibabaCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "access",
+                Secret = "secret"
+            };
+            using var dialog = new ConnectionDialog(
+                null!,
+                credentials: [aliyunCredential],
+                saveNewCredentialAsync: credential =>
+                    Task.FromResult<IReadOnlyList<CredentialProfile>>([aliyunCredential, credential]));
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
+            dialog.Show();
+            Application.DoEvents();
+
+            var credential = Assert.IsType<ComboBox>(Find(dialog, "StorageCredentialComboBox"));
+            var create = Assert.IsType<Button>(Find(dialog, "NewStorageCredentialButton"));
+
+            Assert.Single(credential.Items);
+            Assert.Contains("没有与 Amazon S3 兼容", credential.Text, StringComparison.Ordinal);
+            Assert.True(create.Visible);
+            Assert.True(create.Enabled);
+            Assert.True(credential.Width >= 220,
+                $"Credential selector width was {credential.Width}px; picker={credential.Parent?.Width}px; button={create.Width}px.");
+            var createBounds = dialog.RectangleToClient(create.RectangleToScreen(create.ClientRectangle));
+            Assert.True(createBounds.Right <= dialog.ClientSize.Width,
+                $"Quick-create button right edge {createBounds.Right}px exceeded {dialog.ClientSize.Width}px.");
+            Assert.True(createBounds.Bottom <= dialog.ClientSize.Height,
+                $"Quick-create button bottom edge {createBounds.Bottom}px exceeded {dialog.ClientSize.Height}px.");
+            Assert.Contains("凭据中心已有 1 个凭据", AllControlText(dialog), StringComparison.Ordinal);
+            Assert.Contains("其他提供方的凭据不会显示", AllControlText(dialog), StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void CreatedCompatibleCredentialRefreshesAndSelectsWithoutClosingConnectionDialog()
+    {
+        RunSta(() =>
+        {
+            IReadOnlyList<CredentialProfile> saved = [];
+            using var dialog = new ConnectionDialog(
+                null!,
+                credentials: [],
+                saveNewCredentialAsync: credential =>
+                {
+                    saved = [credential];
+                    return Task.FromResult(saved);
+                });
+            dialog.Show();
+            Application.DoEvents();
+            var created = new CredentialProfile
+            {
+                Name = "AWS release key",
+                Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "AKIATEST",
+                Secret = "secret"
+            };
+
+            dialog.AddCreatedCredentialAsync(created).GetAwaiter().GetResult();
+            Application.DoEvents();
+
+            var credential = Assert.IsType<ComboBox>(Find(dialog, "StorageCredentialComboBox"));
+            Assert.Single(saved);
+            Assert.Single(credential.Items);
+            Assert.Contains(created.Name, credential.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain(created.Secret, AllControlText(dialog), StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void QuickCreateEditorUsesRequestedStorageProviderAndCredentialKind()
+    {
+        RunSta(() =>
+        {
+            using var editor = new CredentialEditorDialog(
+                null,
+                CredentialProviderKind.AmazonWebServices,
+                CredentialKind.AccessKeyPair);
+            editor.Show();
+            Application.DoEvents();
+
+            var provider = Assert.IsType<ComboBox>(Find(editor, "CredentialProvider"));
+            var type = Assert.IsType<ComboBox>(Find(editor, "CdnCredentialType"));
+
+            Assert.Equal("Amazon Web Services", provider.Text);
+            Assert.Equal("Access Key / Secret Key", type.Text);
+        });
+    }
+
+    [Fact]
     public void AssumeRoleShowsRoleChainFieldsAndReferencesExternalIdCredential()
     {
         RunSta(() =>

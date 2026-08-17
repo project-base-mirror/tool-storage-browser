@@ -34,7 +34,8 @@ internal sealed class ConnectionDialog : Form
     private readonly ComboBox _awsExternalIdCredential = new()
     {
         Name = "AwsExternalIdCredentialComboBox",
-        DropDownStyle = ComboBoxStyle.DropDownList
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Dock = DockStyle.Fill
     };
     private readonly NumericUpDown _awsSessionDuration = new()
     {
@@ -48,8 +49,25 @@ internal sealed class ConnectionDialog : Form
     private readonly ComboBox _credential = new()
     {
         Name = "StorageCredentialComboBox",
-        DropDownStyle = ComboBoxStyle.DropDownList
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Dock = DockStyle.Fill
     };
+    private readonly Button _newCredential = new()
+    {
+        Name = "NewStorageCredentialButton",
+        Text = "新建凭据…",
+        AutoSize = true,
+        MinimumSize = new Size(104, 28)
+    };
+    private readonly Button _newAwsExternalIdCredential = new()
+    {
+        Name = "NewAwsExternalIdCredentialButton",
+        Text = "新建 External ID…",
+        AutoSize = true,
+        MinimumSize = new Size(136, 28)
+    };
+    private readonly TableLayoutPanel _credentialPicker = CredentialPicker();
+    private readonly TableLayoutPanel _awsExternalIdCredentialPicker = CredentialPicker();
     private readonly RadioButton _auto = new() { Text = "自动", Checked = true, AutoSize = true };
     private readonly RadioButton _virtual = new() { Text = "Virtual Hosted", AutoSize = true };
     private readonly RadioButton _path = new() { Text = "Path Style", AutoSize = true };
@@ -101,7 +119,8 @@ internal sealed class ConnectionDialog : Form
     private readonly Label _awsSessionDurationLabel = FieldLabel("会话时长（秒）：");
     private readonly Label _awsWebIdentityTokenFileLabel = FieldLabel("Token 文件：");
     private readonly Label _credentialHint = HintLabel("选择凭据的实际来源；环境和角色凭据不会保存到连接文件。");
-    private readonly IReadOnlyList<CredentialProfile> _credentials;
+    private readonly List<CredentialProfile> _credentials;
+    private readonly Func<CredentialProfile, Task<IReadOnlyList<CredentialProfile>>>? _saveNewCredentialAsync;
     private readonly Dictionary<S3ServiceType, ConnectionDraft> _connectionDrafts = [];
     private readonly Guid _id;
     private bool _loading;
@@ -113,10 +132,13 @@ internal sealed class ConnectionDialog : Form
     public ConnectionDialog(
         IS3StorageService storage,
         ConnectionProfile? profile = null,
-        IReadOnlyList<CredentialProfile>? credentials = null)
+        IReadOnlyList<CredentialProfile>? credentials = null,
+        Func<CredentialProfile, Task<IReadOnlyList<CredentialProfile>>>? saveNewCredentialAsync = null)
     {
         _storage = storage;
-        _credentials = credentials ?? [];
+        _credentials = credentials?.ToList() ?? [];
+        _saveNewCredentialAsync = saveNewCredentialAsync;
+        _newCredential.Enabled = _newAwsExternalIdCredential.Enabled = saveNewCredentialAsync is not null;
         Profile = S3ProviderCatalog.RepairLegacyServiceType(
             profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
         _id = Profile.Id;
@@ -155,6 +177,8 @@ internal sealed class ConnectionDialog : Form
         _provider.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _credentialSource.SelectedIndexChanged += (_, _) => UpdateCredentialSourceVisibility();
         _https.CheckedChanged += (_, _) => ApplyHttpsToEndpoint();
+        _newCredential.Click += async (_, _) => await CreateCredentialAsync(externalId: false);
+        _newAwsExternalIdCredential.Click += async (_, _) => await CreateCredentialAsync(externalId: true);
         _test.Click += async (_, _) => await TestConnectionAsync();
         _save.Click += (_, _) => SaveProfile();
     }
@@ -233,10 +257,14 @@ internal sealed class ConnectionDialog : Form
         AddField(basicTable, ref row, _awsRoleArnLabel, _awsRoleArn);
         AddField(basicTable, ref row, _awsRoleSessionNameLabel, _awsRoleSessionName);
         AddField(basicTable, ref row, _awsRoleSourceIdentityLabel, _awsRoleSourceIdentity);
-        AddField(basicTable, ref row, _awsExternalIdLabel, _awsExternalIdCredential);
+        _awsExternalIdCredentialPicker.Controls.Add(_awsExternalIdCredential, 0, 0);
+        _awsExternalIdCredentialPicker.Controls.Add(_newAwsExternalIdCredential, 1, 0);
+        AddField(basicTable, ref row, _awsExternalIdLabel, _awsExternalIdCredentialPicker);
         AddField(basicTable, ref row, _awsSessionDurationLabel, _awsSessionDuration);
         AddField(basicTable, ref row, _awsWebIdentityTokenFileLabel, _awsWebIdentityTokenFile);
-        AddField(basicTable, ref row, _credentialLabel, _credential);
+        _credentialPicker.Controls.Add(_credential, 0, 0);
+        _credentialPicker.Controls.Add(_newCredential, 1, 0);
+        AddField(basicTable, ref row, _credentialLabel, _credentialPicker);
         basic.Controls.Add(basicTable);
 
         _advancedGroup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -314,6 +342,23 @@ internal sealed class ConnectionDialog : Form
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         return table;
+    }
+
+    private static TableLayoutPanel CredentialPicker()
+    {
+        var picker = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            MinimumSize = new Size(400, 0)
+        };
+        picker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        picker.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        return picker;
     }
 
     private static Label FieldLabel(string text) => new()
@@ -514,14 +559,14 @@ internal sealed class ConnectionDialog : Form
         _awsRoleArnLabel.Visible = _awsRoleArn.Visible = roleSession;
         _awsRoleSessionNameLabel.Visible = _awsRoleSessionName.Visible = roleSession;
         _awsRoleSourceIdentityLabel.Visible = _awsRoleSourceIdentity.Visible = assumeRole;
-        _awsExternalIdLabel.Visible = _awsExternalIdCredential.Visible = assumeRole;
+        _awsExternalIdLabel.Visible = _awsExternalIdCredentialPicker.Visible = assumeRole;
         _awsSessionDurationLabel.Visible = _awsSessionDuration.Visible = roleSession;
         _awsWebIdentityTokenFileLabel.Visible = _awsWebIdentityTokenFile.Visible = webIdentity;
-        _credentialLabel.Visible = _credential.Visible = storedKeys;
+        _credentialLabel.Visible = _credentialPicker.Visible = storedKeys;
 
         _credentialHint.Text = source switch
         {
-            CredentialSourceKind.StoredKeys => "连接只保存统一凭据 ID；请先在“工具 → 凭据中心”创建或维护 Access Key、Secret Key 与 Session Token。",
+            CredentialSourceKind.StoredKeys => StoredCredentialHint(serviceType),
             CredentialSourceKind.AwsSharedProfile => "只保存 Profile 名称；凭据从 ~/.aws/credentials 与 ~/.aws/config 读取。",
             CredentialSourceKind.AwsEnvironmentVariables => "读取 AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY 和可选 AWS_SESSION_TOKEN，不写入磁盘。",
             CredentialSourceKind.AwsContainerRole => "锁定容器凭据端点；缺少 AWS_CONTAINER_CREDENTIALS_* 时会直接报错，不回退到其他身份。",
@@ -533,6 +578,98 @@ internal sealed class ConnectionDialog : Form
             _ => string.Empty
         };
     }
+
+    private string StoredCredentialHint(S3ServiceType serviceType)
+    {
+        var serviceName = S3ProviderCatalog.Get(serviceType).DisplayName;
+        var compatibleCount = _credentials.Count(value => value.IsCompatibleWith(serviceType));
+        if (compatibleCount > 0)
+            return $"仅显示与 {serviceName} 兼容的 Access Key 凭据；也可点击“新建凭据…”直接创建并选中。";
+
+        return _credentials.Count == 0
+            ? $"凭据中心为空。请点击“新建凭据…”创建与 {serviceName} 兼容的 Access Key。"
+            : $"凭据中心已有 {_credentials.Count:N0} 个凭据，但没有与 {serviceName} 兼容的 Access Key；其他提供方的凭据不会显示。请点击“新建凭据…”。";
+    }
+
+    private async Task CreateCredentialAsync(bool externalId)
+    {
+        if (_saveNewCredentialAsync is null)
+        {
+            MessageBox.Show(
+                this,
+                "当前入口无法保存统一凭据。请关闭窗口后重试。",
+                "无法新建凭据",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var serviceType = SelectedServiceType();
+        var provider = externalId
+            ? CredentialProviderKind.AmazonWebServices
+            : CredentialProviderFor(serviceType);
+        var kind = externalId ? CredentialKind.SecretValue : CredentialKind.AccessKeyPair;
+        using var dialog = new CredentialEditorDialog(null, provider, kind);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var button = externalId ? _newAwsExternalIdCredential : _newCredential;
+        button.Enabled = false;
+        try
+        {
+            await AddCreatedCredentialAsync(dialog.Credential, externalId);
+        }
+        catch (Exception exception)
+        {
+            ErrorDialog.ShowException(this, "无法保存凭据", "统一 Credential Vault", exception);
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
+    internal async Task AddCreatedCredentialAsync(CredentialProfile credential, bool externalId = false)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        credential.Validate();
+
+        var serviceType = SelectedServiceType();
+        var compatible = externalId
+            ? credential.Provider == CredentialProviderKind.AmazonWebServices &&
+              credential.Kind == CredentialKind.SecretValue
+            : credential.IsCompatibleWith(serviceType);
+        if (!compatible)
+            throw new InvalidOperationException(externalId
+                ? "External ID 必须使用 Amazon Web Services / SecretValue 凭据。"
+                : $"凭据“{credential.Name}”与 {S3ProviderCatalog.Get(serviceType).DisplayName} 不兼容。");
+
+        if (_credentials.Any(value => value.Id == credential.Id ||
+            string.Equals(value.Name, credential.Name, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"凭据名称或 ID 已存在：{credential.Name}");
+
+        var updated = await _saveNewCredentialAsync!(credential);
+        ArgumentNullException.ThrowIfNull(updated);
+        _credentials.Clear();
+        _credentials.AddRange(updated);
+        PopulateCredentialChoices(
+            serviceType,
+            externalId ? SelectedNullableGuid(_credential) : credential.Id,
+            externalId ? credential.Id : SelectedNullableGuid(_awsExternalIdCredential));
+        UpdateCredentialSourceVisibility();
+    }
+
+    private static CredentialProviderKind CredentialProviderFor(S3ServiceType serviceType) => serviceType switch
+    {
+        S3ServiceType.AmazonS3 => CredentialProviderKind.AmazonWebServices,
+        S3ServiceType.AliyunOss => CredentialProviderKind.AlibabaCloud,
+        S3ServiceType.TencentCos => CredentialProviderKind.TencentCloud,
+        S3ServiceType.CloudflareR2 => CredentialProviderKind.Cloudflare,
+        S3ServiceType.BackblazeB2 => CredentialProviderKind.Backblaze,
+        S3ServiceType.GoogleCloudStorage => CredentialProviderKind.GoogleCloud,
+        S3ServiceType.SupabaseStorage => CredentialProviderKind.Supabase,
+        S3ServiceType.MinIO or S3ServiceType.Custom => CredentialProviderKind.S3Compatible,
+        _ => throw new ArgumentOutOfRangeException(nameof(serviceType), serviceType, "不支持的对象存储服务类型。")
+    };
 
     private void ApplyHttpsToEndpoint()
     {
@@ -743,10 +880,16 @@ internal sealed class ConnectionDialog : Form
         Guid? selectedExternalIdCredentialId)
     {
         _credential.Items.Clear();
-        foreach (var credential in _credentials
-                     .Where(value => value.IsCompatibleWith(serviceType))
-                     .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+        var compatibleCredentials = _credentials
+            .Where(value => value.IsCompatibleWith(serviceType))
+            .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        foreach (var credential in compatibleCredentials)
             _credential.Items.Add(new Choice<Guid?>(credential.Id, $"{credential.Name} · {credential.Fingerprint}"));
+        if (compatibleCredentials.Length == 0)
+            _credential.Items.Add(new Choice<Guid?>(
+                null,
+                $"（没有与 {S3ProviderCatalog.Get(serviceType).DisplayName} 兼容的 Access Key 凭据）"));
         SelectNullableGuid(_credential, selectedCredentialId);
 
         _awsExternalIdCredential.Items.Clear();

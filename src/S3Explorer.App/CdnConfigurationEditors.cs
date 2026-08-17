@@ -489,13 +489,16 @@ internal sealed class CredentialEditorDialog : Form
 
     public CredentialProfile Credential { get; private set; }
 
-    public CredentialEditorDialog(CredentialProfile? credential)
+    public CredentialEditorDialog(
+        CredentialProfile? credential,
+        CredentialProviderKind? initialProvider = null,
+        CredentialKind? initialKind = null)
     {
-        Credential = credential ?? new CredentialProfile
-        {
-            Provider = CredentialProviderKind.GenericHttp,
-            Kind = CredentialKind.BearerToken
-        };
+        var initialProviderValue = initialProvider ?? CredentialProviderKind.GenericHttp;
+        var kind = initialKind ?? (initialProviderValue == CredentialProviderKind.GenericHttp
+            ? CredentialKind.BearerToken
+            : CredentialKind.AccessKeyPair);
+        Credential = credential ?? new CredentialProfile { Provider = initialProviderValue, Kind = kind };
         _id = Credential.Id;
         Name = "CredentialEditorDialog";
         Text = credential is null ? "新增统一凭据" : "编辑统一凭据";

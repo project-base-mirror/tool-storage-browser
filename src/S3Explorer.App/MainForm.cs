@@ -1191,7 +1191,10 @@ internal sealed partial class MainForm : Form
     private async Task NewConnectionAsync()
     {
         var groupId = SelectedTargetGroupId();
-        using var dialog = new ConnectionDialog(_storage, credentials: _credentials);
+        using var dialog = new ConnectionDialog(
+            _storage,
+            credentials: _credentials,
+            saveNewCredentialAsync: SaveNewConnectionCredentialAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var profile = dialog.Profile with
         {
@@ -1200,6 +1203,34 @@ internal sealed partial class MainForm : Form
         };
         await SaveProfilesAndRefreshAsync(_profiles.Append(profile).ToArray());
         SelectProfileNode(profile);
+    }
+
+    private async Task<IReadOnlyList<CredentialProfile>> SaveNewConnectionCredentialAsync(
+        CredentialProfile credential)
+    {
+        credential.Validate();
+        var updated = await _configurationStore.UpdateAsync(current =>
+        {
+            if (current.CredentialVault.Any(value => value.Id == credential.Id ||
+                string.Equals(value.Name, credential.Name, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"凭据名称或 ID 已存在：{credential.Name}");
+
+            return current with
+            {
+                CredentialVault = current.CredentialVault.Append(credential).ToArray()
+            };
+        });
+
+        _profiles = updated.Storage.Profiles;
+        _profileGroups = updated.Storage.Groups;
+        _cdnConfiguration = updated.Cdn;
+        _credentials = updated.CredentialVault;
+        if (_currentProfile is not null)
+            _currentProfile = _profiles.FirstOrDefault(value => value.Id == _currentProfile.Id);
+        PopulateProfiles();
+        UpdateCommandStates();
+        _logger.Info($"Credential created from connection dialog name={credential.Name} provider={credential.Provider} kind={credential.Kind}");
+        return _credentials;
     }
 
     private async Task NewConnectionGroupAsync()
@@ -1299,7 +1330,11 @@ internal sealed partial class MainForm : Form
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
-        using var dialog = new ConnectionDialog(_storage, profile, _credentials);
+        using var dialog = new ConnectionDialog(
+            _storage,
+            profile,
+            _credentials,
+            SaveNewConnectionCredentialAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var proposed = _profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray();
         await SaveProfilesAndRefreshAsync(proposed);
