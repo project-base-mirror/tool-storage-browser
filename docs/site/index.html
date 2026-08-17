@@ -35,11 +35,11 @@
     "alternateName": "S3 对象存储管理工具",
     "applicationCategory": "UtilitiesApplication",
     "operatingSystem": "Windows 10, Windows 11",
-    "softwareVersion": "0.7.6",
+    "softwareVersion": "0.8.0",
     "isAccessibleForFree": true,
     "url": "https://project-base-mirror.github.io/tool-storage-browser/",
-    "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-setup.msi",
-    "releaseNotes": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.6",
+    "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-setup.msi",
+    "releaseNotes": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.0",
     "image": "https://project-base-mirror.github.io/tool-storage-browser/assets/social-card.png",
     "description": "面向 Windows 的原生 S3 与 S3-compatible 对象存储管理工具，支持可靠传输、文件夹同步、CDN 内容交付和 CLI 自动化。",
     "sameAs": "https://github.com/project-base-mirror/tool-storage-browser"
@@ -68,10 +68,10 @@
         <h1>一个认真对待<br><em>对象存储</em>的桌面工具</h1>
         <p class="lede">原生 WinForms 客户端，管理 Amazon S3、MinIO、Ceph、OSS、COS、Backblaze B2 和 Google Cloud Storage。连接迁移、浏览、传输、同步与自动化，在一个清晰的工作流里完成。</p>
         <div class="hero-actions">
-          <a class="button primary" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-setup.msi">下载 v0.7.6 安装包</a>
-          <a class="button secondary" href="https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.6">查看 v0.7.6 Release</a>
+          <a class="button primary" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-setup.msi">下载 v0.8.0 安装包</a>
+          <a class="button secondary" href="https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.0">查看 v0.8.0 Release</a>
         </div>
-        <p class="runtime-note">当前稳定版 v0.7.6；桌面端保持单实例并修复托盘通知异常，Mirror 发布先提交新 Manifest 再清理孤儿对象，安装版可经 SHA-256 校验和用户确认后升级。</p>
+        <p class="runtime-note">当前稳定版 v0.8.0；统一 Credential Vault 让对象存储与 CDN 复用兼容凭据，权限检查按真实作用域报告结果，Alibaba Cloud CDN 支持原生刷新与预热。</p>
         <ul class="hero-facts" aria-label="项目特点">
           <li><strong>原生</strong><span>不依赖 Electron 或 WebView</span></li>
           <li><strong>可恢复</strong><span>持久队列与 Multipart 检查点</span></li>
@@ -134,7 +134,7 @@
         <h2>桌面操作，也可以写进脚本</h2>
         <p>发布包内置 <code>s3explorer-cli.exe</code>。双击会显示完整帮助；Unity/CI 可使用严格参数、文件级并发、共享限速、Multipart 设置、Manifest 增量发布和逐文件 SHA-256 校验。Unity 2021.3 可直接下载独立的 <code>S3Explorer.Contracts</code> SDK。</p>
         <a class="text-link" href="https://github.com/project-base-mirror/tool-storage-browser#对象存储命令行-api">阅读 CLI 文档 <span>→</span></a>
-        <a class="text-link" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer.Contracts-v0.7.6.zip">下载 Unity Contracts SDK <span>→</span></a>
+        <a class="text-link" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer.Contracts-v0.8.0.zip">下载 Unity Contracts SDK <span>→</span></a>
       </div>
       <div class="terminal" aria-label="CLI 示例">
         <div class="terminal-bar"><i></i><i></i><i></i><span>PowerShell</span></div>
@@ -160,7 +160,7 @@
         <article><span>v0.5</span><h3>可用性与内容交付</h3><p>同步、CLI、Provider 简化、连接迁移、CDN 工作流、主页与更新交付链。</p></article>
         <article><span>v0.6</span><h3>日常管理</h3><p>CORS、版本、加密、对象恢复和同步结果控制。</p></article>
         <article><span>v0.7</span><h3>高级 S3</h3><p>生命周期、Object Lock、Tagging、静态网站和跨账户传输。</p></article>
-        <article><span>v0.8</span><h3>规模化</h3><p>虚拟列表、搜索、计划任务、发布签名、SBOM 和更新通道。</p></article>
+        <article><span>v0.8</span><h3>凭据与规模化</h3><p>统一凭据中心、作用域权限检查，并继续推进虚拟列表、搜索、计划任务和发布安全。</p></article>
       </div>
       <div class="roadmap-links">
         <a class="button secondary" href="https://github.com/project-base-mirror/tool-storage-browser/blob/main/docs/Roadmap-v0.5-v0.8.md">查看详细功能计划</a>
@@ -170,13 +170,13 @@
 
     <section class="download-band">
       <div class="section-shell download-inner">
-        <div><p class="eyebrow"><span></span> v0.7.6 · 开始使用</p><h2>把对象存储留在桌面上。</h2></div>
+        <div><p class="eyebrow"><span></span> v0.8.0 · 开始使用</p><h2>把对象存储留在桌面上。</h2></div>
         <div class="download-actions">
-          <a class="button light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-setup.msi">MSI（含运行时）</a>
-          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-framework-dependent-setup.msi">MSI（需 .NET 10）</a>
-          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-self-contained.zip">便携版（含运行时）</a>
-          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64.zip">便携版（需 .NET 10）</a>
-          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer.Contracts-v0.7.6.zip">Unity Contracts SDK</a>
+          <a class="button light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-setup.msi">MSI（含运行时）</a>
+          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-framework-dependent-setup.msi">MSI（需 .NET 10）</a>
+          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-self-contained.zip">便携版（含运行时）</a>
+          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64.zip">便携版（需 .NET 10）</a>
+          <a class="button outline-light" href="https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer.Contracts-v0.8.0.zip">Unity Contracts SDK</a>
         </div>
       </div>
     </section>

@@ -1,6 +1,6 @@
 # S3 Explorer v0.5–v0.8 功能对标与交付路线图
 
-本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.7.6。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
+本文最初以 2026-07-27 的仓库状态为规划基线，参考 S3 Browser 的官方功能页、Folder Sync 与 CLI 文档；已交付版本的事实以 `docs/versions/` 为准，下面的当前能力快照同步到 v0.8.0。目标不是机械复制菜单，而是按“跨 S3 兼容服务可用、危险操作可恢复、每个入口形成闭环”的标准逐步补齐。
 
 参考资料：
 
@@ -20,17 +20,17 @@
 5. GUI、CLI 和同步任务共享 Core 模型与服务，不维护三套行为不一致的实现。
 6. 每个版本必须同步维护 `docs/versions/`，并通过全量测试、Release 构建、CLI 冒烟、UI 冒烟和发布包检查。
 
-## 当前能力快照（v0.7.6，2026-08-09）
+## 当前能力快照（v0.8.0，2026-08-17）
 
 | 领域 | 已完成 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- |
-| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；统一 Provider capability registry；Region 自动处理；DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 代理；更多兼容服务的持续实测 | P1 |
+| 账户与兼容性 | Amazon S3、S3 兼容、Google XML API；Provider 模板；统一 Provider capability registry；Region 自动处理；统一 Credential Vault 与 DPAPI；连接导入导出；分组；健康状态；AWS Profile/SSO/AssumeRole/Web Identity 等外部凭据来源 | 代理；更多兼容服务的持续实测 | P1 |
 | Bucket 基础管理 | 创建、删除、安全清空、属性、ACL、Policy、Public Access Block、Object Ownership、CORS、版本控制、默认加密、标签、生命周期与 Object Lock 入口 | Bucket Logging、Transfer Acceleration、Replication；MinIO 等兼容服务的高级能力边界继续收口 | P1–P2 |
 | 对象管理 | 分页、递归、上传下载、复制移动、重命名、删除、Metadata、Tags、版本浏览/恢复、预签名 URL、发布 Header 规则 | 跨账户复制、拖放、直接打开/编辑、大规模对象列表性能 | P1–P2 |
 | 传输可靠性 | 持久队列、暂停恢复、重试、限速、Multipart 检查点、回读校验、批次失败明细、单实例托盘驻留 | 关键状态机覆盖率继续提升；临时空间与极端中断恢复诊断 | P1–P2 |
 | 文件夹同步 | 持久任务、单向镜像、逐项选择、分析缓存、排除规则、可选哈希、删除传播、结果导出与失败重试 | 计划任务、增量扫描、双向/冲突策略 | P1 |
-| 自动化 | 独立 CLI、稳定 JSON、退出码、连接/Bucket/对象/同步/发布/验证/CDN 命令、超时与外部取消 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
-| 内容分发 | CDN Profile、独立凭据、Bucket/最长前缀关联、URL、Range 探测、证书诊断、持久作业、上传后自动化、CLI、HTTP 预热与通用刷新 | CloudFront/Cloudflare/阿里云/腾讯云签名 Provider；Prefix Purge | P1–P2 |
+| 自动化 | 独立 CLI、稳定 JSON、退出码、连接/Bucket/对象/同步/发布/验证/CDN/凭据命令、作用域权限报告、超时与外部取消 | JSONL 事件流、队列查询、更多设置 API、PowerShell completion | P2 |
+| 内容分发 | CDN Profile、统一凭据引用、Bucket/最长前缀关联、URL、Range 探测、证书诊断、持久作业、上传后自动化、CLI、HTTP 预热与通用刷新、Alibaba Cloud CDN 原生刷新/预热 | CloudFront/Cloudflare/腾讯云原生签名 Provider；Prefix Purge | P1–P2 |
 | 交付 | 锁定依赖、Release 构建/测试门禁、UI 自动化、ZIP、双 MSI、Pages、GitHub Release、SHA-256 校验、安装版用户确认升级 | 受信代码签名、SBOM、可复现构建 | P2 |
 
 优先级定义：P0 是交付基础；P1 是近期高价值；P2 是增强能力；P3 是高复杂度或平台相关能力。
@@ -371,19 +371,28 @@
 
 ## v0.8：规模化与平台集成
 
-### v0.8.0 大规模列表与搜索
+### v0.8.0 统一凭据中心与权限检查
+
+- 对象存储、AWS External ID 与 CDN 凭据收敛到统一 Credential Vault；连接与 CDN Profile 通过兼容类型引用同一凭据。
+- 桌面端与 CLI 共享单一加密配置，并一次性迁移、归档旧配置；运行时不保留旧、新格式双路径。
+- 权限检查按实际 Bucket、Prefix 和计划操作给出逐项报告；默认无副作用，真实写入探针需要显式双重授权。
+- Alibaba Cloud CDN 原生 Provider 复用兼容的 Alibaba AccessKey，使用正式控制面 API 刷新与预热。
+
+发布状态（2026-08-17）：上述统一凭据、迁移、权限检查、桌面/CLI 工作流、连接包 v4 与 Alibaba Cloud CDN 原生能力已完成并进入 v0.8.0 正式发布。
+
+### v0.8.1 大规模列表与搜索
 
 - ListView 虚拟化、增量排序、百万对象缓存预算、后台分页预取。
 - 服务端前缀搜索与本地过滤明确区分；保存搜索和书签。
 - 预览文本/图片时限制大小、Content-Type 和临时文件生命周期。
 
-### v0.8.1 自动化与计划任务
+### v0.8.2 自动化与计划任务
 
 - CLI JSONL 事件流、队列状态/等待/取消、稳定 schema 版本和 shell completion。
 - 同步任务生成 Windows Task Scheduler 命令；用户确认后才创建、修改或删除系统任务。
 - “传输时防止睡眠”策略与后台计划任务统一。
 
-### v0.8.2 发布安全
+### v0.8.3 发布安全
 
 - 可复现构建、NuGet 锁文件、SBOM、发布资产 SHA-256、代码签名与签名验证说明。
 - 更新通道与回滚策略；安装版继续保持用户确认，便携版仍手动替换。

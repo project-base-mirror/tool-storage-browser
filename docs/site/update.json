@@ -1,16 +1,16 @@
 {
   "schemaVersion": 3,
-  "tagName": "v0.7.6",
-  "version": "0.7.6",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.7.6",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64.zip",
+  "tagName": "v0.8.0",
+  "version": "0.8.0",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.0",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/S3Explorer-v0.7.6-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/S3Explorer-v0.8.0-win-x64-setup.msi"
   },
-  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.7.6/SHA256SUMS.txt",
-  "notes": "修复托盘重复实例与 Windows 私密占位通知；重复启动会恢复现有窗口，传输结果改用无焦点应用通知，并调整 Mirror 为先发布新 Manifest 再清理孤儿对象。",
-  "publishedAt": "2026-08-09T05:35:35+08:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.0/SHA256SUMS.txt",
+  "notes": "新增统一 Credential Vault、配置与凭据中心及按目标作用域的权限检查；对象存储与 CDN 可关联兼容凭据，Alibaba Cloud CDN 支持原生控制面刷新与预热。",
+  "publishedAt": "2026-08-17T22:22:12+08:00"
 }
