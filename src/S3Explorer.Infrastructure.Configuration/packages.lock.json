@@ -1,7 +1,13 @@
 {
   "version": 1,
   "dependencies": {
-    "net10.0-windows7.0": {
+    "net10.0": {
+      "System.Security.Cryptography.ProtectedData": {
+        "type": "Direct",
+        "requested": "[10.0.10, )",
+        "resolved": "10.0.10",
+        "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
+      },
       "AlibabaCloud.EndpointUtil": {
         "type": "Transitive",
         "resolved": "0.1.2",
@@ -134,15 +140,8 @@
         "type": "Project",
         "dependencies": {
           "AlibabaCloud.SDK.Cdn20180510": "[8.2.0, )",
-          "S3Explorer.Core": "[0.7.6, )"
-        }
-      },
-      "s3explorer.infrastructure.configuration": {
-        "type": "Project",
-        "dependencies": {
           "S3Explorer.Core": "[0.7.6, )",
-          "S3Explorer.Infrastructure.Cdn": "[0.7.6, )",
-          "S3Explorer.Infrastructure.S3": "[0.7.6, )"
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       },
       "s3explorer.infrastructure.s3": {
@@ -152,10 +151,10 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.6, )"
+          "S3Explorer.Core": "[0.7.6, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }
-    },
-    "net10.0-windows7.0/win-x64": {}
+    }
   }
 }

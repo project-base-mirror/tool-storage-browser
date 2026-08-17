@@ -23,7 +23,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnProbeResult> ProbeAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         long sampleBytes,
         CancellationToken cancellationToken)
@@ -37,7 +37,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Range = new RangeHeaderValue(0, sampleBytes - 1);
-        ApplyCredential(request, credential);
+        ApplyCredential(profile, request, credential);
 
         var stopwatch = Stopwatch.StartNew();
         using var response = await client.SendAsync(
@@ -68,14 +68,14 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnProbeResult> ProbeHeadAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken)
     {
         ValidateUrl(url);
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Head, url);
-        ApplyCredential(request, credential);
+        ApplyCredential(profile, request, credential);
 
         var stopwatch = Stopwatch.StartNew();
         using var response = await client.SendAsync(
@@ -101,7 +101,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnDownloadResult> DownloadAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         Stream destination,
         CancellationToken cancellationToken)
@@ -113,7 +113,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        ApplyCredential(request, credential);
+        ApplyCredential(profile, request, credential);
         using var response = await client.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
@@ -148,7 +148,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken)
     {
@@ -161,7 +161,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             url);
         if (profile.WarmupMode == CdnWarmupMode.RangeGet)
             request.Headers.Range = new RangeHeaderValue(0, profile.WarmupRangeBytes - 1);
-        ApplyCredential(request, credential);
+        ApplyCredential(profile, request, credential);
 
         var stopwatch = Stopwatch.StartNew();
         using var response = await client.SendAsync(
@@ -191,7 +191,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnOperationResult> PurgeAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken)
     {
@@ -218,7 +218,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
                     ? "application/json"
                     : profile.PurgeContentType);
         }
-        ApplyCredential(request, credential);
+        ApplyCredential(profile, request, credential);
 
         var stopwatch = Stopwatch.StartNew();
         using var response = await client.SendAsync(
@@ -246,25 +246,32 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
         };
 
     private static void ApplyCredential(
+        CdnProfile profile,
         HttpRequestMessage request,
-        CdnCredential? credential)
+        CredentialProfile? credential)
     {
-        if (credential is null ||
-            credential.AuthenticationType == CdnAuthenticationType.None)
+        if (!string.Equals(
+                profile.ProviderId,
+                CdnProfile.GenericHttpProviderId,
+                StringComparison.OrdinalIgnoreCase) ||
+            credential is null)
             return;
+        if (credential.Provider != CredentialProviderKind.GenericHttp)
+            throw new InvalidOperationException("通用 HTTP CDN 只能使用 GenericHttp 凭据。");
         if (string.IsNullOrEmpty(credential.Secret))
             throw new InvalidOperationException("CDN 凭据缺少秘密值。");
         if (credential.Secret.IndexOfAny(['\r', '\n']) >= 0)
             throw new InvalidOperationException("CDN 凭据秘密值不能包含换行符。");
 
-        if (credential.AuthenticationType == CdnAuthenticationType.BearerToken)
+        if (credential.Kind == CredentialKind.BearerToken)
         {
             request.Headers.Authorization =
                 new AuthenticationHeaderValue("Bearer", credential.Secret);
             return;
         }
 
-        if (!CdnConfigurationValidator.IsValidHttpHeaderName(credential.HeaderName))
+        if (credential.Kind != CredentialKind.CustomHeader ||
+            !CdnConfigurationValidator.IsValidHttpHeaderName(credential.HeaderName))
             throw new InvalidOperationException("自定义 Header 凭据缺少有效的 HTTP Header 名称。");
         if (!request.Headers.TryAddWithoutValidation(
                 credential.HeaderName,

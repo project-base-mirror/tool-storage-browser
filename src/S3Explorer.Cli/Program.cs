@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using S3Explorer.Contracts;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
+using S3Explorer.Infrastructure.Configuration;
 using S3Explorer.Infrastructure.S3;
 
 namespace S3Explorer.Cli;
@@ -73,12 +74,13 @@ internal static class Program
             var dataDirectory = parsed.Optional("data-dir") is { Length: > 0 } explicitDirectory
                 ? RequireAbsolutePath(explicitDirectory, "--data-dir")
                 : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "S3Explorer");
-            var profiles = new JsonProfileStore(new DpapiCredentialProtector(), Path.Combine(dataDirectory, "profiles.json"));
+            var configurationStore = await ExplorerConfigurationStore.OpenAsync(
+                dataDirectory,
+                cancellationToken: operationCancellation.Token);
+            var profiles = new ExplorerProfileStore(configurationStore);
             var syncJobs = new JsonFolderSyncJobStore(Path.Combine(dataDirectory, "sync-jobs.json"));
-            var cdnConfiguration = new JsonCdnConfigurationStore(Path.Combine(dataDirectory, "cdn-config.json"));
-            var cdnCredentials = new JsonCdnCredentialStore(
-                new DpapiCdnCredentialProtector(),
-                Path.Combine(dataDirectory, "cdn-credentials.json"));
+            var cdnConfiguration = new ExplorerCdnConfigurationStore(configurationStore);
+            var credentials = new ExplorerCredentialStore(configurationStore);
             var cdnDelivery = new GenericHttpCdnDeliveryService();
             var storage = new S3StorageService(new S3ClientFactory());
             var command = parsed.Positionals[0].ToLowerInvariant();
@@ -87,14 +89,19 @@ internal static class Program
 
             var exitCode = command switch
             {
-                "profile" or "profiles" => await RunProfileAsync(verb, parsed, profiles, json, operationCancellation.Token),
+                "credential" or "credentials" => await RunCredentialAsync(
+                    verb, parsed, configurationStore, json, operationCancellation.Token),
+                "profile" or "profiles" => await RunProfileAsync(
+                    verb, parsed, profiles, credentials, json, operationCancellation.Token),
                 "connection" => await RunConnectionAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
+                "permission" => await RunPermissionAsync(
+                    verb, parsed, configurationStore, storage, cdnDelivery, json, operationCancellation.Token),
                 "bucket" or "buckets" => await RunBucketAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
                 "object" or "objects" => await RunObjectAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
                 "sync" => await RunSyncAsync(verb, parsed, profiles, syncJobs, storage, json, operationCancellation.Token),
                 "upload" or "publish" or "verify" or "cdn" => await RunAutomationAsync(
                     command, verb, parsed, profiles, storage,
-                    cdnConfiguration, cdnCredentials, cdnDelivery,
+                    cdnConfiguration, credentials, cdnDelivery,
                     json, operationCancellation.Token),
                 _ => throw new CliUsageException($"未知命令：{command}。运行 s3explorer-cli help 查看可用命令。")
             };
@@ -139,14 +146,14 @@ internal static class Program
         IProfileStore profileStore,
         IS3StorageService storage,
         ICdnConfigurationStore cdnConfigurationStore,
-        ICdnCredentialStore cdnCredentialStore,
+        ICredentialStore credentialStore,
         ICdnDeliveryService cdnDeliveryService,
         bool json,
         CancellationToken cancellationToken)
     {
         var result = await AutomationCommands.RunAsync(
             command, verb, args, profileStore, storage,
-            cdnConfigurationStore, cdnCredentialStore, cdnDeliveryService,
+            cdnConfigurationStore, credentialStore, cdnDeliveryService,
             json, cancellationToken);
         if (result.ExitCode == 0)
             WriteSuccess(json, result.Data, result.Text);
@@ -170,13 +177,16 @@ internal static class Program
     {
         string[]? commandOptions = (command, verb) switch
         {
+            ("credential" or "credentials", "list" or "show") => [],
+            ("credential" or "credentials", "add") =>
+            ["name", "provider", "kind", "access-key-id", "secret-env", "session-token-env", "header"],
+            ("credential" or "credentials", "delete") => ["yes"],
             ("profile" or "profiles", "list" or "show" or "groups") => [],
             ("profile" or "profiles", "add") =>
             [
-                "name", "type", "endpoint", "region", "credential-source", "aws-profile",
-                "access-key", "secret-key", "secret-key-env", "session-token", "session-token-env",
+                "name", "type", "endpoint", "region", "credential-source", "aws-profile", "credential",
                 "source-profile", "role-arn", "role-session-name", "source-identity",
-                "external-id", "external-id-env", "session-duration", "web-identity-token-file", "group",
+                "external-id-credential", "session-duration", "web-identity-token-file", "group",
                 "default-bucket", "path-style", "ignore-certificate-errors"
             ],
             ("profile" or "profiles", "delete") => ["yes"],
@@ -184,6 +194,8 @@ internal static class Program
             ("profile" or "profiles", "group-delete") => ["yes"],
             ("profile" or "profiles", "move") => ["group"],
             ("connection", "test") => ["profile"],
+            ("permission", "check") =>
+                ["storage-profile", "cdn-profile", "bucket", "prefix", "operation", "probe-write", "yes"],
             ("bucket" or "buckets", "list") => ["profile"],
             ("object" or "objects", "list") => ["profile", "bucket", "prefix", "recursive"],
             ("object" or "objects", "versions") => ["page-size", "key-marker", "version-id-marker"],
@@ -211,16 +223,118 @@ internal static class Program
             args.EnsureOnly(GlobalOptions.Concat(commandOptions));
     }
 
+    internal static async Task<int> RunCredentialAsync(
+        string verb,
+        CliArguments args,
+        IExplorerConfigurationStore store,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        switch (verb)
+        {
+            case "list":
+                var listConfiguration = await store.LoadAsync(cancellationToken);
+                var listCredentials = listConfiguration.CredentialVault.ToList();
+                var list = listCredentials
+                    .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(CredentialView)
+                    .ToArray();
+                WriteSuccess(json, list, list.Length == 0
+                    ? "凭据中心为空。"
+                    : string.Join(Environment.NewLine, listCredentials
+                        .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
+                        .Select(value => $"{value.Name}\t{value.Provider}\t{value.Kind}\t{value.Fingerprint}\t{value.Id}")));
+                return 0;
+
+            case "show":
+                var showConfiguration = await store.LoadAsync(cancellationToken);
+                var showCredentials = showConfiguration.CredentialVault.ToList();
+                var shown = ResolveCredential(showCredentials, RequirePositional(args, 2, "credential show <name-or-id>"));
+                WriteSuccess(json, CredentialView(shown),
+                    $"名称: {shown.Name}\n提供方: {shown.Provider}\n类型: {shown.Kind}\n安全标识: {shown.Fingerprint}\nID: {shown.Id}");
+                return 0;
+
+            case "add":
+                var name = args.Require("name").Trim();
+                var provider = ParseCredentialProvider(args.Require("provider"));
+                var kind = ParseCredentialKind(args.Require("kind"));
+                var secretEnvironmentName = args.Require("secret-env").Trim();
+                var secret = Environment.GetEnvironmentVariable(secretEnvironmentName);
+                if (string.IsNullOrEmpty(secret))
+                    throw new CliUsageException($"环境变量 {secretEnvironmentName} 未设置或为空。");
+                var sessionEnvironmentName = args.Optional("session-token-env")?.Trim();
+                var candidate = new CredentialProfile
+                {
+                    Name = name,
+                    Provider = provider,
+                    Kind = kind,
+                    AccessKeyId = kind == CredentialKind.AccessKeyPair
+                        ? args.Require("access-key-id").Trim()
+                        : string.Empty,
+                    Secret = secret,
+                    SessionToken = kind == CredentialKind.AccessKeyPair && !string.IsNullOrWhiteSpace(sessionEnvironmentName)
+                        ? Environment.GetEnvironmentVariable(sessionEnvironmentName) ?? string.Empty
+                        : string.Empty,
+                    HeaderName = kind == CredentialKind.CustomHeader
+                        ? args.Require("header").Trim()
+                        : string.Empty
+                };
+                candidate.Validate();
+                await store.UpdateAsync(
+                    current =>
+                    {
+                        var currentCredentials = current.CredentialVault.ToList();
+                        if (currentCredentials.Any(value => string.Equals(value.Name, name, StringComparison.OrdinalIgnoreCase)))
+                            throw new CliUsageException($"凭据名称已存在：{name}");
+                        currentCredentials.Add(candidate);
+                        return current with { CredentialVault = currentCredentials };
+                    },
+                    cancellationToken);
+                WriteSuccess(json, CredentialView(candidate), $"已添加凭据：{candidate.Name} ({candidate.Id})");
+                return 0;
+
+            case "delete":
+                RequireConfirmation(args, "删除凭据必须提供 --yes。");
+                var deleteTarget = RequirePositional(args, 2, "credential delete <name-or-id> --yes");
+                CredentialProfile? deleted = null;
+                await store.UpdateAsync(
+                    current =>
+                    {
+                        var currentCredentials = current.CredentialVault.ToList();
+                        deleted = ResolveCredential(currentCredentials, deleteTarget);
+                        var references = current.Storage.Profiles
+                            .Where(value => value.CredentialId == deleted.Id || value.AwsExternalIdCredentialId == deleted.Id)
+                            .Select(value => "对象存储：" + value.Name)
+                            .Concat(current.Cdn.Profiles
+                                .Where(value => value.CredentialId == deleted.Id)
+                                .Select(value => "CDN：" + value.Name))
+                            .ToArray();
+                        if (references.Length > 0)
+                            throw new CliUsageException($"凭据仍被引用，无法删除：{string.Join("、", references)}");
+                        currentCredentials.RemoveAll(value => value.Id == deleted.Id);
+                        return current with { CredentialVault = currentCredentials };
+                    },
+                    cancellationToken);
+                WriteSuccess(json, new { deleted!.Id, deleted!.Name }, $"已删除凭据：{deleted.Name}");
+                return 0;
+
+            default:
+                throw new CliUsageException("用法：credential list | show | add | delete");
+        }
+    }
+
     private static async Task<int> RunProfileAsync(
         string verb,
         CliArguments args,
         IProfileStore store,
+        ICredentialStore credentialStore,
         bool json,
         CancellationToken cancellationToken)
     {
         var configuration = await store.LoadConfigurationAsync(cancellationToken);
         var profiles = configuration.Profiles.ToList();
         var groups = configuration.Groups.ToList();
+        var credentials = await credentialStore.LoadAsync(cancellationToken);
         switch (verb)
         {
             case "list":
@@ -258,20 +372,19 @@ internal static class Program
                 var awsProfileName = args.Optional("aws-profile")?.Trim() ?? string.Empty;
                 if (credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso && awsProfileName.Length == 0)
                     throw new CliUsageException("--credential-source profile|sso 需要 --aws-profile <name>。");
-                if (credentialSource != CredentialSourceKind.StoredKeys &&
-                    (args.Optional("access-key") is not null || args.Optional("secret-key") is not null ||
-                     args.Optional("secret-key-env") is not null || args.Optional("session-token") is not null ||
-                     args.Optional("session-token-env") is not null))
-                    throw new CliUsageException("外部凭据来源不能同时提供 Access Key、Secret Key 或 Session Token。");
-                var accessKey = credentialSource == CredentialSourceKind.StoredKeys
-                    ? args.Optional("access-key") ?? Environment.GetEnvironmentVariable("S3EXPLORER_ACCESS_KEY") ?? string.Empty
-                    : string.Empty;
-                var secretKey = credentialSource == CredentialSourceKind.StoredKeys
-                    ? ResolveSecret(args, "secret-key", "S3EXPLORER_SECRET_KEY")
-                    : string.Empty;
-                var sessionToken = credentialSource == CredentialSourceKind.StoredKeys
-                    ? ResolveSecret(args, "session-token", "S3EXPLORER_SESSION_TOKEN", required: false)
-                    : string.Empty;
+                var credential = credentialSource == CredentialSourceKind.StoredKeys
+                    ? ResolveCredential(credentials, args.Require("credential"))
+                    : null;
+                if (credential is not null && !credential.IsCompatibleWith(serviceType))
+                    throw new CliUsageException($"凭据“{credential.Name}”与存储 Provider {serviceType} 不兼容。");
+                var externalIdCredential = credentialSource == CredentialSourceKind.AwsAssumeRole &&
+                                           args.Optional("external-id-credential") is { Length: > 0 } externalIdName
+                    ? ResolveCredential(credentials, externalIdName)
+                    : null;
+                if (externalIdCredential is not null &&
+                    (externalIdCredential.Provider != CredentialProviderKind.AmazonWebServices ||
+                     externalIdCredential.Kind != CredentialKind.SecretValue))
+                    throw new CliUsageException("--external-id-credential 必须引用 AWS SecretValue 凭据。");
                 var region = args.Optional("region")?.Trim();
                 if (string.IsNullOrWhiteSpace(region))
                     region = definition.DefaultRegion;
@@ -286,9 +399,10 @@ internal static class Program
                     Endpoint = args.Optional("endpoint") ?? definition.DefaultEndpoint,
                     Region = region,
                     SignatureRegion = signingRegion,
-                    AccessKey = accessKey,
-                    SecretKey = secretKey,
-                    SessionToken = sessionToken,
+                    CredentialId = credential?.Id,
+                    AccessKey = credential?.AccessKeyId ?? string.Empty,
+                    SecretKey = credential?.Secret ?? string.Empty,
+                    SessionToken = credential?.SessionToken ?? string.Empty,
                     CredentialSource = credentialSource,
                     AwsProfileName = credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso ? awsProfileName : string.Empty,
                     AwsSourceProfileName = credentialSource == CredentialSourceKind.AwsAssumeRole
@@ -303,9 +417,8 @@ internal static class Program
                     AwsRoleSourceIdentity = credentialSource == CredentialSourceKind.AwsAssumeRole
                         ? args.Optional("source-identity")?.Trim() ?? string.Empty
                         : string.Empty,
-                    AwsExternalId = credentialSource == CredentialSourceKind.AwsAssumeRole
-                        ? ResolveSecret(args, "external-id", "S3EXPLORER_AWS_EXTERNAL_ID", required: false)
-                        : string.Empty,
+                    AwsExternalIdCredentialId = externalIdCredential?.Id,
+                    AwsExternalId = externalIdCredential?.Secret ?? string.Empty,
                     AwsSessionDurationSeconds = sessionDuration,
                     AwsWebIdentityTokenFile = credentialSource == CredentialSourceKind.AwsWebIdentity
                         ? RequireAbsolutePath(args.Optional("web-identity-token-file") ?? string.Empty, "--web-identity-token-file")
@@ -386,6 +499,144 @@ internal static class Program
         else
             WriteOperationFailure(json, result.Text, result.ExitCode, result.Data);
         return result.ExitCode;
+    }
+
+    private static async Task<int> RunPermissionAsync(
+        string verb,
+        CliArguments args,
+        IExplorerConfigurationStore configurationStore,
+        IS3StorageService storage,
+        ICdnDeliveryService cdnDelivery,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        if (verb != "check")
+            throw new CliUsageException("用法：permission check --storage-profile <name> --bucket <bucket> [--prefix <prefix>] --operation <read|publish|mirror|publish-acl|mirror-acl> | --cdn-profile <name>");
+        var configuration = await configurationStore.LoadAsync(cancellationToken);
+        PermissionCheckResult result;
+        if (args.Optional("storage-profile") is { Length: > 0 } storageProfileName)
+        {
+            if (args.Optional("cdn-profile") is not null)
+                throw new CliUsageException("--storage-profile 与 --cdn-profile 只能选择一个。");
+            var profile = ResolveProfile(configuration.Storage.Profiles, storageProfileName);
+            var operation = ParseStoragePermissionOperation(args.Optional("operation") ?? "read");
+            var allowMutation = args.Flag("probe-write");
+            if (allowMutation) RequireConfirmation(args, "远端写入/清理权限探针必须提供 --yes。");
+            result = await new S3PermissionChecker(storage).CheckAsync(
+                new StoragePermissionCheckRequest(
+                    profile,
+                    args.Require("bucket"),
+                    args.Optional("prefix") ?? string.Empty,
+                    operation,
+                    allowMutation),
+                cancellationToken);
+        }
+        else if (args.Optional("cdn-profile") is { Length: > 0 } cdnProfileName)
+        {
+            var profile = ResolveCdnProfile(configuration.Cdn.Profiles, cdnProfileName);
+            var credential = configuration.FindCredential(profile.CredentialId);
+            result = await CheckCdnPermissionAsync(profile, credential, cdnDelivery, cancellationToken);
+        }
+        else
+        {
+            throw new CliUsageException("必须提供 --storage-profile 或 --cdn-profile。");
+        }
+
+        var hasRequiredFailure = result.Checks.Any(check =>
+            check.Required && check.State is not PermissionCheckState.Passed);
+        if (hasRequiredFailure)
+        {
+            WriteOperationFailure(json, FormatPermissionResult(result), OperationFailed, result);
+            return OperationFailed;
+        }
+        WriteSuccess(json, result, FormatPermissionResult(result));
+        return 0;
+    }
+
+    internal static async Task<PermissionCheckResult> CheckCdnPermissionAsync(
+        CdnProfile profile,
+        CredentialProfile? credential,
+        ICdnDeliveryService delivery,
+        CancellationToken cancellationToken)
+    {
+        var checks = new List<PermissionCheck>();
+        if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+        {
+            var check = await new AliyunCdnProvider().CheckDomainPermissionAsync(
+                profile,
+                credential,
+                cancellationToken);
+            checks.Add(new PermissionCheck("cdn", "DescribeUserDomains", check.State, check.Message)
+            {
+                StatusCode = check.StatusCode,
+                ProviderCode = check.Code,
+                RequestId = check.RequestId
+            });
+            checks.Add(new PermissionCheck(
+                "cdn",
+                "RefreshObjectCaches/PushObjectCache",
+                PermissionCheckState.Indeterminate,
+                "只读域名检测不会提交刷新或预热任务，因此不能证明控制面写权限。")
+            {
+                Required = false
+            });
+        }
+        else
+        {
+            try
+            {
+                var probe = await delivery.ProbeHeadAsync(
+                    profile,
+                    credential,
+                    new Uri(profile.BaseUrl, UriKind.Absolute),
+                    cancellationToken);
+                var authenticationState = probe.StatusCode is 401 or 403
+                    ? PermissionCheckState.Denied
+                    : PermissionCheckState.Indeterminate;
+                checks.Add(new PermissionCheck(
+                    "cdn",
+                    "DeliveryEndpoint",
+                    probe.StatusCode >= 500 ? PermissionCheckState.Indeterminate : PermissionCheckState.Passed,
+                    $"CDN 交付端点返回 HTTP {probe.StatusCode}。")
+                {
+                    StatusCode = probe.StatusCode,
+                    Required = false
+                });
+                checks.Add(new PermissionCheck(
+                    "cdn",
+                    "Authentication",
+                    authenticationState,
+                    authenticationState == PermissionCheckState.Denied
+                        ? "CDN 明确拒绝了当前认证。"
+                        : "通用 HTTP 响应不能证明凭据被实际校验。")
+                {
+                    StatusCode = probe.StatusCode
+                });
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                checks.Add(new PermissionCheck(
+                    "cdn",
+                    "Authentication",
+                    PermissionCheckState.Indeterminate,
+                    SensitiveDataRedactor.Redact(exception.Message)));
+            }
+            if (profile.Capabilities.HasFlag(CdnCapabilities.Purge))
+                checks.Add(new PermissionCheck(
+                    "cdn",
+                    "Purge",
+                    PermissionCheckState.Indeterminate,
+                    "通用 HTTP Provider 没有无副作用的刷新权限枚举接口。")
+                {
+                    Required = false
+                });
+        }
+
+        return new PermissionCheckResult(profile.CredentialId ?? Guid.Empty, checks)
+        {
+            TargetScope = profile.BaseUrl,
+            CheckedAtUtc = DateTimeOffset.UtcNow
+        };
     }
 
     private static async Task<int> RunBucketAsync(
@@ -867,6 +1118,28 @@ internal static class Program
             ?? throw new CliNotFoundException($"找不到连接：{nameOrId}");
     }
 
+    private static CredentialProfile ResolveCredential(
+        IEnumerable<CredentialProfile> credentials,
+        string nameOrId)
+    {
+        var values = credentials.ToArray();
+        if (Guid.TryParse(nameOrId, out var id))
+            return values.FirstOrDefault(item => item.Id == id)
+                ?? throw new CliNotFoundException($"找不到凭据：{nameOrId}");
+        return values.FirstOrDefault(item => string.Equals(item.Name, nameOrId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new CliNotFoundException($"找不到凭据：{nameOrId}");
+    }
+
+    private static CdnProfile ResolveCdnProfile(IEnumerable<CdnProfile> profiles, string nameOrId)
+    {
+        var values = profiles.ToArray();
+        if (Guid.TryParse(nameOrId, out var id))
+            return values.FirstOrDefault(item => item.Id == id)
+                ?? throw new CliNotFoundException($"找不到 CDN 配置：{nameOrId}");
+        return values.FirstOrDefault(item => string.Equals(item.Name, nameOrId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new CliNotFoundException($"找不到 CDN 配置：{nameOrId}");
+    }
+
     private static FolderSyncJob ResolveJob(IEnumerable<FolderSyncJob> jobs, string nameOrId)
     {
         var values = jobs.ToArray();
@@ -906,6 +1179,46 @@ internal static class Program
             $"不支持的凭据来源：{value}。可选 stored|profile|environment|container|instance|default|sso|assume-role|web-identity。")
     };
 
+    private static CredentialProviderKind ParseCredentialProvider(string value) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "s3" or "s3-compatible" or "compatible" => CredentialProviderKind.S3Compatible,
+            "aws" or "amazon" or "amazon-web-services" => CredentialProviderKind.AmazonWebServices,
+            "aliyun" or "alibaba" or "alibaba-cloud" => CredentialProviderKind.AlibabaCloud,
+            "tencent" or "tencent-cloud" => CredentialProviderKind.TencentCloud,
+            "cloudflare" => CredentialProviderKind.Cloudflare,
+            "backblaze" => CredentialProviderKind.Backblaze,
+            "google" or "google-cloud" => CredentialProviderKind.GoogleCloud,
+            "supabase" => CredentialProviderKind.Supabase,
+            "http" or "generic-http" => CredentialProviderKind.GenericHttp,
+            _ => throw new CliUsageException($"不支持的凭据提供方：{value}")
+        };
+
+    private static CredentialKind ParseCredentialKind(string value) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "access-key" or "access-key-pair" or "key-pair" => CredentialKind.AccessKeyPair,
+            "bearer" or "bearer-token" => CredentialKind.BearerToken,
+            "header" or "custom-header" => CredentialKind.CustomHeader,
+            "secret" or "secret-value" => CredentialKind.SecretValue,
+            _ => throw new CliUsageException($"不支持的凭据类型：{value}")
+        };
+
+    private static StoragePermissionOperation ParseStoragePermissionOperation(string value) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "read" => StoragePermissionOperation.Read,
+            "publish" => StoragePermissionOperation.Read | StoragePermissionOperation.Publish,
+            "mirror" => StoragePermissionOperation.Read | StoragePermissionOperation.Publish |
+                StoragePermissionOperation.Mirror,
+            "publish-acl" => StoragePermissionOperation.Read | StoragePermissionOperation.Publish |
+                StoragePermissionOperation.PutObjectAcl,
+            "mirror-acl" => StoragePermissionOperation.Read | StoragePermissionOperation.Publish |
+                StoragePermissionOperation.Mirror | StoragePermissionOperation.PutObjectAcl,
+            _ => throw new CliUsageException(
+                $"不支持的权限操作：{value}。可选 read|publish|mirror|publish-acl|mirror-acl。")
+        };
+
     private static int ParseRoleSessionDuration(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return 3600;
@@ -933,18 +1246,6 @@ internal static class Program
     private static string? GroupName(IEnumerable<ConnectionGroup> groups, Guid? groupId) =>
         groupId is null ? null : groups.FirstOrDefault(group => group.Id == groupId)?.Name;
 
-    private static string ResolveSecret(CliArguments args, string option, string environmentName, bool required = true)
-    {
-        var value = args.Optional(option);
-        var environmentOption = args.Optional(option + "-env");
-        if (!string.IsNullOrWhiteSpace(environmentOption))
-            value = Environment.GetEnvironmentVariable(environmentOption);
-        value ??= Environment.GetEnvironmentVariable(environmentName);
-        if (required && string.IsNullOrEmpty(value))
-            throw new CliUsageException($"缺少 --{option}、--{option}-env 或环境变量 {environmentName}。");
-        return value ?? string.Empty;
-    }
-
     private static object ProfileView(ConnectionProfile profile, string? groupName = null) => new
     {
         profile.Id,
@@ -966,6 +1267,30 @@ internal static class Program
         hasSessionToken = profile.UsesTemporarySessionCredentials,
         profile.DefaultBucket
     };
+
+    private static object CredentialView(CredentialProfile credential) => new
+    {
+        credential.Id,
+        credential.Name,
+        credential.Provider,
+        credential.Kind,
+        credential.Fingerprint,
+        hasSessionToken = !string.IsNullOrWhiteSpace(credential.SessionToken),
+        headerName = credential.Kind == CredentialKind.CustomHeader ? credential.HeaderName : null
+    };
+
+    private static string FormatPermissionResult(PermissionCheckResult result)
+    {
+        var lines = new List<string>
+        {
+            $"目标: {result.TargetScope}",
+            $"检查时间: {result.CheckedAtUtc:O}"
+        };
+        lines.AddRange(result.Checks.Select(check =>
+            $"[{check.State}] {check.Name}: {check.Message}" +
+            (check.Required ? string.Empty : "（非阻断）")));
+        return string.Join(Environment.NewLine, lines);
+    }
 
     private static object PlanView(FolderSyncPlan plan) => new
     {
@@ -1058,21 +1383,30 @@ internal static class Program
         S3 Explorer CLI
 
         连接与对象:
+          s3explorer-cli credential list
+          s3explorer-cli credential show <name-or-id>
+          s3explorer-cli credential add --name <name> --provider <aws|aliyun|tencent|cloudflare|backblaze|google|supabase|s3-compatible|generic-http>
+              --kind <access-key-pair|bearer-token|custom-header|secret-value>
+              --secret-env <ENV_NAME> [--access-key-id <id>] [--session-token-env <ENV_NAME>] [--header <name>]
+          s3explorer-cli credential delete <name-or-id> --yes
           s3explorer-cli profiles list [--output json]
           s3explorer-cli profile show <name-or-id> [--output json]
           s3explorer-cli profile add --name <name> --type <amazon|compatible|google|minio|r2|b2|aliyun|tencent|supabase>
               [--endpoint <url>] [--region <region>]
               [--credential-source <stored|profile|environment|container|instance|default|sso|assume-role|web-identity>]
+              [--credential <name-or-id>]
               [--aws-profile <name>] [--source-profile <name>] [--role-arn <arn>] [--role-session-name <name>]
-              [--source-identity <value>] [--external-id-env <ENV_NAME>] [--session-duration <seconds>]
+              [--source-identity <value>] [--external-id-credential <name-or-id>] [--session-duration <seconds>]
               [--web-identity-token-file <absolute-path>] [--group <name-or-id>]
-              [--access-key <key>] [--secret-key-env <ENV_NAME>]
           s3explorer-cli profile delete <name-or-id> --yes
           s3explorer-cli profile groups
           s3explorer-cli profile group-add --name <name>
           s3explorer-cli profile group-delete <name-or-id> --yes
           s3explorer-cli profile move <name-or-id> --group <name-or-id|->
           s3explorer-cli connection test --profile <name-or-id> [--output json]
+          s3explorer-cli permission check --storage-profile <name-or-id> --bucket <bucket>
+              [--prefix <prefix>] --operation <read|publish|mirror|publish-acl|mirror-acl> [--probe-write --yes]
+          s3explorer-cli permission check --cdn-profile <name-or-id>
           s3explorer-cli bucket list --profile <name-or-id> [--output json]
           s3explorer-cli objects list --profile <name> --bucket <bucket> [--prefix <prefix>] [--recursive]
           s3explorer-cli object list <s3://profile/bucket/prefix> [--recursive] [--output json]
@@ -1124,9 +1458,13 @@ internal static class Program
           --verify                         upload/object upload 后回读并校验大小与 SHA-256；publish 始终验证
 
         凭据建议:
-          优先使用 --secret-key-env <变量名> 或 S3EXPLORER_SECRET_KEY，避免密钥进入命令历史。
+          先用 credential add 建立统一凭据，再让对象存储连接或 CDN 配置引用其 ID。
+          credential add 只从 --secret-env 指定的环境变量读取秘密值，避免密钥进入命令历史。
+          --data-dir 中的 configuration.json 是唯一运行时配置文件，整个载荷由 Windows DPAPI CurrentUser 加密。
           AWS 外部来源只适用于 Amazon S3；SSO 浏览器令牌和 Web Identity token 内容不会写入连接文件。
-          AssumeRole External ID 使用 --external-id-env 最安全；保存时使用 Windows DPAPI CurrentUser 加密。
+          AssumeRole External ID 使用独立 AWS SecretValue 凭据。
+          permission check 默认不修改远端；--probe-write --yes 会真实上传、可选设置 ACL 并删除探针对象，请使用隔离 Prefix。
+          CDN 权限检查只执行无副作用的域名或端点检查，不能证明刷新、预热等控制面写权限。
         """);
 }
 
@@ -1136,15 +1474,16 @@ internal sealed class CliArguments
     {
         "json", "yes", "recursive", "delete", "hash", "new-only", "changed-only",
         "path-style", "ignore-certificate-errors", "non-interactive", "warmup", "dry-run",
-        "full", "include-manifest", "verify", "help"
+        "full", "include-manifest", "verify", "probe-write", "help"
     };
     private static readonly HashSet<string> ValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "output", "data-dir", "timeout", "cancel-file", "log-file",
         "profile", "bucket", "prefix", "name", "type", "endpoint", "region",
-        "credential-source", "aws-profile", "access-key", "secret-key", "secret-key-env",
-        "session-token", "session-token-env", "source-profile", "role-arn", "role-session-name",
-        "source-identity", "external-id", "external-id-env", "session-duration", "web-identity-token-file", "group",
+        "storage-profile", "cdn-profile", "operation",
+        "credential-source", "credential", "aws-profile", "provider", "kind", "access-key-id", "secret-env",
+        "session-token-env", "header", "source-profile", "role-arn", "role-session-name",
+        "source-identity", "external-id-credential", "session-duration", "web-identity-token-file", "group",
         "default-bucket", "direction", "local", "remote",
         "exclude", "page-size", "key-marker", "version-id-marker", "version-id", "source",
         "project", "product", "version", "manifest", "delete-mode", "access", "cdn-profile", "path",

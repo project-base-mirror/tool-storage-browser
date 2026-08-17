@@ -17,6 +17,13 @@ public enum CdnJobState
     Cancelled
 }
 
+public enum CdnJobPhase
+{
+    None,
+    Purge,
+    Warmup
+}
+
 public enum CdnProviderOperationState
 {
     Completed,
@@ -32,6 +39,7 @@ public sealed record CdnJobRecord
     public Guid? BindingId { get; init; }
     public Guid? TransferTaskId { get; init; }
     public CdnJobAction Action { get; init; }
+    public CdnJobPhase Phase { get; init; }
     public CdnJobState State { get; init; } = CdnJobState.Pending;
     public IReadOnlyList<string> Urls { get; init; } = Array.Empty<string>();
     public int AttemptCount { get; init; }
@@ -58,6 +66,9 @@ public sealed record CdnJobRecord
         if (CdnProfileId == Guid.Empty)
             throw new ArgumentException("CDN 任务必须指定 CDN 配置。", nameof(CdnProfileId));
         if (!Enum.IsDefined(Action)) throw new ArgumentOutOfRangeException(nameof(Action));
+        if (!Enum.IsDefined(Phase)) throw new ArgumentOutOfRangeException(nameof(Phase));
+        if (Action != CdnJobAction.PurgeThenWarmup && Phase != CdnJobPhase.None)
+            throw new ArgumentException("只有刷新后预热任务可以包含阶段状态。", nameof(Phase));
         if (!Enum.IsDefined(State)) throw new ArgumentOutOfRangeException(nameof(State));
         if (Urls.Count is < 1 or > 10_000)
             throw new ArgumentException("CDN 任务必须包含 1–10000 个 URL。", nameof(Urls));
@@ -106,7 +117,7 @@ public interface ICdnJobStore
 public sealed record CdnProviderRequest(
     CdnJobAction Action,
     CdnProfile Profile,
-    CdnCredential? Credential,
+    CredentialProfile? Credential,
     IReadOnlyList<Uri> Urls,
     string ProviderTaskId = "");
 
@@ -222,6 +233,7 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
         job = job with
         {
             State = CdnJobState.Pending,
+            Phase = job.Action == CdnJobAction.PurgeThenWarmup ? CdnJobPhase.Purge : CdnJobPhase.None,
             AttemptCount = 0,
             ProviderTaskId = string.Empty,
             LastMessage = string.Empty,
@@ -480,6 +492,24 @@ public sealed class PersistentCdnJobQueue : IAsyncDisposable
             ? SensitiveDataRedactor.Redact(
                 result.ResponseSnippet.Length > 0 ? result.ResponseSnippet : result.Message)
             : string.Empty;
+        if (result.State == CdnProviderOperationState.Completed &&
+            job.Action == CdnJobAction.PurgeThenWarmup &&
+            job.Phase is CdnJobPhase.None or CdnJobPhase.Purge)
+            return job with
+            {
+                State = CdnJobState.Pending,
+                Phase = CdnJobPhase.Warmup,
+                AttemptCount = 0,
+                ProviderTaskId = string.Empty,
+                LastMessage = "刷新阶段已完成，等待提交预热阶段。",
+                LastError = string.Empty,
+                LastStatusCode = result.StatusCode,
+                BytesRead = checked(job.BytesRead + Math.Max(0, result.BytesRead)),
+                NextAttemptAt = now,
+                UpdatedAt = now,
+                CompletedAt = null
+            };
+
         if (result.State == CdnProviderOperationState.Completed)
             return job with
             {

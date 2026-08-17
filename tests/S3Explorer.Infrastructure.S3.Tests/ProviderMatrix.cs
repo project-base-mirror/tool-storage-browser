@@ -1,4 +1,5 @@
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.Configuration;
 using System.Text.Json;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
@@ -48,8 +49,15 @@ internal sealed record ProviderMatrixCase(
         var storedProfileName = Environment.GetEnvironmentVariable("S3EXPLORER_MATRIX_PROFILE")?.Trim();
         if (!string.IsNullOrWhiteSpace(storedProfileName))
         {
-            var profiles = new JsonProfileStore(new DpapiCredentialProtector())
-                .LoadAsync().GetAwaiter().GetResult();
+            if (!OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("已保存的 S3 Explorer 凭据仅能在创建它的 Windows 用户上下文中读取。");
+            var dataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "S3Explorer");
+            var profiles = ExplorerConfigurationStore.OpenAsync(dataRoot)
+                .GetAwaiter().GetResult()
+                .LoadAsync().GetAwaiter().GetResult()
+                .Storage.Profiles;
             var stored = profiles.SingleOrDefault(profile =>
                 string.Equals(profile.Name, storedProfileName, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException($"未找到矩阵测试连接：{storedProfileName}");

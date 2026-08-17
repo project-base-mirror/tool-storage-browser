@@ -19,25 +19,25 @@ public sealed record ConnectionArchiveInspection(
     bool RequiresPassword,
     DateTimeOffset ExportedAtUtc,
     int CdnProfileCount = 0,
-    int CdnCredentialCount = 0);
+    int CredentialCount = 0);
 
 public sealed record ConnectionArchivePackage(
     IReadOnlyList<ConnectionProfile> Profiles,
     bool ContainsCredentials,
     DateTimeOffset ExportedAtUtc,
     CdnConfiguration? CdnConfiguration = null,
-    IReadOnlyList<CdnCredential>? CdnCredentials = null)
+    IReadOnlyList<CredentialProfile>? Credentials = null)
 {
     public CdnConfiguration ImportedCdnConfiguration =>
         CdnConfiguration ?? S3Explorer.Core.CdnConfiguration.Empty;
 
-    public IReadOnlyList<CdnCredential> ImportedCdnCredentials => CdnCredentials ?? [];
+    public IReadOnlyList<CredentialProfile> ImportedCredentials => Credentials ?? [];
 }
 
 public sealed record ConnectionArchiveMergeResult(
     IReadOnlyList<ConnectionProfile> Profiles,
     CdnConfiguration CdnConfiguration,
-    IReadOnlyList<CdnCredential> CdnCredentials);
+    IReadOnlyList<CredentialProfile> Credentials);
 
 public sealed record ConnectionArchiveImportSelection(
     IReadOnlyCollection<Guid> StorageProfileIds,
@@ -76,7 +76,7 @@ public sealed class ConnectionArchiveService
     public const int PasswordMinimumLength = 8;
 
     private const string FormatName = "s3explorer-connections";
-    private const int FormatVersion = 3;
+    private const int FormatVersion = 4;
     private const int MinimumSupportedFormatVersion = 1;
     private const int SaltSize = 16;
     private const int NonceSize = 12;
@@ -100,11 +100,11 @@ public sealed class ConnectionArchiveService
         bool includeCredentials = false,
         string? password = null,
         CdnConfiguration? cdnConfiguration = null,
-        IReadOnlyCollection<CdnCredential>? cdnCredentials = null)
+        IReadOnlyCollection<CredentialProfile>? credentials = null)
     {
         ArgumentNullException.ThrowIfNull(profiles);
         cdnConfiguration ??= CdnConfiguration.Empty;
-        cdnCredentials ??= [];
+        credentials ??= [];
         if (profiles.Count == 0)
             throw new ArgumentException("至少选择一个连接。", nameof(profiles));
         if (profiles.Count > MaximumProfileCount)
@@ -112,36 +112,50 @@ public sealed class ConnectionArchiveService
 
         foreach (var profile in profiles)
             profile.ValidateConfiguration();
-        CdnConfigurationValidator.EnsureValid(cdnConfiguration, cdnCredentials);
+        CdnConfigurationValidator.EnsureValid(cdnConfiguration, credentials);
         EnsureArchiveRelationshipsAreComplete(profiles, cdnConfiguration);
 
-        var containsStoredCredentials = includeCredentials && (
-            profiles.Any(profile => profile.HasStoredCredentials ||
-                profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
-                !string.IsNullOrWhiteSpace(profile.AwsExternalId)) ||
-            cdnCredentials.Any(credential =>
-                credential.AuthenticationType != CdnAuthenticationType.None &&
-                !string.IsNullOrEmpty(credential.Secret)));
+        var unifiedCredentials = credentials;
+        var referencedCredentialIds = profiles
+            .SelectMany(profile => new[] { profile.CredentialId, profile.AwsExternalIdCredentialId })
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
+            .Concat(cdnConfiguration.Profiles.Where(profile => profile.CredentialId.HasValue).Select(profile => profile.CredentialId!.Value))
+            .ToHashSet();
+        var selectedUnifiedCredentials = unifiedCredentials
+            .Where(credential => referencedCredentialIds.Contains(credential.Id))
+            .ToArray();
+        var containsStoredCredentials = includeCredentials &&
+            selectedUnifiedCredentials.Any(credential => !string.IsNullOrEmpty(credential.Secret));
         if (containsStoredCredentials && (password?.Length ?? 0) < PasswordMinimumLength)
             throw new ArgumentException($"迁移密码至少需要 {PasswordMinimumLength} 个字符。", nameof(password));
 
         var exportedAt = DateTimeOffset.UtcNow;
         var portableProfiles = profiles
-            .Select(profile => PortableProfile.FromRuntime(profile, containsStoredCredentials))
+            .Select(profile =>
+            {
+                var portable = PortableProfile.FromRuntime(profile);
+                if (!containsStoredCredentials)
+                {
+                    portable.CredentialId = null;
+                    portable.AwsExternalIdCredentialId = null;
+                }
+                return portable;
+            })
             .ToList();
         var portableCdnProfiles = cdnConfiguration.Profiles
             .Select(profile => containsStoredCredentials ? profile : profile with { CredentialId = null })
             .ToList();
         var portableCdnBindings = cdnConfiguration.Bindings.ToList();
-        var portableCdnCredentials = containsStoredCredentials
-            ? cdnCredentials.ToList()
+        var portableCredentialProfiles = containsStoredCredentials
+            ? selectedUnifiedCredentials.ToList()
             : [];
         var payload = new ArchivePayload
         {
             Profiles = portableProfiles,
             CdnProfiles = portableCdnProfiles,
             CdnBindings = portableCdnBindings,
-            CdnCredentials = portableCdnCredentials
+            CredentialProfiles = portableCredentialProfiles
         };
         ArchiveEnvelope envelope;
 
@@ -154,12 +168,13 @@ public sealed class ConnectionArchiveService
                 ExportedAtUtc = exportedAt,
                 ProfileCount = portableProfiles.Count,
                 CdnProfileCount = portableCdnProfiles.Count,
-                CdnCredentialCount = portableCdnCredentials.Count,
+                CredentialCount = portableCredentialProfiles.Count,
                 ContainsCredentials = false,
                 Protection = NoProtection,
                 Profiles = portableProfiles,
                 CdnProfiles = portableCdnProfiles,
-                CdnBindings = portableCdnBindings
+                CdnBindings = portableCdnBindings,
+                CredentialProfiles = []
             };
         }
         else
@@ -191,7 +206,7 @@ public sealed class ConnectionArchiveService
                 ExportedAtUtc = exportedAt,
                 ProfileCount = portableProfiles.Count,
                 CdnProfileCount = portableCdnProfiles.Count,
-                CdnCredentialCount = portableCdnCredentials.Count,
+                CredentialCount = portableCredentialProfiles.Count,
                 ContainsCredentials = true,
                 Protection = PasswordProtection,
                 Encryption = new EncryptionMetadata
@@ -203,7 +218,8 @@ public sealed class ConnectionArchiveService
                     Nonce = Convert.ToBase64String(nonce),
                     Tag = Convert.ToBase64String(tag)
                 },
-                EncryptedPayload = Convert.ToBase64String(ciphertext)
+                EncryptedPayload = Convert.ToBase64String(ciphertext),
+                CredentialProfiles = null
             };
         }
 
@@ -211,6 +227,22 @@ public sealed class ConnectionArchiveService
         if (result.Length > MaximumArchiveBytes)
             throw new InvalidOperationException($"连接包不能超过 {MaximumArchiveBytes / 1024 / 1024} MiB。");
         return result;
+    }
+
+    /// <summary>Exports the canonical configuration graph, preserving shared credential IDs.</summary>
+    public byte[] Export(
+        ExplorerConfiguration configuration,
+        bool includeCredentials = false,
+        string? password = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        configuration.Validate();
+        return Export(
+            configuration.Storage.Profiles,
+            includeCredentials,
+            password,
+            configuration.Cdn,
+            credentials: configuration.CredentialVault);
     }
 
     public ConnectionArchiveInspection Inspect(ReadOnlySpan<byte> archive)
@@ -223,7 +255,7 @@ public sealed class ConnectionArchiveService
             string.Equals(envelope.Protection, PasswordProtection, StringComparison.Ordinal),
             envelope.ExportedAtUtc,
             envelope.CdnProfileCount,
-            envelope.CdnCredentialCount);
+            envelope.Version >= 4 ? envelope.CredentialCount : envelope.CdnCredentialCount);
     }
 
     public ConnectionArchivePackage Import(ReadOnlySpan<byte> archive, string? password = null)
@@ -238,7 +270,8 @@ public sealed class ConnectionArchiveService
             {
                 Profiles = envelope.Profiles!,
                 CdnProfiles = envelope.CdnProfiles ?? [],
-                CdnBindings = envelope.CdnBindings ?? []
+                CdnBindings = envelope.CdnBindings ?? [],
+                CredentialProfiles = envelope.CredentialProfiles ?? []
             };
         }
         else
@@ -251,22 +284,44 @@ public sealed class ConnectionArchiveService
         if (payload.Profiles.Count != envelope.ProfileCount)
             throw new InvalidDataException("连接包中的连接数量不一致。");
         if (payload.CdnProfiles.Count != envelope.CdnProfileCount ||
-            payload.CdnCredentials.Count != envelope.CdnCredentialCount)
+            (envelope.Version >= 4
+                ? payload.CredentialProfiles.Count
+                : payload.CdnCredentials.Count) != (envelope.Version >= 4 ? envelope.CredentialCount : envelope.CdnCredentialCount))
             throw new InvalidDataException("连接包中的 CDN 配置或凭据数量不一致。");
 
         var profiles = payload.Profiles.Select(profile => profile.ToRuntime()).ToArray();
-        foreach (var profile in profiles)
-            profile.ValidateConfiguration();
         var cdnConfiguration = new CdnConfiguration(payload.CdnProfiles, payload.CdnBindings);
-        CdnConfigurationValidator.EnsureValid(cdnConfiguration, payload.CdnCredentials);
+        IReadOnlyList<CredentialProfile> importedCredentials;
+        if (envelope.Version >= 4)
+        {
+            if (profiles.Any(profile =>
+                    !string.IsNullOrEmpty(profile.AccessKey) ||
+                    !string.IsNullOrEmpty(profile.SecretKey) ||
+                    !string.IsNullOrEmpty(profile.SessionToken) ||
+                    !string.IsNullOrEmpty(profile.AwsExternalId)))
+                throw new InvalidDataException("v4 连接包不能在对象存储配置中内嵌秘密值。");
+            importedCredentials = payload.CredentialProfiles;
+        }
+        else
+        {
+            (profiles, cdnConfiguration, importedCredentials) = MigrateLegacyArchiveCredentials(
+                profiles,
+                cdnConfiguration,
+                payload.CdnCredentials);
+        }
+
         EnsureArchiveRelationshipsAreComplete(profiles, cdnConfiguration);
+        var resolved = new ExplorerConfiguration(
+            new ConnectionProfileConfiguration(profiles, []),
+            cdnConfiguration,
+            importedCredentials).ResolveCredentialReferences();
 
         return new(
-            profiles,
+            resolved.Storage.Profiles,
             envelope.ContainsCredentials,
             envelope.ExportedAtUtc,
-            cdnConfiguration,
-            payload.CdnCredentials);
+            resolved.Cdn,
+            resolved.CredentialVault);
     }
 
     public IReadOnlyList<ConnectionProfile> Merge(
@@ -321,14 +376,14 @@ public sealed class ConnectionArchiveService
     public ConnectionArchiveImportPreview PreviewPackage(
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration existingCdnConfiguration,
-        IReadOnlyCollection<CdnCredential> existingCdnCredentials,
+        IReadOnlyCollection<CredentialProfile> existingCredentials,
         ConnectionArchivePackage package,
         bool importStorageCredentials = false,
-        bool importCdnCredentials = false)
+        bool importCredentials = false)
     {
         ArgumentNullException.ThrowIfNull(existingProfiles);
         ArgumentNullException.ThrowIfNull(existingCdnConfiguration);
-        ArgumentNullException.ThrowIfNull(existingCdnCredentials);
+        ArgumentNullException.ThrowIfNull(existingCredentials);
         ArgumentNullException.ThrowIfNull(package);
 
         var storage = package.Profiles.Select(source =>
@@ -350,12 +405,12 @@ public sealed class ConnectionArchiveService
         }).ToArray();
 
         var credentialIdMap = new Dictionary<Guid, Guid>();
-        if (importCdnCredentials)
+        if (importCredentials)
         {
-            foreach (var source in package.ImportedCdnCredentials)
+            foreach (var source in package.ImportedCredentials)
             {
-                var exact = existingCdnCredentials.FirstOrDefault(existing =>
-                    CdnCredentialsEquivalent(existing, source));
+                var exact = existingCredentials.FirstOrDefault(existing =>
+                    CredentialProfilesEquivalent(existing, source));
                 if (exact is not null) credentialIdMap[source.Id] = exact.Id;
             }
         }
@@ -363,13 +418,13 @@ public sealed class ConnectionArchiveService
         var configuration = package.ImportedCdnConfiguration;
         var cdn = configuration.Profiles.Select(source =>
         {
-            var credentialId = source.CredentialId is Guid sourceCredentialId &&
+            var credentialId = importCredentials && source.CredentialId is Guid sourceCredentialId &&
                                credentialIdMap.TryGetValue(sourceCredentialId, out var mappedCredentialId)
                 ? mappedCredentialId
                 : (Guid?)null;
             var imported = source with { CredentialId = credentialId };
             var exact = existingCdnConfiguration.Profiles.FirstOrDefault(existing =>
-                CdnProfilesEquivalent(existing, imported, importCdnCredentials));
+                CdnProfilesEquivalent(existing, imported, importCredentials));
             var sameName = existingCdnConfiguration.Profiles.FirstOrDefault(existing =>
                 string.Equals(existing.Name, imported.Name, StringComparison.OrdinalIgnoreCase));
             var requiredStorage = configuration.Bindings
@@ -402,7 +457,7 @@ public sealed class ConnectionArchiveService
     public ConnectionArchiveMergeResult MergePackage(
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration existingCdnConfiguration,
-        IReadOnlyCollection<CdnCredential> existingCdnCredentials,
+        IReadOnlyCollection<CredentialProfile> existingCredentials,
         ConnectionArchivePackage package,
         IReadOnlyCollection<Guid> selectedImportedProfileIds,
         bool importCredentials,
@@ -418,7 +473,7 @@ public sealed class ConnectionArchiveService
         return MergePackage(
             existingProfiles,
             existingCdnConfiguration,
-            existingCdnCredentials,
+            existingCredentials,
             package,
             new ConnectionArchiveImportSelection(selectedStorageIds, selectedCdnIds),
             importCredentials,
@@ -429,20 +484,20 @@ public sealed class ConnectionArchiveService
     public ConnectionArchiveMergeResult MergePackage(
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration existingCdnConfiguration,
-        IReadOnlyCollection<CdnCredential> existingCdnCredentials,
+        IReadOnlyCollection<CredentialProfile> existingCredentials,
         ConnectionArchivePackage package,
         ConnectionArchiveImportSelection selection,
         bool importStorageCredentials,
-        bool importCdnCredentials,
+        bool importCredentials,
         ConnectionImportConflictStrategy conflictStrategy,
         Guid? targetGroupId = null)
     {
         ArgumentNullException.ThrowIfNull(existingProfiles);
         ArgumentNullException.ThrowIfNull(existingCdnConfiguration);
-        ArgumentNullException.ThrowIfNull(existingCdnCredentials);
+        ArgumentNullException.ThrowIfNull(existingCredentials);
         ArgumentNullException.ThrowIfNull(package);
         ArgumentNullException.ThrowIfNull(selection);
-        CdnConfigurationValidator.EnsureValid(existingCdnConfiguration, existingCdnCredentials);
+        CdnConfigurationValidator.EnsureValid(existingCdnConfiguration, existingCredentials);
 
         var selectedStorageIds = selection.StorageProfileIds.ToHashSet();
         var selectedCdnIds = selection.CdnProfileIds.ToHashSet();
@@ -453,6 +508,91 @@ public sealed class ConnectionArchiveService
         if (!selectedCdnIds.IsSubsetOf(packageCdnIds))
             throw new ArgumentException("所选 CDN 配置不属于当前连接包。", nameof(selection));
 
+        var importedConfiguration = package.ImportedCdnConfiguration;
+        var selectedBindings = importedConfiguration.Bindings
+            .Where(binding => selectedCdnIds.Contains(binding.CdnProfileId))
+            .ToArray();
+        var importedCdnProfiles = importedConfiguration.Profiles
+            .Where(profile => selectedCdnIds.Contains(profile.Id))
+            .ToArray();
+        var selectedStorageProfiles = package.Profiles
+            .Where(profile => selectedStorageIds.Contains(profile.Id))
+            .ToArray();
+        var storageCredentialIds = selectedStorageProfiles
+            .SelectMany(profile => new[] { profile.CredentialId, profile.AwsExternalIdCredentialId })
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
+            .ToHashSet();
+        var cdnCredentialIds = importedCdnProfiles
+            .Where(profile => profile.CredentialId.HasValue)
+            .Select(profile => profile.CredentialId!.Value)
+            .ToHashSet();
+        var credentialIdsToImport = (importStorageCredentials ? storageCredentialIds : [])
+            .Concat(importCredentials ? cdnCredentialIds : [])
+            .ToHashSet();
+
+        var credentials = existingCredentials.ToList();
+        var credentialIdMap = new Dictionary<Guid, Guid>();
+        if (importStorageCredentials || importCredentials)
+        {
+            foreach (var source in package.ImportedCredentials
+                         .Where(credential => credentialIdsToImport.Contains(credential.Id)))
+            {
+                var exact = credentials.FirstOrDefault(existing => CredentialProfilesEquivalent(existing, source));
+                if (exact is not null)
+                {
+                    credentialIdMap[source.Id] = exact.Id;
+                    continue;
+                }
+
+                var existingIndex = credentials.FindIndex(item =>
+                    string.Equals(item.Name, source.Name, StringComparison.OrdinalIgnoreCase));
+                if (existingIndex < 0)
+                {
+                    var added = source with { Id = Guid.NewGuid() };
+                    credentials.Add(added);
+                    credentialIdMap[source.Id] = added.Id;
+                    continue;
+                }
+
+                switch (conflictStrategy)
+                {
+                    case ConnectionImportConflictStrategy.Skip:
+                        break;
+                    case ConnectionImportConflictStrategy.Replace:
+                        var replaced = source with { Id = credentials[existingIndex].Id };
+                        credentials[existingIndex] = replaced;
+                        credentialIdMap[source.Id] = replaced.Id;
+                        break;
+                    case ConnectionImportConflictStrategy.Rename:
+                        var renamed = source with
+                        {
+                            Id = Guid.NewGuid(),
+                            Name = CreateUniqueImportedName(source.Name, credentials.Select(item => item.Name))
+                        };
+                        credentials.Add(renamed);
+                        credentialIdMap[source.Id] = renamed.Id;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(conflictStrategy));
+                }
+            }
+        }
+        var missingCredentialIds = credentialIdsToImport
+            .Where(id => !credentialIdMap.ContainsKey(id))
+            .ToArray();
+        if (missingCredentialIds.Length > 0)
+        {
+            var names = package.ImportedCredentials
+                .Where(value => missingCredentialIds.Contains(value.Id))
+                .Select(value => value.Name)
+                .DefaultIfEmpty(string.Join(", ", missingCredentialIds))
+                .ToArray();
+            throw new InvalidDataException(
+                $"所选配置依赖的凭据未能导入：{string.Join("、", names)}。" +
+                "如果同名凭据采用“跳过”策略，请改用自动重命名或覆盖；也可以取消导入统一凭据。");
+        }
+
         var profiles = existingProfiles.ToList();
         var nextTargetOrder = profiles
             .Where(profile => profile.GroupId == targetGroupId)
@@ -460,10 +600,20 @@ public sealed class ConnectionArchiveService
             .DefaultIfEmpty(-1)
             .Max() + 1;
         var storageIdMap = new Dictionary<Guid, Guid>();
-        foreach (var source in package.Profiles.Where(profile => selectedStorageIds.Contains(profile.Id)))
+        foreach (var source in selectedStorageProfiles)
         {
             source.ValidateConfiguration();
-            var imported = PortableStorage(source, importStorageCredentials);
+            var imported = PortableStorage(source, importStorageCredentials) with
+            {
+                CredentialId = importStorageCredentials && source.CredentialId is Guid credentialId &&
+                    credentialIdMap.TryGetValue(credentialId, out var mappedCredentialId)
+                    ? mappedCredentialId
+                    : null,
+                AwsExternalIdCredentialId = importStorageCredentials && source.AwsExternalIdCredentialId is Guid externalIdCredentialId &&
+                    credentialIdMap.TryGetValue(externalIdCredentialId, out var mappedExternalIdCredentialId)
+                    ? mappedExternalIdCredentialId
+                    : null
+            };
             var exact = profiles.FirstOrDefault(existing =>
                 StorageProfilesEquivalent(existing, imported, importStorageCredentials));
             if (exact is not null)
@@ -512,10 +662,6 @@ public sealed class ConnectionArchiveService
             }
         }
 
-        var importedConfiguration = package.ImportedCdnConfiguration;
-        var selectedBindings = importedConfiguration.Bindings
-            .Where(binding => selectedCdnIds.Contains(binding.CdnProfileId))
-            .ToArray();
         foreach (var dependencyId in selectedBindings.Select(binding => binding.StorageProfileId).Distinct())
         {
             if (storageIdMap.ContainsKey(dependencyId)) continue;
@@ -524,63 +670,14 @@ public sealed class ConnectionArchiveService
             var imported = PortableStorage(source, false);
             var exact = profiles.FirstOrDefault(existing =>
                 StorageProfilesEquivalent(existing, imported, false));
-            if (exact is not null) storageIdMap[source.Id] = exact.Id;
-        }
-
-        var importedCdnProfiles = importedConfiguration.Profiles
-            .Where(profile => selectedCdnIds.Contains(profile.Id))
-            .ToArray();
-        var selectedCredentialIds = importedCdnProfiles
-            .Where(profile => profile.CredentialId.HasValue)
-            .Select(profile => profile.CredentialId!.Value)
-            .ToHashSet();
-
-        var credentials = existingCdnCredentials.ToList();
-        var credentialIdMap = new Dictionary<Guid, Guid>();
-        if (importCdnCredentials)
-        {
-            foreach (var source in package.ImportedCdnCredentials
-                         .Where(credential => selectedCredentialIds.Contains(credential.Id)))
+            if (exact is not null)
             {
-                var exact = credentials.FirstOrDefault(existing => CdnCredentialsEquivalent(existing, source));
-                if (exact is not null)
-                {
-                    credentialIdMap[source.Id] = exact.Id;
-                    continue;
-                }
-
-                var existingIndex = credentials.FindIndex(item =>
-                    string.Equals(item.Name, source.Name, StringComparison.OrdinalIgnoreCase));
-                if (existingIndex < 0)
-                {
-                    var added = source with { Id = Guid.NewGuid() };
-                    credentials.Add(added);
-                    credentialIdMap[source.Id] = added.Id;
-                    continue;
-                }
-
-                switch (conflictStrategy)
-                {
-                    case ConnectionImportConflictStrategy.Skip:
-                        break;
-                    case ConnectionImportConflictStrategy.Replace:
-                        var replaced = source with { Id = credentials[existingIndex].Id };
-                        credentials[existingIndex] = replaced;
-                        credentialIdMap[source.Id] = replaced.Id;
-                        break;
-                    case ConnectionImportConflictStrategy.Rename:
-                        var renamed = source with
-                        {
-                            Id = Guid.NewGuid(),
-                            Name = CreateUniqueImportedName(source.Name, credentials.Select(item => item.Name))
-                        };
-                        credentials.Add(renamed);
-                        credentialIdMap[source.Id] = renamed.Id;
-                        break;
-                    default:
-                        throw new ArgumentOutOfRangeException(nameof(conflictStrategy));
-                }
+                storageIdMap[source.Id] = exact.Id;
+                continue;
             }
+            if (!selectedStorageIds.Contains(dependencyId))
+                throw new InvalidDataException(
+                    $"CDN 关联依赖对象存储连接“{source.Name}”，但该连接未被选择且本地没有等价连接。");
         }
 
         var cdnProfiles = existingCdnConfiguration.Profiles.ToList();
@@ -593,7 +690,7 @@ public sealed class ConnectionArchiveService
                 : (Guid?)null;
             var imported = source with { CredentialId = credentialId };
             var exact = cdnProfiles.FirstOrDefault(existing =>
-                CdnProfilesEquivalent(existing, imported, importCdnCredentials));
+                CdnProfilesEquivalent(existing, imported, importCredentials));
             if (exact is not null)
             {
                 cdnProfileIdMap[source.Id] = exact.Id;
@@ -703,11 +800,12 @@ public sealed class ConnectionArchiveService
             throw new InvalidDataException($"不支持连接包版本 {envelope.Version}。");
         if (envelope.ProfileCount is <= 0 or > MaximumProfileCount)
             throw new InvalidDataException("连接包中的连接数量无效。");
+        var credentialCount = envelope.Version >= 4 ? envelope.CredentialCount : envelope.CdnCredentialCount;
         if (envelope.CdnProfileCount is < 0 or > MaximumProfileCount ||
-            envelope.CdnCredentialCount is < 0 or > MaximumProfileCount)
+            credentialCount is < 0 or > MaximumProfileCount)
             throw new InvalidDataException("连接包中的 CDN 配置或凭据数量无效。");
         if (envelope.Version < 3 &&
-            (envelope.CdnProfileCount != 0 || envelope.CdnCredentialCount != 0 ||
+            (envelope.CdnProfileCount != 0 || credentialCount != 0 ||
              envelope.CdnProfiles is not null || envelope.CdnBindings is not null))
             throw new InvalidDataException("旧版连接包不能包含 CDN 配置。");
         if (envelope.ExportedAtUtc == default)
@@ -845,23 +943,141 @@ public sealed class ConnectionArchiveService
                string.Equals(left.AwsExternalId, right.AwsExternalId, StringComparison.Ordinal);
     }
 
-    private static bool CdnCredentialsEquivalent(CdnCredential left, CdnCredential right)
+    private static bool CredentialProfilesEquivalent(CredentialProfile left, CredentialProfile right)
     {
-        if (left.AuthenticationType != right.AuthenticationType) return false;
-        return left.AuthenticationType switch
+        return left.Provider == right.Provider &&
+            left.Kind == right.Kind &&
+            string.Equals(left.AccessKeyId, right.AccessKeyId, StringComparison.Ordinal) &&
+            string.Equals(left.Secret, right.Secret, StringComparison.Ordinal) &&
+            string.Equals(left.SessionToken, right.SessionToken, StringComparison.Ordinal) &&
+            string.Equals(left.HeaderName?.Trim(), right.HeaderName?.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static CredentialProfile? ToCredentialProfile(CdnCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        return credential.AuthenticationType switch
         {
-            CdnAuthenticationType.None => true,
-            CdnAuthenticationType.BearerToken =>
-                string.Equals(left.Secret, right.Secret, StringComparison.Ordinal),
-            CdnAuthenticationType.CustomHeader =>
-                string.Equals(
-                    left.HeaderName?.Trim(),
-                    right.HeaderName?.Trim(),
-                    StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(left.Secret, right.Secret, StringComparison.Ordinal),
-            _ => false
+            CdnAuthenticationType.BearerToken => new CredentialProfile
+            {
+                Id = credential.Id,
+                Name = credential.Name,
+                Provider = CredentialProviderKind.GenericHttp,
+                Kind = CredentialKind.BearerToken,
+                Secret = credential.Secret
+            },
+            CdnAuthenticationType.CustomHeader => new CredentialProfile
+            {
+                Id = credential.Id,
+                Name = credential.Name,
+                Provider = CredentialProviderKind.GenericHttp,
+                Kind = CredentialKind.CustomHeader,
+                HeaderName = credential.HeaderName ?? string.Empty,
+                Secret = credential.Secret
+            },
+            _ => null
         };
     }
+
+    private static (
+        ConnectionProfile[] Profiles,
+        CdnConfiguration Cdn,
+        IReadOnlyList<CredentialProfile> Credentials) MigrateLegacyArchiveCredentials(
+            IReadOnlyList<ConnectionProfile> sourceProfiles,
+            CdnConfiguration sourceCdn,
+            IReadOnlyList<CdnCredential> sourceCdnCredentials)
+    {
+        var credentials = new List<CredentialProfile>();
+        var profiles = sourceProfiles.ToArray();
+        for (var index = 0; index < profiles.Length; index++)
+        {
+            var profile = profiles[index];
+            if (profile.CredentialSource == CredentialSourceKind.StoredKeys &&
+                (!string.IsNullOrEmpty(profile.AccessKey) || !string.IsNullOrEmpty(profile.SecretKey)))
+            {
+                var credentialId = AddLegacyArchiveCredential(credentials, new CredentialProfile
+                {
+                    Id = profile.Id,
+                    Name = profile.Name,
+                    Provider = CredentialProviderFor(profile.ServiceType),
+                    Kind = CredentialKind.AccessKeyPair,
+                    AccessKeyId = profile.AccessKey,
+                    Secret = profile.SecretKey,
+                    SessionToken = profile.SessionToken
+                }, "storage");
+                profiles[index] = profile with { CredentialId = credentialId };
+                profile = profiles[index];
+            }
+
+            if (profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
+                !string.IsNullOrWhiteSpace(profile.AwsExternalId))
+            {
+                var credentialId = AddLegacyArchiveCredential(credentials, new CredentialProfile
+                {
+                    Id = CreateDerivedCredentialId(profile.Id, "archive-external-id"),
+                    Name = profile.Name + " - AWS External ID",
+                    Provider = CredentialProviderKind.AmazonWebServices,
+                    Kind = CredentialKind.SecretValue,
+                    Secret = profile.AwsExternalId
+                }, "external-id");
+                profiles[index] = profile with { AwsExternalIdCredentialId = credentialId };
+            }
+        }
+
+        var cdnCredentialIdMap = new Dictionary<Guid, Guid?>();
+        foreach (var legacyCredential in sourceCdnCredentials)
+        {
+            var credential = ToCredentialProfile(legacyCredential);
+            cdnCredentialIdMap[legacyCredential.Id] = credential is null
+                ? null
+                : AddLegacyArchiveCredential(credentials, credential, "cdn");
+        }
+        var cdn = sourceCdn with
+        {
+            Profiles = sourceCdn.Profiles.Select(profile =>
+                profile.CredentialId is Guid legacyId && cdnCredentialIdMap.TryGetValue(legacyId, out var mappedId)
+                    ? profile with { CredentialId = mappedId }
+                    : profile).ToArray()
+        };
+        return (profiles, cdn, credentials);
+    }
+
+    private static Guid AddLegacyArchiveCredential(
+        ICollection<CredentialProfile> credentials,
+        CredentialProfile source,
+        string purpose)
+    {
+        var id = source.Id;
+        var suffix = 2;
+        while (credentials.Any(value => value.Id == id))
+            id = CreateDerivedCredentialId(source.Id, $"archive-{purpose}-{suffix++}");
+
+        var baseName = source.Name.Trim();
+        var name = baseName;
+        suffix = 2;
+        while (credentials.Any(value => string.Equals(value.Name, name, StringComparison.OrdinalIgnoreCase)))
+            name = $"{baseName} ({suffix++})";
+        credentials.Add(source with { Id = id, Name = name });
+        return id;
+    }
+
+    private static Guid CreateDerivedCredentialId(Guid sourceId, string purpose)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{sourceId:N}:{purpose}"));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private static CredentialProviderKind CredentialProviderFor(S3ServiceType serviceType) => serviceType switch
+    {
+        S3ServiceType.AmazonS3 => CredentialProviderKind.AmazonWebServices,
+        S3ServiceType.AliyunOss => CredentialProviderKind.AlibabaCloud,
+        S3ServiceType.TencentCos => CredentialProviderKind.TencentCloud,
+        S3ServiceType.CloudflareR2 => CredentialProviderKind.Cloudflare,
+        S3ServiceType.BackblazeB2 => CredentialProviderKind.Backblaze,
+        S3ServiceType.GoogleCloudStorage => CredentialProviderKind.GoogleCloud,
+        S3ServiceType.SupabaseStorage => CredentialProviderKind.Supabase,
+        _ => CredentialProviderKind.S3Compatible
+    };
 
     private static bool CdnProfilesEquivalent(
         CdnProfile left,
@@ -982,11 +1198,13 @@ public sealed class ConnectionArchiveService
         public int ProfileCount { get; set; }
         public int CdnProfileCount { get; set; }
         public int CdnCredentialCount { get; set; }
+        public int CredentialCount { get; set; }
         public bool ContainsCredentials { get; set; }
         public string Protection { get; set; } = string.Empty;
         public List<PortableProfile>? Profiles { get; set; }
         public List<CdnProfile>? CdnProfiles { get; set; }
         public List<CdnBinding>? CdnBindings { get; set; }
+        public List<CredentialProfile>? CredentialProfiles { get; set; }
         public EncryptionMetadata? Encryption { get; set; }
         public string? EncryptedPayload { get; set; }
     }
@@ -997,6 +1215,7 @@ public sealed class ConnectionArchiveService
         public List<CdnProfile> CdnProfiles { get; set; } = [];
         public List<CdnBinding> CdnBindings { get; set; } = [];
         public List<CdnCredential> CdnCredentials { get; set; } = [];
+        public List<CredentialProfile> CredentialProfiles { get; set; } = [];
     }
 
     private sealed class EncryptionMetadata
@@ -1020,6 +1239,8 @@ public sealed class ConnectionArchiveService
         public string? AccessKey { get; set; }
         public string? SecretKey { get; set; }
         public string? SessionToken { get; set; }
+        public Guid? CredentialId { get; set; }
+        public Guid? AwsExternalIdCredentialId { get; set; }
         public CredentialSourceKind CredentialSource { get; set; } = CredentialSourceKind.StoredKeys;
         public string AwsProfileName { get; set; } = string.Empty;
         public string AwsSourceProfileName { get; set; } = string.Empty;
@@ -1042,7 +1263,7 @@ public sealed class ConnectionArchiveService
         public string DefaultBucket { get; set; } = string.Empty;
         public List<string> ExternalBuckets { get; set; } = [];
 
-        public static PortableProfile FromRuntime(ConnectionProfile source, bool includeCredentials) => new()
+        public static PortableProfile FromRuntime(ConnectionProfile source) => new()
         {
             Id = source.Id,
             Name = source.Name,
@@ -1050,15 +1271,11 @@ public sealed class ConnectionArchiveService
             Endpoint = source.Endpoint,
             Region = source.Region,
             SignatureRegion = source.SignatureRegion,
-            AccessKey = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys
-                ? source.AccessKey
-                : null,
-            SecretKey = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys
-                ? source.SecretKey
-                : null,
-            SessionToken = includeCredentials && source.CredentialSource == CredentialSourceKind.StoredKeys && source.SessionToken.Length > 0
-                ? source.SessionToken
-                : null,
+            AccessKey = null,
+            SecretKey = null,
+            SessionToken = null,
+            CredentialId = source.CredentialId,
+            AwsExternalIdCredentialId = source.AwsExternalIdCredentialId,
             CredentialSource = source.CredentialSource,
             AwsProfileName = source.CredentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso
                 ? (source.AwsProfileName ?? string.Empty).Trim()
@@ -1075,10 +1292,7 @@ public sealed class ConnectionArchiveService
             AwsRoleSourceIdentity = source.CredentialSource == CredentialSourceKind.AwsAssumeRole
                 ? (source.AwsRoleSourceIdentity ?? string.Empty).Trim()
                 : string.Empty,
-            AwsExternalId = includeCredentials && source.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
-                !string.IsNullOrWhiteSpace(source.AwsExternalId)
-                ? source.AwsExternalId
-                : null,
+            AwsExternalId = null,
             AwsSessionDurationSeconds = source.CredentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
                 ? source.AwsSessionDurationSeconds
                 : 3600,
@@ -1111,6 +1325,8 @@ public sealed class ConnectionArchiveService
                 AccessKey = AccessKey ?? string.Empty,
                 SecretKey = SecretKey ?? string.Empty,
                 SessionToken = SessionToken ?? string.Empty,
+                CredentialId = CredentialId,
+                AwsExternalIdCredentialId = AwsExternalIdCredentialId,
                 CredentialSource = CredentialSource,
                 AwsProfileName = AwsProfileName ?? string.Empty,
                 AwsSourceProfileName = AwsSourceProfileName ?? string.Empty,

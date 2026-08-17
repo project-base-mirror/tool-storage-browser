@@ -1,5 +1,6 @@
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
+using S3Explorer.Infrastructure.Configuration;
 using S3Explorer.Infrastructure.S3;
 
 namespace S3Explorer.App;
@@ -30,11 +31,16 @@ internal static class Program
                 ? options.DataDirectory.Length > 0
                     ? options.DataDirectory
                     : Path.Combine(Path.GetDirectoryName(options.StatePath)!, "data")
-                : string.Empty;
-            var protector = new DpapiCredentialProtector();
-            var profileStore = new JsonProfileStore(
-                protector,
-                options.Enabled ? Path.Combine(dataRoot, "profiles.json") : null);
+                : Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "S3Explorer");
+            var configurationStore = ExplorerConfigurationStore
+                .OpenAsync(dataRoot)
+                .GetAwaiter()
+                .GetResult();
+            var profileStore = new ExplorerProfileStore(configurationStore);
+            var cdnConfigurationStore = new ExplorerCdnConfigurationStore(configurationStore);
+            var credentialStore = new ExplorerCredentialStore(configurationStore);
             var storageService = new S3StorageService(new S3ClientFactory());
             var settingsStore = new AppSettingsStore(
                 options.Enabled ? Path.Combine(dataRoot, "settings.json") : null);
@@ -44,29 +50,12 @@ internal static class Program
                 options.Enabled ? Path.Combine(dataRoot, "transfers.json") : null);
             var syncJobStore = new JsonFolderSyncJobStore(
                 options.Enabled ? Path.Combine(dataRoot, "sync-jobs.json") : null);
-            var cdnConfigurationStore = new JsonCdnConfigurationStore(
-                options.Enabled ? Path.Combine(dataRoot, "cdn-config.json") : null);
-            var cdnCredentialStore = new JsonCdnCredentialStore(
-                new DpapiCdnCredentialProtector(),
-                options.Enabled ? Path.Combine(dataRoot, "cdn-credentials.json") : null);
-            var configurationTransactions = new ConfigurationTransactionCoordinator(
-                profileStore,
-                cdnConfigurationStore,
-                cdnCredentialStore,
-                protector,
-                options.Enabled
-                    ? Path.Combine(dataRoot, "configuration-transaction.json")
-                    : Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "S3Explorer",
-                        "configuration-transaction.json"));
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
             var cdnJobStore = new JsonCdnJobStore(
                 options.Enabled ? Path.Combine(dataRoot, "cdn-jobs.json") : null);
             var cdnJobExecutor = new StoreBackedCdnJobExecutor(
-                cdnConfigurationStore,
-                cdnCredentialStore,
-                [new GenericHttpCdnProvider(cdnDeliveryService)]);
+                configurationStore,
+                [new GenericHttpCdnProvider(cdnDeliveryService), new AliyunCdnProvider()]);
             var cdnJobQueue = new PersistentCdnJobQueue(cdnJobStore, cdnJobExecutor);
             var cdnCertificateInspector = new TlsCdnCertificateInspector();
             using var updateChecker = new GitHubUpdateChecker(
@@ -107,12 +96,12 @@ internal static class Program
                 transferRuntime,
                 syncJobStore,
                 updateChecker,
+                configurationStore,
                 cdnConfigurationStore,
-                cdnCredentialStore,
+                credentialStore,
                 cdnDeliveryService,
                 cdnJobQueue,
                 cdnCertificateInspector,
-                configurationTransactions,
                 automation);
             if (singleInstance is not null)
             {

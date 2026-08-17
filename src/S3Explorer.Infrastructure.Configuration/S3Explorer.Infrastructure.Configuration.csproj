@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>S3Explorer.Infrastructure.Configuration</AssemblyName>
+    <RootNamespace>S3Explorer.Infrastructure.Configuration</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
+    <ProjectReference Include="..\S3Explorer.Infrastructure.S3\S3Explorer.Infrastructure.S3.csproj" />
+    <ProjectReference Include="..\S3Explorer.Infrastructure.Cdn\S3Explorer.Infrastructure.Cdn.csproj" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
+  </ItemGroup>
+</Project>

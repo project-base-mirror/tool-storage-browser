@@ -6,7 +6,7 @@ internal sealed class CdnDownloadTestDialog : Form
 {
     private readonly ICdnDeliveryService _deliveryService;
     private readonly CdnProfile _profile;
-    private readonly CdnCredential? _credential;
+    private readonly CredentialProfile? _credential;
     private readonly Uri _url;
     private readonly TextBox _urlBox = new()
     {
@@ -82,7 +82,7 @@ internal sealed class CdnDownloadTestDialog : Form
     public CdnDownloadTestDialog(
         ICdnDeliveryService deliveryService,
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url)
     {
         _deliveryService = deliveryService;

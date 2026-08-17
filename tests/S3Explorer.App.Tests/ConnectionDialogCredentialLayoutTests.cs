@@ -26,23 +26,18 @@ public sealed class ConnectionDialogCredentialLayoutTests
 
             var source = Assert.IsType<ComboBox>(Find(dialog, "CredentialSourceComboBox"));
             var awsProfile = Assert.IsType<TextBox>(Find(dialog, "AwsProfileNameTextBox"));
-            var access = Find(dialog, "AccessKeyTextBox");
-            var secret = Find(dialog, "SecretKeyTextBox");
-            var session = Find(dialog, "SessionTokenTextBox");
+            var credential = Assert.IsType<ComboBox>(Find(dialog, "StorageCredentialComboBox"));
 
             Assert.True(source.Enabled);
             Assert.Contains("shared", source.Text, StringComparison.OrdinalIgnoreCase);
             Assert.True(awsProfile.Visible);
             Assert.Equal("readonly", awsProfile.Text);
-            Assert.False(access.Visible);
-            Assert.False(secret.Visible);
-            Assert.False(session.Visible);
+            Assert.False(credential.Visible);
             Assert.True(source.Width >= 240, $"Credential source width was {source.Width}px.");
 
             source.SelectedIndex = 0;
             Application.DoEvents();
-            Assert.True(access.Visible);
-            Assert.True(secret.Visible);
+            Assert.True(credential.Visible);
             source.SelectedIndex = 1;
             Application.DoEvents();
             Assert.Equal("readonly", awsProfile.Text);
@@ -54,13 +49,22 @@ public sealed class ConnectionDialogCredentialLayoutTests
     {
         RunSta(() =>
         {
+            var credential = new CredentialProfile
+            {
+                Name = "MinIO deployment key",
+                Provider = CredentialProviderKind.S3Compatible,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "access",
+                Secret = "secret"
+            };
             var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
             {
                 Name = "MinIO",
-                AccessKey = "access",
-                SecretKey = "secret"
+                CredentialId = credential.Id,
+                AccessKey = credential.AccessKeyId,
+                SecretKey = credential.Secret
             };
-            using var dialog = new ConnectionDialog(null!, profile);
+            using var dialog = new ConnectionDialog(null!, profile, [credential]);
             dialog.Show();
             Application.DoEvents();
 
@@ -68,17 +72,25 @@ public sealed class ConnectionDialogCredentialLayoutTests
 
             Assert.False(source.Enabled);
             Assert.Contains("Access Key", source.Text, StringComparison.Ordinal);
-            Assert.True(Find(dialog, "AccessKeyTextBox").Visible);
-            Assert.True(Find(dialog, "SecretKeyTextBox").Visible);
+            var credentialChoice = Assert.IsType<ComboBox>(Find(dialog, "StorageCredentialComboBox"));
+            Assert.True(credentialChoice.Visible);
+            Assert.Contains(credential.Name, credentialChoice.Text, StringComparison.Ordinal);
             Assert.False(Find(dialog, "AwsProfileNameTextBox").Visible);
         });
     }
 
     [Fact]
-    public void AssumeRoleShowsRoleChainFieldsAndKeepsExternalIdMasked()
+    public void AssumeRoleShowsRoleChainFieldsAndReferencesExternalIdCredential()
     {
         RunSta(() =>
         {
+            var externalIdCredential = new CredentialProfile
+            {
+                Name = "Audit role External ID",
+                Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.SecretValue,
+                Secret = "external-secret"
+            };
             var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
             {
                 Name = "Audit role",
@@ -87,10 +99,11 @@ public sealed class ConnectionDialogCredentialLayoutTests
                 AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
                 AwsRoleSessionName = "s3explorer-audit",
                 AwsRoleSourceIdentity = "operator-42",
-                AwsExternalId = "external-secret",
+                AwsExternalIdCredentialId = externalIdCredential.Id,
+                AwsExternalId = externalIdCredential.Secret,
                 AwsSessionDurationSeconds = 1800
             };
-            using var dialog = new ConnectionDialog(null!, profile);
+            using var dialog = new ConnectionDialog(null!, profile, [externalIdCredential]);
             dialog.Show();
             Application.DoEvents();
 
@@ -98,12 +111,12 @@ public sealed class ConnectionDialogCredentialLayoutTests
             Assert.True(Find(dialog, "AwsRoleArnTextBox").Visible);
             Assert.True(Find(dialog, "AwsRoleSessionNameTextBox").Visible);
             Assert.True(Find(dialog, "AwsRoleSourceIdentityTextBox").Visible);
-            var externalId = Assert.IsType<TextBox>(Find(dialog, "AwsExternalIdTextBox"));
+            var externalId = Assert.IsType<ComboBox>(Find(dialog, "AwsExternalIdCredentialComboBox"));
             Assert.True(externalId.Visible);
-            Assert.True(externalId.UseSystemPasswordChar);
-            Assert.Equal("external-secret", externalId.Text);
+            Assert.Contains(externalIdCredential.Name, externalId.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain(externalIdCredential.Secret, AllControlText(dialog), StringComparison.Ordinal);
             Assert.False(Find(dialog, "AwsWebIdentityTokenFileTextBox").Visible);
-            Assert.False(Find(dialog, "AccessKeyTextBox").Visible);
+            Assert.False(Find(dialog, "StorageCredentialComboBox").Visible);
         });
     }
 
@@ -260,6 +273,10 @@ public sealed class ConnectionDialogCredentialLayoutTests
 
     private static Control Find(Control root, string name) =>
         Assert.Single(root.Controls.Find(name, searchAllChildren: true));
+
+    private static string AllControlText(Control root) => string.Join("\n",
+        root.Controls.Cast<Control>().SelectMany(control =>
+            new[] { control.Text }.Concat(control.Controls.Cast<Control>().Select(AllControlText))));
 
     private static void RunSta(Action action)
     {

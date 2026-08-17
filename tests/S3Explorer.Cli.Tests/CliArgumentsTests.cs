@@ -107,12 +107,12 @@ public sealed class CliArgumentsTests
             "--credential-source", "assume-role", "--source-profile", "bootstrap",
             "--role-arn", "arn:aws:iam::123456789012:role/Audit",
             "--role-session-name", "s3explorer-audit", "--source-identity", "operator-42",
-            "--external-id-env", "AUDIT_EXTERNAL_ID", "--session-duration", "1800",
+            "--external-id-credential", "audit-external-id", "--session-duration", "1800",
             "--group", "Production"]);
 
         Program.ValidateCommandOptions("profile", "add", parsed);
         Assert.Equal("assume-role", parsed.Optional("credential-source"));
-        Assert.Equal("AUDIT_EXTERNAL_ID", parsed.Optional("external-id-env"));
+        Assert.Equal("audit-external-id", parsed.Optional("external-id-credential"));
     }
 
     [Theory]

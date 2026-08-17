@@ -145,7 +145,7 @@ public sealed class AutomationCommandsPublishTests
                 new TestProfileStore(),
                 Storage.Service,
                 new EmptyCdnConfigurationStore(),
-                new EmptyCdnCredentialStore(),
+                new EmptyCredentialStore(),
                 new UnusedCdnDeliveryService(),
                 jsonOutput: true,
                 TestContext.Current.CancellationToken);
@@ -271,13 +271,13 @@ public sealed class AutomationCommandsPublishTests
             throw new NotSupportedException();
     }
 
-    private sealed class EmptyCdnCredentialStore : ICdnCredentialStore
+    private sealed class EmptyCredentialStore : ICredentialStore
     {
-        public Task<IReadOnlyList<CdnCredential>> LoadAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<CdnCredential>>([]);
+        public Task<IReadOnlyList<CredentialProfile>> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<CredentialProfile>>([]);
 
         public Task SaveAsync(
-            IReadOnlyCollection<CdnCredential> credentials,
+            IReadOnlyCollection<CredentialProfile> credentials,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
@@ -285,20 +285,20 @@ public sealed class AutomationCommandsPublishTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }

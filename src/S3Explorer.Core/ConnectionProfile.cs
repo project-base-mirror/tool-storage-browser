@@ -50,8 +50,13 @@ public sealed record ConnectionProfile
     public string Endpoint { get; init; } = "https://s3.amazonaws.com";
     public string Region { get; init; } = "us-east-1";
     public string SignatureRegion { get; init; } = string.Empty;
+    /// <summary>References an access-key entry in the unified credential vault.</summary>
+    public Guid? CredentialId { get; init; }
+    /// <summary>Runtime-only material resolved from the unified credential vault.</summary>
     public string AccessKey { get; init; } = string.Empty;
+    /// <summary>Runtime-only material resolved from the unified credential vault.</summary>
     public string SecretKey { get; init; } = string.Empty;
+    /// <summary>Runtime-only material resolved from the unified credential vault.</summary>
     public string SessionToken { get; init; } = string.Empty;
     public CredentialSourceKind CredentialSource { get; init; } = CredentialSourceKind.StoredKeys;
     public string AwsProfileName { get; init; } = string.Empty;
@@ -59,6 +64,9 @@ public sealed record ConnectionProfile
     public string AwsRoleArn { get; init; } = string.Empty;
     public string AwsRoleSessionName { get; init; } = string.Empty;
     public string AwsRoleSourceIdentity { get; init; } = string.Empty;
+    /// <summary>References the optional encrypted AssumeRole External ID in the unified credential vault.</summary>
+    public Guid? AwsExternalIdCredentialId { get; init; }
+    /// <summary>Runtime-only material resolved from the unified credential vault.</summary>
     public string AwsExternalId { get; init; } = string.Empty;
     public int AwsSessionDurationSeconds { get; init; } = 3600;
     public string AwsWebIdentityTokenFile { get; init; } = string.Empty;

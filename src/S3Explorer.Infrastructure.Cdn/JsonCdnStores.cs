@@ -127,7 +127,7 @@ public sealed class JsonCdnCredentialStore : ICdnCredentialStore, IRecoveryAware
         EnsureSupportedVersion(document.Version, "CDN 凭据");
         if (document.Credentials is null || document.Credentials.Any(value => value is null))
             throw new InvalidDataException("CDN 凭据文件包含空集合或空记录。");
-        var validation = CdnConfigurationValidator.Validate(CdnConfiguration.Empty, ToRuntime(document));
+        var validation = CdnConfigurationValidator.ValidateLegacy(CdnConfiguration.Empty, ToRuntime(document));
         if (validation.Count > 0)
             throw new InvalidDataException(string.Join(Environment.NewLine, validation));
     }

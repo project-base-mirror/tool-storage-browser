@@ -2,6 +2,81 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "AlibabaCloud.EndpointUtil": {
+        "type": "Transitive",
+        "resolved": "0.1.2",
+        "contentHash": "66FQo9/jqfT4sGHFjiqcUQebwPcUzaABSvv9yDWLWHqQMaH/KLHD+VlecGERBPiLKoCwCA8D18H1+RFkRyLpOA=="
+      },
+      "AlibabaCloud.GatewaySpi": {
+        "type": "Transitive",
+        "resolved": "0.0.3",
+        "contentHash": "vvmA5BrM8rpOZoXwFl/ZWHYLFnZ8EwPp+07z3Eeg9okLv58QJ8+KGWVovTr8tJpuDgPFG1SVdHXRi04A62ehdA==",
+        "dependencies": {
+          "Aliyun.Credentials": "1.4.0",
+          "Tea": "1.0.13"
+        }
+      },
+      "AlibabaCloud.OpenApiClient": {
+        "type": "Transitive",
+        "resolved": "0.1.16",
+        "contentHash": "zg+UV5+TNv0RFfqG7BF1kYxF5ajmEN+F97O5C4b4ytAKQGZq15riLJLRopZe8r/XUPJsgGaC1JOfZphYet3unA==",
+        "dependencies": {
+          "AlibabaCloud.GatewaySpi": "0.0.3",
+          "AlibabaCloud.OpenApiUtil": "1.1.2",
+          "AlibabaCloud.TeaUtil": "0.1.20",
+          "AlibabaCloud.TeaXML": "0.0.5",
+          "Aliyun.Credentials": "1.5.2",
+          "Tea": "1.1.3"
+        }
+      },
+      "AlibabaCloud.OpenApiUtil": {
+        "type": "Transitive",
+        "resolved": "1.1.4",
+        "contentHash": "Z5bjwOHgN6n5A222TQOIOm6pTgdm+Gwp23FQ9ZlRqpp4LU9NqsPecJ06hPIGsJl0ACv3lRNBUhpWDqMP5Tx6tg==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.3",
+          "Tea": "1.0.11"
+        }
+      },
+      "AlibabaCloud.SDK.Cdn20180510": {
+        "type": "Transitive",
+        "resolved": "8.2.0",
+        "contentHash": "dK6vtkgrdSOZCwZe8P7WWVz/Cy5TH4xhV0dpOiY1jDK11ZPbczayhwMen/u60GRBIHzEQ7JtZIGYxhRm7ABihQ==",
+        "dependencies": {
+          "AlibabaCloud.EndpointUtil": "0.1.2",
+          "AlibabaCloud.OpenApiClient": "0.1.16",
+          "AlibabaCloud.OpenApiUtil": "1.1.4",
+          "AlibabaCloud.TeaUtil": "0.1.20",
+          "Tea": "1.1.3"
+        }
+      },
+      "AlibabaCloud.TeaUtil": {
+        "type": "Transitive",
+        "resolved": "0.1.20",
+        "contentHash": "LlX4ZC9s15IEeQJbDNQLtfZulDP+0h3vAsR+gz0sp9GV4jspANH3f+AnVsQLKxxt7mJk623lbOYM6PE53CbBPw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.3",
+          "Tea": "1.0.11"
+        }
+      },
+      "AlibabaCloud.TeaXML": {
+        "type": "Transitive",
+        "resolved": "0.0.5",
+        "contentHash": "mHxE6H3eq4jaeqn3hryIYTI0k8quvPZfZdEE+PdU8rw+NGRvev68D8Aei6xjwW/pArZaTG6yPawYu5c0EaZkfw==",
+        "dependencies": {
+          "Newtonsoft.Json": "9.0.1",
+          "Tea": "1.0.11"
+        }
+      },
+      "Aliyun.Credentials": {
+        "type": "Transitive",
+        "resolved": "1.5.2",
+        "contentHash": "5A5W5IbQvmUV0EcfAP9FFDQoB5R9JfeH7FhDPEBlPZl6ZJON40NHkYwQY/l+P+AMR7B9Nt8mxGoL3rGETrNLFg==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.1",
+          "Tea": "1.0.1"
+        }
+      },
       "AWSSDK.Core": {
         "type": "Transitive",
         "resolved": "4.0.100.9",
@@ -39,10 +114,23 @@
           "AWSSDK.Core": "[4.0.100.9, 5.0.0)"
         }
       },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.3",
+        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
+      },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Transitive",
         "resolved": "10.0.10",
         "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
+      },
+      "Tea": {
+        "type": "Transitive",
+        "resolved": "1.1.3",
+        "contentHash": "vwpYRSIcbNeRDrrRp6eG1rB2rAE5vOZyrQAjMPCxDTisptsIq4ApdmFc9jvthCIgOeBwTyOe4Y/TYTD88Zq+Yw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.3"
+        }
       },
       "s3explorer.contracts": {
         "type": "Project"
@@ -53,7 +141,17 @@
       "s3explorer.infrastructure.cdn": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.7.5, )",
+          "AlibabaCloud.SDK.Cdn20180510": "[8.2.0, )",
+          "S3Explorer.Core": "[0.7.6, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
+        }
+      },
+      "s3explorer.infrastructure.configuration": {
+        "type": "Project",
+        "dependencies": {
+          "S3Explorer.Core": "[0.7.6, )",
+          "S3Explorer.Infrastructure.Cdn": "[0.7.6, )",
+          "S3Explorer.Infrastructure.S3": "[0.7.6, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       },
@@ -64,7 +162,7 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.5, )",
+          "S3Explorer.Core": "[0.7.6, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }

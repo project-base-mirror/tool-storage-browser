@@ -27,6 +27,7 @@ public enum CdnWarmupMode
 public sealed record CdnProfile
 {
     public const string GenericHttpProviderId = "generic-http";
+    public const string AlibabaCloudProviderId = "aliyun-cdn";
     public const int MaximumNotesLength = 2000;
 
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -50,7 +51,10 @@ public sealed record CdnProfile
         CdnCapabilities.BuildUrl |
         CdnCapabilities.DownloadProbe |
         CdnCapabilities.Warmup |
-        (string.IsNullOrWhiteSpace(PurgeEndpointTemplate) ? CdnCapabilities.None : CdnCapabilities.Purge);
+        (string.Equals(ProviderId, AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) ||
+         !string.IsNullOrWhiteSpace(PurgeEndpointTemplate)
+            ? CdnCapabilities.Purge
+            : CdnCapabilities.None);
 }
 
 public sealed record CdnCredential
@@ -184,21 +188,21 @@ public interface ICdnDeliveryService
 {
     Task<CdnProbeResult> ProbeAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         long sampleBytes,
         CancellationToken cancellationToken);
 
     Task<CdnProbeResult> ProbeHeadAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken) =>
         ProbeAsync(profile, credential, url, 1, cancellationToken);
 
     Task<CdnDownloadResult> DownloadAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         Stream destination,
         CancellationToken cancellationToken) =>
@@ -206,13 +210,13 @@ public interface ICdnDeliveryService
 
     Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken);
 
     Task<CdnOperationResult> PurgeAsync(
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken);
 }
@@ -232,6 +236,39 @@ public static class CdnConfigurationValidator
 
     public static IReadOnlyList<string> Validate(
         CdnConfiguration configuration,
+        IReadOnlyCollection<CredentialProfile>? credentials = null)
+    {
+        var errors = ValidateLegacy(configuration, null).ToList();
+        if (credentials is null) return errors;
+
+        var ids = credentials.Select(value => value.Id).ToHashSet();
+        foreach (var credential in credentials)
+        {
+            try { credential.Validate(); }
+            catch (ArgumentException exception) { errors.Add(exception.Message); }
+        }
+        foreach (var profile in configuration.Profiles)
+        {
+            if (profile.CredentialId is not Guid credentialId) continue;
+            var credential = credentials.FirstOrDefault(value => value.Id == credentialId);
+            if (!ids.Contains(credentialId) || credential is null)
+                errors.Add($"CDN 配置“{profile.Name}”引用了不存在的凭据。");
+            else if (!credential.IsCompatibleWith(profile.ProviderId))
+                errors.Add($"CDN 配置“{profile.Name}”引用的凭据与 Provider 不兼容。");
+        }
+        return errors;
+    }
+
+    public static void EnsureValid(
+        CdnConfiguration configuration,
+        IReadOnlyCollection<CredentialProfile>? credentials = null)
+    {
+        var errors = Validate(configuration, credentials);
+        if (errors.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, errors));
+    }
+
+    public static IReadOnlyList<string> ValidateLegacy(
+        CdnConfiguration configuration,
         IReadOnlyCollection<CdnCredential>? credentials = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -246,7 +283,8 @@ public static class CdnConfigurationValidator
             if (string.IsNullOrWhiteSpace(profile.Name)) errors.Add("CDN 配置名称不能为空。");
             if (profile.Notes.Length > CdnProfile.MaximumNotesLength)
                 errors.Add($"CDN 配置“{profile.Name}”的备注不能超过 {CdnProfile.MaximumNotesLength} 个字符。");
-            if (!string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
                 errors.Add($"CDN 配置“{profile.Name}”使用了当前版本不支持的 Provider：{profile.ProviderId}");
             if (!TryHttpUri(profile.BaseUrl, out var baseUri) || baseUri is null ||
                 !string.IsNullOrEmpty(baseUri.UserInfo) ||
@@ -350,11 +388,11 @@ public static class CdnConfigurationValidator
         return errors;
     }
 
-    public static void EnsureValid(
+    public static void EnsureLegacyValid(
         CdnConfiguration configuration,
         IReadOnlyCollection<CdnCredential>? credentials = null)
     {
-        var errors = Validate(configuration, credentials);
+        var errors = ValidateLegacy(configuration, credentials);
         if (errors.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, errors));
     }
 

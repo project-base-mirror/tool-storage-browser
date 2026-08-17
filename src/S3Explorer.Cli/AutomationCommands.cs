@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using S3Explorer.Contracts;
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.Cdn;
 
 namespace S3Explorer.Cli;
 
@@ -27,21 +28,25 @@ internal static class AutomationCommands
         IProfileStore profileStore,
         IS3StorageService storage,
         ICdnConfigurationStore cdnConfigurationStore,
-        ICdnCredentialStore cdnCredentialStore,
+        ICredentialStore credentialStore,
         ICdnDeliveryService cdnDeliveryService,
         bool jsonOutput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<ICdnProvider>? cdnProviders = null)
     {
+        var providers = (cdnProviders ??
+                [new GenericHttpCdnProvider(cdnDeliveryService), new AliyunCdnProvider()])
+            .ToDictionary(provider => provider.ProviderId, StringComparer.OrdinalIgnoreCase);
         return command switch
         {
             "upload" => await RunUploadAsync(args, profileStore, storage, cancellationToken),
             "publish" => await RunPublishAsync(
-                args, profileStore, storage, cdnConfigurationStore, cdnCredentialStore,
-                cdnDeliveryService, jsonOutput, cancellationToken),
+                args, profileStore, storage, cdnConfigurationStore, credentialStore,
+                cdnDeliveryService, providers, jsonOutput, cancellationToken),
             "verify" => await RunVerifyAsync(args, profileStore, storage, cancellationToken),
             "cdn" => await RunCdnAsync(
-                verb, args, cdnConfigurationStore, cdnCredentialStore,
-                cdnDeliveryService, cancellationToken),
+                verb, args, cdnConfigurationStore, credentialStore,
+                cdnDeliveryService, providers, cancellationToken),
             _ => throw new CliUsageException($"未知自动化命令：{command}")
         };
     }
@@ -112,8 +117,9 @@ internal static class AutomationCommands
         IProfileStore profileStore,
         IS3StorageService storage,
         ICdnConfigurationStore cdnConfigurationStore,
-        ICdnCredentialStore cdnCredentialStore,
+        ICredentialStore credentialStore,
         ICdnDeliveryService cdnDeliveryService,
+        IReadOnlyDictionary<string, ICdnProvider> cdnProviders,
         bool jsonOutput,
         CancellationToken cancellationToken)
     {
@@ -351,7 +357,7 @@ internal static class AutomationCommands
         if (failures.Count == 0 && args.Optional("cdn-profile") is { Length: > 0 } cdnProfileName)
         {
             var (cdnProfile, credential) = await ResolveCdnAsync(
-                cdnProfileName, cdnConfigurationStore, cdnCredentialStore, cancellationToken);
+                cdnProfileName, cdnConfigurationStore, credentialStore, cancellationToken);
             cdnUrl = PublishManifestUtility.BuildCdnUri(cdnProfile, prefix + "/").AbsoluteUri;
             if (args.Flag("warmup"))
             {
@@ -359,7 +365,8 @@ internal static class AutomationCommands
                     .Select(path => CombineKey(prefix, path))
                     .ToArray();
                 var cdnResult = await ExecuteCdnAsync(
-                    "warmup", cdnProfile, credential, warmupPaths, cdnDeliveryService, cancellationToken);
+                    "warmup", cdnProfile, credential, warmupPaths, cdnDeliveryService,
+                    cdnProviders, cancellationToken);
                 foreach (var item in cdnResult.Items.Where(value => !value.Success))
                     failures.Add(new OperationFailure { Path = item.Path, Message = item.Message });
             }
@@ -465,8 +472,9 @@ internal static class AutomationCommands
         string verb,
         CliArguments args,
         ICdnConfigurationStore configurationStore,
-        ICdnCredentialStore credentialStore,
+        ICredentialStore credentialStore,
         ICdnDeliveryService deliveryService,
+        IReadOnlyDictionary<string, ICdnProvider> cdnProviders,
         CancellationToken cancellationToken)
     {
         if (verb is not ("test" or "warmup" or "cache-test"))
@@ -488,7 +496,7 @@ internal static class AutomationCommands
             throw new CliUsageException("cdn test/cache-test/warmup 需要 --path 或 --manifest。");
         var result = await ExecuteCdnAsync(
             verb, profile, credential, paths.Distinct(StringComparer.Ordinal).ToArray(),
-            deliveryService, cancellationToken);
+            deliveryService, cdnProviders, cancellationToken);
         var cacheTransition = verb == "cache-test"
             ? string.Join(" → ", result.Items.Select(value => value.CacheStatus))
             : string.Empty;
@@ -504,12 +512,62 @@ internal static class AutomationCommands
     private static async Task<CdnBatchResult> ExecuteCdnAsync(
         string verb,
         CdnProfile profile,
-        CdnCredential? credential,
+        CredentialProfile? credential,
         IReadOnlyCollection<string> paths,
         ICdnDeliveryService deliveryService,
+        IReadOnlyDictionary<string, ICdnProvider> cdnProviders,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        if (verb == "warmup" &&
+            !string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase))
+        {
+            var urls = paths
+                .Select(path => (Path: path, Url: PublishManifestUtility.BuildCdnUri(profile, path)))
+                .ToArray();
+            CdnProviderResult providerResult;
+            if (!cdnProviders.TryGetValue(profile.ProviderId, out var provider))
+            {
+                providerResult = new CdnProviderResult(
+                    CdnProviderOperationState.Failed,
+                    $"没有注册 CDN Provider：{profile.ProviderId}");
+            }
+            else
+            {
+                providerResult = await provider.SubmitAsync(
+                    new CdnProviderRequest(
+                        CdnJobAction.Warmup,
+                        profile,
+                        credential,
+                        urls.Select(value => value.Url).ToArray()),
+                    cancellationToken);
+            }
+
+            stopwatch.Stop();
+            var success = providerResult.State is
+                CdnProviderOperationState.Accepted or CdnProviderOperationState.Completed;
+            var providerMessage = providerResult.ProviderTaskId.Length == 0
+                ? providerResult.Message
+                : $"{providerResult.Message} ProviderTaskId={providerResult.ProviderTaskId}";
+            return new CdnBatchResult
+            {
+                Success = success,
+                Profile = profile.Name,
+                Succeeded = success ? urls.Length : 0,
+                Failed = success ? 0 : urls.Length,
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
+                Items = urls.Select(value => new CdnItemResult
+                {
+                    Path = value.Path,
+                    Url = value.Url.AbsoluteUri,
+                    Success = success,
+                    StatusCode = providerResult.StatusCode,
+                    ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
+                    Message = providerMessage
+                }).ToList()
+            };
+        }
+
         var items = new List<CdnItemResult>();
         foreach (var path in paths)
         {
@@ -583,10 +641,10 @@ internal static class AutomationCommands
         };
     }
 
-    private static async Task<(CdnProfile Profile, CdnCredential? Credential)> ResolveCdnAsync(
+    private static async Task<(CdnProfile Profile, CredentialProfile? Credential)> ResolveCdnAsync(
         string nameOrId,
         ICdnConfigurationStore configurationStore,
-        ICdnCredentialStore credentialStore,
+        ICredentialStore credentialStore,
         CancellationToken cancellationToken)
     {
         var configuration = await configurationStore.LoadAsync(cancellationToken);

@@ -8,7 +8,7 @@ internal sealed class ConnectionExportOptionsDialog : Form
     private readonly CheckBox _includeCredentials = new()
     {
         Name = "IncludeStoredCredentialsCheckBox",
-        Text = "包含已保存凭据（S3 密钥、AssumeRole External ID 及 CDN Token/Header 密钥）",
+        Text = "包含所选配置引用的统一凭据",
         AutoSize = true
     };
     private readonly TextBox _password = new() { UseSystemPasswordChar = true, Dock = DockStyle.Fill };
@@ -37,9 +37,8 @@ internal sealed class ConnectionExportOptionsDialog : Form
 
     public ConnectionExportOptionsDialog(
         int profileCount,
-        int profilesWithCredentials,
         int cdnProfileCount = 0,
-        int cdnCredentials = 0)
+        int credentialCount = 0)
     {
         Text = "导出连接";
         StartPosition = FormStartPosition.CenterParent;
@@ -72,12 +71,12 @@ internal sealed class ConnectionExportOptionsDialog : Form
             ForeColor = SystemColors.GrayText
         };
         _includeCredentials.Margin = new Padding(0, 0, 0, 6);
-        _includeCredentials.Enabled = profilesWithCredentials + cdnCredentials > 0;
-        var credentialCount = new Label
+        _includeCredentials.Enabled = credentialCount > 0;
+        var credentialSummary = new Label
         {
-            Text = profilesWithCredentials + cdnCredentials > 0
-                ? $"可迁移凭据：S3 连接 {profilesWithCredentials} 个，CDN 凭据 {cdnCredentials} 个。勾选后整包会使用密码加密。"
-                : "所选内容没有可迁移的已保存密钥；AWS 外部来源只导出非敏感引用，CDN 认证引用会移除。",
+            Text = credentialCount > 0
+                ? $"可迁移统一凭据：{credentialCount} 个。共享凭据只导出一次；勾选后整包会使用密码加密。"
+                : "所选内容没有可迁移的已保存凭据；未携带凭据的引用会在导出包中移除。",
             AutoSize = true,
             MaximumSize = new Size(540, 0),
             Dock = DockStyle.Fill,
@@ -135,8 +134,8 @@ internal sealed class ConnectionExportOptionsDialog : Form
         layout.SetColumnSpan(explanation, 2);
         layout.Controls.Add(_includeCredentials, 0, 2);
         layout.SetColumnSpan(_includeCredentials, 2);
-        layout.Controls.Add(credentialCount, 0, 3);
-        layout.SetColumnSpan(credentialCount, 2);
+        layout.Controls.Add(credentialSummary, 0, 3);
+        layout.SetColumnSpan(credentialSummary, 2);
         layout.Controls.Add(_passwordLabel, 0, 4);
         layout.Controls.Add(_password, 1, 4);
         layout.Controls.Add(_confirmationLabel, 0, 5);
@@ -310,16 +309,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
         Name = "ConnectionImportTabs",
         Dock = DockStyle.Fill
     };
-    private readonly CheckBox _importStorageCredentials = new()
+    private readonly CheckBox _importCredentials = new()
     {
-        Name = "ImportStorageCredentialsCheckBox",
-        Text = "导入对象存储凭据",
-        AutoSize = true
-    };
-    private readonly CheckBox _importCdnCredentials = new()
-    {
-        Name = "ImportCdnCredentialsCheckBox",
-        Text = "导入 CDN Token/Header 凭据",
+        Name = "ImportUnifiedCredentialsCheckBox",
+        Text = "导入所选对象存储连接与 CDN 配置引用的统一凭据",
         AutoSize = true
     };
     private readonly ComboBox _conflictStrategy = new()
@@ -361,11 +354,8 @@ internal sealed class ConnectionImportPreviewDialog : Form
         .Select(item => (CdnProfile)item.Tag!)
         .ToArray();
 
-    public bool ImportStorageCredentials =>
-        _importStorageCredentials.Enabled && _importStorageCredentials.Checked;
-
-    public bool ImportCdnCredentials =>
-        _importCdnCredentials.Enabled && _importCdnCredentials.Checked;
+    public bool ImportCredentials =>
+        _importCredentials.Enabled && _importCredentials.Checked;
 
     public ConnectionImportConflictStrategy ConflictStrategy =>
         ((ConflictOption)_conflictStrategy.SelectedItem!).Strategy;
@@ -376,7 +366,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
     private readonly ConnectionArchivePackage _package;
     private readonly IReadOnlyCollection<ConnectionProfile> _existingProfiles;
     private readonly CdnConfiguration _existingCdnConfiguration;
-    private readonly IReadOnlyCollection<CdnCredential> _existingCdnCredentials;
+    private readonly IReadOnlyCollection<CredentialProfile> _existingCredentials;
     private readonly ConnectionArchiveService _archiveService;
     private ConnectionArchiveImportPreview _preview;
 
@@ -384,19 +374,19 @@ internal sealed class ConnectionImportPreviewDialog : Form
         ConnectionArchivePackage package,
         IReadOnlyCollection<ConnectionProfile> existingProfiles,
         CdnConfiguration? existingCdnConfiguration = null,
-        IReadOnlyCollection<CdnCredential>? existingCdnCredentials = null,
+        IReadOnlyCollection<CredentialProfile>? existingCredentials = null,
         ConnectionArchiveService? archiveService = null,
         IReadOnlyCollection<ConnectionGroup>? groups = null)
     {
         _package = package;
         _existingProfiles = existingProfiles;
         _existingCdnConfiguration = existingCdnConfiguration ?? CdnConfiguration.Empty;
-        _existingCdnCredentials = existingCdnCredentials ?? [];
+        _existingCredentials = existingCredentials ?? [];
         _archiveService = archiveService ?? new ConnectionArchiveService();
         _preview = _archiveService.PreviewPackage(
             _existingProfiles,
             _existingCdnConfiguration,
-            _existingCdnCredentials,
+            _existingCredentials,
             _package);
         Name = nameof(ConnectionImportPreviewDialog);
         Text = "预览导入连接";
@@ -453,22 +443,13 @@ internal sealed class ConnectionImportPreviewDialog : Form
             _cdnProfiles.Items.Add(item);
         }
 
-        var storageCredentialCount = package.Profiles.Count(profile =>
-            profile.HasStoredCredentials ||
-            profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
-            !string.IsNullOrWhiteSpace(profile.AwsExternalId));
-        _importStorageCredentials.Enabled = package.ContainsCredentials && storageCredentialCount > 0;
-        _importStorageCredentials.Checked = false;
-        _importStorageCredentials.Text = _importStorageCredentials.Enabled
-            ? $"导入对象存储凭据（{storageCredentialCount} 个连接）"
-            : "对象存储：没有可迁移的已保存密钥";
-        _importStorageCredentials.MaximumSize = new Size(760, 0);
-        _importCdnCredentials.Enabled = package.ContainsCredentials && package.ImportedCdnCredentials.Count > 0;
-        _importCdnCredentials.Checked = false;
-        _importCdnCredentials.Text = _importCdnCredentials.Enabled
-            ? $"导入 CDN Token/Header 凭据（{package.ImportedCdnCredentials.Count} 个）"
-            : "CDN：没有可迁移的 Token/Header 凭据";
-        _importCdnCredentials.MaximumSize = new Size(760, 0);
+        var credentialCount = package.ImportedCredentials.Count;
+        _importCredentials.Enabled = package.ContainsCredentials && credentialCount > 0;
+        _importCredentials.Checked = false;
+        _importCredentials.Text = _importCredentials.Enabled
+            ? $"导入所选配置引用的统一凭据（共 {credentialCount} 个；共享凭据只导入一次）"
+            : "连接包没有可迁移的统一凭据";
+        _importCredentials.MaximumSize = new Size(760, 0);
         _conflictStrategy.Items.AddRange([
             new ConflictOption("自动重命名", ConnectionImportConflictStrategy.Rename),
             new ConflictOption("覆盖同名连接", ConnectionImportConflictStrategy.Replace),
@@ -535,8 +516,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
             Margin = new Padding(8, 0, 0, 0)
         };
         _selectionSummary.Margin = new Padding(12, 8, 0, 0);
-        _importStorageCredentials.Margin = new Padding(0, 0, 18, 0);
-        _importCdnCredentials.Margin = new Padding(0);
+        _importCredentials.Margin = new Padding(0);
         _dependencySummary.Margin = new Padding(0, 6, 0, 0);
         var conflictLabel = new Label
         {
@@ -607,8 +587,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
             WrapContents = true,
             Margin = new Padding(0, 10, 0, 0)
         };
-        credentialOptions.Controls.Add(_importStorageCredentials);
-        credentialOptions.Controls.Add(_importCdnCredentials);
+        credentialOptions.Controls.Add(_importCredentials);
 
         var storageTab = new TabPage("对象存储连接") { Name = "StorageImportTab" };
         storageTab.Controls.Add(_profiles);
@@ -660,8 +639,7 @@ internal sealed class ConnectionImportPreviewDialog : Form
         _profiles.ItemChecked += (_, _) => BeginInvoke(UpdateSelectionSummary);
         _cdnProfiles.ItemChecked += (_, _) => BeginInvoke(UpdateSelectionSummary);
         _tabs.SelectedIndexChanged += (_, _) => UpdateSelectionSummary();
-        _importStorageCredentials.CheckedChanged += (_, _) => RefreshPreviewStatuses();
-        _importCdnCredentials.CheckedChanged += (_, _) => RefreshPreviewStatuses();
+        _importCredentials.CheckedChanged += (_, _) => RefreshPreviewStatuses();
         _import.Click += (_, _) =>
         {
             if (SelectedProfiles.Count == 0 && SelectedCdnProfiles.Count == 0) return;
@@ -693,10 +671,10 @@ internal sealed class ConnectionImportPreviewDialog : Form
         _preview = _archiveService.PreviewPackage(
             _existingProfiles,
             _existingCdnConfiguration,
-            _existingCdnCredentials,
+            _existingCredentials,
             _package,
-            ImportStorageCredentials,
-            ImportCdnCredentials);
+            ImportCredentials,
+            ImportCredentials);
         foreach (ListViewItem item in _profiles.Items)
         {
             var profile = (ConnectionProfile)item.Tag!;

@@ -90,10 +90,11 @@ public sealed class CdnDialogLayoutTests
                 Name = "site-storage",
                 Endpoint = "https://s3.example.com"
             };
-            var credential = new CdnCredential
+            var credential = new CredentialProfile
             {
                 Name = "purge-token",
-                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Provider = CredentialProviderKind.GenericHttp,
+                Kind = CredentialKind.BearerToken,
                 Secret = "test-only"
             };
             var profile = new CdnProfile
@@ -131,7 +132,8 @@ public sealed class CdnDialogLayoutTests
             var certificate = FindButton(dialog, "CheckCdnCertificateButton");
             AssertButtonIsReadable(dialog, certificate);
             Assert.True(certificate.Enabled);
-            AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnCredentialButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "AddCredentialButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CheckCredentialPermissionsButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnBindingButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnBindingButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "CheckCdnBindingsButton"));
@@ -188,6 +190,47 @@ public sealed class CdnDialogLayoutTests
             Assert.Contains("到期时间", details.Text, StringComparison.Ordinal);
             Assert.Contains("剩余天数：12", details.Text, StringComparison.Ordinal);
             Assert.Contains("吊销状态：未检查", details.Text, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void CredentialPermissionResultKeepsSafetyExplanationAndActionsReadableAtLargeText()
+    {
+        RunSta(() =>
+        {
+            var credential = new CredentialProfile
+            {
+                Name = "aliyun-release",
+                Provider = CredentialProviderKind.AlibabaCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "test-access",
+                Secret = "test-secret"
+            };
+            var report = new PermissionCheckReport(
+            [
+                new PermissionCheckResult(credential.Id,
+                [
+                    new PermissionCheck("storage", "ListBucket", PermissionCheckState.Passed, "可列举。"),
+                    new PermissionCheck("storage", "PutObject", PermissionCheckState.Indeterminate, "未执行写入探针。")
+                ])
+                {
+                    TargetScope = "s3://release/assets/",
+                    CheckedAtUtc = DateTimeOffset.Parse("2026-08-17T08:00:00Z")
+                }
+            ]);
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            using var dialog = new CredentialPermissionResultDialog(credential, report);
+            dialog.Font = largerFont;
+            dialog.Size = dialog.MinimumSize;
+            PerformLayout(dialog);
+
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCredentialPermissionResultButton"));
+            AssertButtonIsReadable(dialog, FindButton(dialog, "CloseCredentialPermissionResultButton"));
+            var details = Assert.IsType<TextBox>(Assert.Single(
+                dialog.Controls.Find("CredentialPermissionDetailsTextBox", searchAllChildren: true)));
+            Assert.Contains("ListBucket", details.Text, StringComparison.Ordinal);
+            Assert.Contains("PutObject", details.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("test-secret", details.Text, StringComparison.Ordinal);
         });
     }
 
@@ -250,6 +293,76 @@ public sealed class CdnDialogLayoutTests
 
             Assert.Equal(DialogResult.OK, dialog.DialogResult);
             Assert.Equal("发布域名，证书由平台团队维护。", dialog.Profile.Notes);
+        });
+    }
+
+    [Fact]
+    public void CredentialCenterCanOpenDirectlyAndEditorKeepsActionsReadable()
+    {
+        RunSta(() =>
+        {
+            var credential = new CredentialProfile
+            {
+                Name = "aliyun-release",
+                Provider = CredentialProviderKind.AlibabaCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "test-access",
+                Secret = "test-secret"
+            };
+            using (var center = new CdnConfigurationDialog(
+                       [], CdnConfiguration.Empty, [credential], openCredentialCenter: true))
+            {
+                var tabs = Assert.IsType<TabControl>(Assert.Single(
+                    center.Controls.Find("CdnConfigurationTabs", searchAllChildren: true)));
+                Assert.Equal("凭据中心", tabs.SelectedTab?.Text);
+            }
+
+            using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
+            using var editor = new CredentialEditorDialog(credential);
+            editor.Font = largerFont;
+            editor.Size = editor.MinimumSize;
+            PerformLayout(editor);
+            AssertButtonIsReadable(editor, FindButton(editor, "SaveCredentialButton"));
+            AssertButtonIsReadable(editor, FindButton(editor, "CancelCredentialButton"));
+            var secret = Assert.IsType<TextBox>(Assert.Single(
+                editor.Controls.Find("CredentialSecret", searchAllChildren: true)));
+            Assert.True(secret.UseSystemPasswordChar);
+        });
+    }
+
+    [Fact]
+    public void AliyunProfileUsesTypedCredentialAndDropsGenericPurgeFields()
+    {
+        RunSta(() =>
+        {
+            var credential = new CredentialProfile
+            {
+                Name = "aliyun-release",
+                Provider = CredentialProviderKind.AlibabaCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "test-access",
+                Secret = "test-secret"
+            };
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com/",
+                PurgeEndpointTemplate = "https://legacy.example/purge?url={url}",
+                PurgeBodyTemplate = "{url}"
+            };
+            using var editor = new CdnProfileEditorDialog(profile, [credential]);
+            editor.Show();
+            SelectByText(Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnProfileProvider", searchAllChildren: true))), "阿里云 CDN");
+            SelectByTextContains(Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnProfileCredential", searchAllChildren: true))), credential.Name);
+            FindButton(editor, "SaveCdnProfileButton").PerformClick();
+
+            Assert.Equal(DialogResult.OK, editor.DialogResult);
+            Assert.Equal(CdnProfile.AlibabaCloudProviderId, editor.Profile.ProviderId);
+            Assert.Equal(credential.Id, editor.Profile.CredentialId);
+            Assert.Empty(editor.Profile.PurgeEndpointTemplate);
+            Assert.Empty(editor.Profile.PurgeBodyTemplate);
         });
     }
 
@@ -500,6 +613,32 @@ public sealed class CdnDialogLayoutTests
         row.Selected = true;
     }
 
+    private static void SelectByText(ComboBox comboBox, string text)
+    {
+        for (var index = 0; index < comboBox.Items.Count; index++)
+        {
+            if (string.Equals(comboBox.Items[index]?.ToString(), text, StringComparison.Ordinal))
+            {
+                comboBox.SelectedIndex = index;
+                return;
+            }
+        }
+        throw new Xunit.Sdk.XunitException($"ComboBox option was not found: {text}");
+    }
+
+    private static void SelectByTextContains(ComboBox comboBox, string text)
+    {
+        for (var index = 0; index < comboBox.Items.Count; index++)
+        {
+            if (comboBox.Items[index]?.ToString()?.Contains(text, StringComparison.Ordinal) == true)
+            {
+                comboBox.SelectedIndex = index;
+                return;
+            }
+        }
+        throw new Xunit.Sdk.XunitException($"ComboBox option containing text was not found: {text}");
+    }
+
     private static void WaitUntil(Func<bool> condition, TimeSpan? timeout = null)
     {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(3));
@@ -568,7 +707,7 @@ public sealed class CdnDialogLayoutTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) =>
@@ -587,14 +726,14 @@ public sealed class CdnDialogLayoutTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             Task.FromResult(new CdnOperationResult(true, 200, TimeSpan.Zero, 0, "ok"));
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             Task.FromResult(new CdnOperationResult(true, 200, TimeSpan.Zero, 0, "ok"));
@@ -606,7 +745,7 @@ public sealed class CdnDialogLayoutTests
 
         public async Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken)
@@ -618,14 +757,14 @@ public sealed class CdnDialogLayoutTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();

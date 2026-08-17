@@ -224,10 +224,11 @@ public sealed class CdnInfrastructureTests
                     RequestMessage = request
                 };
             }));
-        var credential = new CdnCredential
+        var credential = new CredentialProfile
         {
             Name = "download token",
-            AuthenticationType = CdnAuthenticationType.BearerToken,
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.BearerToken,
             Secret = "secret"
         };
         await using var destination = new MemoryStream();
@@ -245,6 +246,42 @@ public sealed class CdnInfrastructureTests
         Assert.Equal(HttpMethod.Get, captured?.Method);
         Assert.Null(captured?.Range);
         Assert.Equal("Bearer secret", captured?.Authorization);
+    }
+
+    [Fact]
+    public async Task AlibabaControlPlaneCredentialIsNeverSentToEdgeDownload()
+    {
+        CapturedRequest? captured = null;
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                captured = CapturedRequest.From(request);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("payload"),
+                    RequestMessage = request
+                };
+            }));
+        var profile = Profile() with { ProviderId = CdnProfile.AlibabaCloudProviderId };
+        var credential = new CredentialProfile
+        {
+            Name = "aliyun control plane",
+            Provider = CredentialProviderKind.AlibabaCloud,
+            Kind = CredentialKind.AccessKeyPair,
+            AccessKeyId = "test-access-key",
+            Secret = "test-secret"
+        };
+        await using var destination = new MemoryStream();
+
+        var result = await service.DownloadAsync(
+            profile,
+            credential,
+            new Uri("https://cdn.example/assets/file.txt"),
+            destination,
+            CancellationToken.None);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Null(captured?.Authorization);
     }
 
     [Fact]
@@ -452,10 +489,11 @@ public sealed class CdnInfrastructureTests
                 "https://api.example/purge?target={url}",
             PurgeBodyTemplate = "{\"path\":\"{path}\"}"
         };
-        var credential = new CdnCredential
+        var credential = new CredentialProfile
         {
             Name = "token",
-            AuthenticationType = CdnAuthenticationType.BearerToken,
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.BearerToken,
             Secret = "secret"
         };
 

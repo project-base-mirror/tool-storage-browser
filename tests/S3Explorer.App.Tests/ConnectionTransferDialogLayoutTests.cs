@@ -57,13 +57,13 @@ public sealed class ConnectionTransferDialogLayoutTests
     {
         RunSta(() =>
         {
-            using var dialog = new ConnectionExportOptionsDialog(profileCount: 2, profilesWithCredentials: 0);
+            using var dialog = new ConnectionExportOptionsDialog(profileCount: 2, credentialCount: 0);
             var include = Assert.IsType<CheckBox>(Assert.Single(
                 dialog.Controls.Find("IncludeStoredCredentialsCheckBox", searchAllChildren: true)));
 
             Assert.False(include.Enabled);
             Assert.False(include.Checked);
-            Assert.Contains("已保存", include.Text, StringComparison.Ordinal);
+            Assert.Contains("统一凭据", include.Text, StringComparison.Ordinal);
         });
     }
 
@@ -74,14 +74,13 @@ public sealed class ConnectionTransferDialogLayoutTests
         {
             using var dialog = new ConnectionExportOptionsDialog(
                 profileCount: 1,
-                profilesWithCredentials: 0,
                 cdnProfileCount: 1,
-                cdnCredentials: 1);
+                credentialCount: 1);
             var include = Assert.IsType<CheckBox>(Assert.Single(
                 dialog.Controls.Find("IncludeStoredCredentialsCheckBox", searchAllChildren: true)));
 
             Assert.True(include.Enabled);
-            Assert.Contains("CDN", include.Text, StringComparison.Ordinal);
+            Assert.Contains("统一凭据", include.Text, StringComparison.Ordinal);
         });
     }
 
@@ -93,9 +92,8 @@ public sealed class ConnectionTransferDialogLayoutTests
             using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
             using var dialog = new ConnectionExportOptionsDialog(
                 profileCount: 5,
-                profilesWithCredentials: 5,
                 cdnProfileCount: 4,
-                cdnCredentials: 2);
+                credentialCount: 7);
             dialog.Font = largerFont;
             dialog.Size = dialog.MinimumSize;
             PerformLayout(dialog);
@@ -119,10 +117,11 @@ public sealed class ConnectionTransferDialogLayoutTests
                 Name = "example",
                 Endpoint = "https://s3.amazonaws.com"
             };
-            var credential = new CdnCredential
+            var credential = new CredentialProfile
             {
                 Name = "cdn-token",
-                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Provider = CredentialProviderKind.GenericHttp,
+                Kind = CredentialKind.BearerToken,
                 Secret = "test-only"
             };
             var cdn = new CdnProfile
@@ -152,7 +151,7 @@ public sealed class ConnectionTransferDialogLayoutTests
                 .OfType<Control>()
                 .SelectMany(Flatten)
                 .OfType<CheckBox>()
-                .Single(checkBox => checkBox.Text.Contains("Token/Header", StringComparison.Ordinal));
+                .Single(checkBox => checkBox.Name == "ImportUnifiedCredentialsCheckBox");
 
             Assert.Contains("1 个 CDN 配置", summary.Text, StringComparison.Ordinal);
             Assert.Contains("1 个关联", summary.Text, StringComparison.Ordinal);
@@ -269,6 +268,13 @@ public sealed class ConnectionTransferDialogLayoutTests
     {
         RunSta(() =>
         {
+            var externalIdCredential = new CredentialProfile
+            {
+                Name = "Audit External ID",
+                Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.SecretValue,
+                Secret = "external-secret"
+            };
             var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
             {
                 Name = "Audit role",
@@ -276,12 +282,14 @@ public sealed class ConnectionTransferDialogLayoutTests
                 AwsSourceProfileName = "bootstrap",
                 AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
                 AwsRoleSessionName = "s3explorer-audit",
-                AwsExternalId = "external-secret"
+                AwsExternalIdCredentialId = externalIdCredential.Id,
+                AwsExternalId = externalIdCredential.Secret
             };
-            var package = new ConnectionArchivePackage([profile], true, DateTimeOffset.UtcNow);
+            var package = new ConnectionArchivePackage(
+                [profile], true, DateTimeOffset.UtcNow, Credentials: [externalIdCredential]);
             using var dialog = new ConnectionImportPreviewDialog(package, []);
             var importCredentials = Assert.IsType<CheckBox>(Assert.Single(
-                dialog.Controls.Find("ImportStorageCredentialsCheckBox", searchAllChildren: true)));
+                dialog.Controls.Find("ImportUnifiedCredentialsCheckBox", searchAllChildren: true)));
 
             Assert.True(importCredentials.Enabled);
             Assert.False(importCredentials.Checked);

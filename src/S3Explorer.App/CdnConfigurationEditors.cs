@@ -185,7 +185,13 @@ internal sealed class CdnProfileEditorDialog : Form
     }
 
     private readonly Guid _id;
+    private readonly IReadOnlyList<CredentialProfile> _credentials;
     private readonly TextBox _name = new() { Name = "CdnProfileName" };
+    private readonly ComboBox _provider = new()
+    {
+        Name = "CdnProfileProvider",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
     private readonly TextBox _baseUrl = new() { Name = "CdnProfileBaseUrl" };
     private readonly TextBox _notes = new()
     {
@@ -254,11 +260,12 @@ internal sealed class CdnProfileEditorDialog : Form
 
     public CdnProfileEditorDialog(
         CdnProfile? profile,
-        IReadOnlyList<CdnCredential> credentials,
+        IReadOnlyList<CredentialProfile> credentials,
         bool copying = false)
     {
         Profile = profile ?? new CdnProfile();
         _id = Profile.Id;
+        _credentials = credentials;
         Name = "CdnProfileEditorDialog";
         Text = profile is null ? "新增 CDN 配置" : copying ? "复制 CDN 配置" : "编辑 CDN 配置";
         StartPosition = FormStartPosition.CenterParent;
@@ -268,9 +275,10 @@ internal sealed class CdnProfileEditorDialog : Form
         AutoScaleMode = AutoScaleMode.Font;
         Icon = UiIcons.CreateApplicationIcon();
 
-        _credential.Items.Add(new Choice<Guid?>(null, "(无独立凭据)"));
-        foreach (var item in credentials.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
-            _credential.Items.Add(new Choice<Guid?>(item.Id, item.Name));
+        _provider.Items.AddRange([
+            new Choice<string>(CdnProfile.GenericHttpProviderId, "通用 HTTP"),
+            new Choice<string>(CdnProfile.AlibabaCloudProviderId, "阿里云 CDN")
+        ]);
         _warmupMode.Items.AddRange([
             new Choice<CdnWarmupMode>(CdnWarmupMode.Head, "HEAD（轻量，但部分 CDN 与 GET 行为不同）"),
             new Choice<CdnWarmupMode>(CdnWarmupMode.RangeGet, "Range GET（推荐）"),
@@ -280,9 +288,10 @@ internal sealed class CdnProfileEditorDialog : Form
 
         var fields = EditorLayout.Fields();
         EditorLayout.AddField(fields, "名称：", _name);
+        EditorLayout.AddField(fields, "Provider：", _provider);
         EditorLayout.AddField(fields, "CDN 基础 URL：", _baseUrl);
         EditorLayout.AddField(fields, "备注：", _notes);
-        EditorLayout.AddField(fields, "独立凭据：", _credential);
+        EditorLayout.AddField(fields, "关联凭据：", _credential);
         EditorLayout.AddField(fields, "预热模式：", _warmupMode);
         EditorLayout.AddField(fields, "Range 大小 (MiB)：", _rangeMiB);
         EditorLayout.AddField(fields, "请求超时 (秒)：", _timeout);
@@ -310,6 +319,11 @@ internal sealed class CdnProfileEditorDialog : Form
         Controls.Add(EditorLayout.Root(fields, _save, _cancel));
         _save.Text = "确定";
         _save.Click += (_, _) => Save();
+        _provider.SelectedIndexChanged += (_, _) =>
+        {
+            PopulateCredentials(Selected(_provider, CdnProfile.GenericHttpProviderId), null);
+            UpdateProviderFields();
+        };
         _warmupMode.SelectedIndexChanged += (_, _) =>
             _rangeMiB.Enabled = Selected(_warmupMode, CdnWarmupMode.RangeGet) == CdnWarmupMode.RangeGet;
         AcceptButton = _save;
@@ -320,9 +334,10 @@ internal sealed class CdnProfileEditorDialog : Form
     private void LoadProfile(CdnProfile profile)
     {
         _name.Text = profile.Name;
+        SelectValue(_provider, profile.ProviderId);
+        PopulateCredentials(profile.ProviderId, profile.CredentialId);
         _baseUrl.Text = profile.BaseUrl;
         _notes.Text = profile.Notes;
-        SelectValue(_credential, profile.CredentialId);
         SelectValue(_warmupMode, profile.WarmupMode);
         _rangeMiB.Value = Math.Clamp(
             (decimal)Math.Ceiling(profile.WarmupRangeBytes / 1024d / 1024d),
@@ -336,24 +351,30 @@ internal sealed class CdnProfileEditorDialog : Form
         if (_purgeMethod.SelectedIndex < 0) _purgeMethod.SelectedItem = "POST";
         _purgeBody.Text = profile.PurgeBodyTemplate;
         _purgeContentType.Text = profile.PurgeContentType;
+        UpdateProviderFields();
     }
 
     private void Save()
     {
+        var providerId = Selected(_provider, CdnProfile.GenericHttpProviderId);
+        var genericHttpProvider = string.Equals(
+            providerId,
+            CdnProfile.GenericHttpProviderId,
+            StringComparison.OrdinalIgnoreCase);
         var candidate = new CdnProfile
         {
             Id = _id,
             Name = _name.Text.Trim(),
             Notes = _notes.Text.Trim(),
-            ProviderId = CdnProfile.GenericHttpProviderId,
+            ProviderId = providerId,
             BaseUrl = _baseUrl.Text.Trim(),
             CredentialId = Selected(_credential, (Guid?)null),
             WarmupMode = Selected(_warmupMode, CdnWarmupMode.RangeGet),
             WarmupRangeBytes = decimal.ToInt64(_rangeMiB.Value) * 1024L * 1024L,
-            PurgeEndpointTemplate = _purgeEndpoint.Text.Trim(),
-            PurgeHttpMethod = _purgeMethod.SelectedItem?.ToString() ?? "POST",
-            PurgeBodyTemplate = _purgeBody.Text,
-            PurgeContentType = string.IsNullOrWhiteSpace(_purgeContentType.Text)
+            PurgeEndpointTemplate = genericHttpProvider ? _purgeEndpoint.Text.Trim() : string.Empty,
+            PurgeHttpMethod = genericHttpProvider ? _purgeMethod.SelectedItem?.ToString() ?? "POST" : "POST",
+            PurgeBodyTemplate = genericHttpProvider ? _purgeBody.Text : string.Empty,
+            PurgeContentType = !genericHttpProvider || string.IsNullOrWhiteSpace(_purgeContentType.Text)
                 ? "application/json"
                 : _purgeContentType.Text.Trim(),
             TimeoutSeconds = decimal.ToInt32(_timeout.Value),
@@ -366,7 +387,15 @@ internal sealed class CdnProfileEditorDialog : Form
                 ? Profile.LastCertificateCheck
                 : null
         };
-        var errors = CdnConfigurationValidator.Validate(new CdnConfiguration([candidate], []));
+        var errors = CdnConfigurationValidator.Validate(new CdnConfiguration([candidate], []), _credentials);
+        var selectedCredential = candidate.CredentialId is Guid credentialId
+            ? _credentials.FirstOrDefault(value => value.Id == credentialId)
+            : null;
+        if (string.Equals(candidate.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
+            selectedCredential is null)
+            errors = errors.Append("阿里云 CDN 必须选择 Alibaba Cloud AccessKey 凭据。").ToArray();
+        else if (selectedCredential is not null && !selectedCredential.IsCompatibleWith(candidate.ProviderId))
+            errors = errors.Append("所选凭据与 CDN Provider 不兼容。").ToArray();
         if (errors.Count > 0)
         {
             MessageBox.Show(this, string.Join(Environment.NewLine, errors), "配置无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -392,9 +421,33 @@ internal sealed class CdnProfileEditorDialog : Form
         }
         combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
     }
+
+    private void PopulateCredentials(string providerId, Guid? selectedId)
+    {
+        _credential.Items.Clear();
+        if (string.Equals(providerId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase))
+            _credential.Items.Add(new Choice<Guid?>(null, "(无需认证)"));
+        foreach (var item in _credentials
+                     .Where(value => value.IsCompatibleWith(providerId))
+                     .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+            _credential.Items.Add(new Choice<Guid?>(item.Id, $"{item.Name} · {item.Fingerprint}"));
+        SelectValue(_credential, selectedId);
+    }
+
+    private void UpdateProviderFields()
+    {
+        var generic = string.Equals(
+            Selected(_provider, CdnProfile.GenericHttpProviderId),
+            CdnProfile.GenericHttpProviderId,
+            StringComparison.OrdinalIgnoreCase);
+        _purgeEndpoint.Enabled = generic;
+        _purgeMethod.Enabled = generic;
+        _purgeBody.Enabled = generic;
+        _purgeContentType.Enabled = generic;
+    }
 }
 
-internal sealed class CdnCredentialEditorDialog : Form
+internal sealed class CredentialEditorDialog : Form
 {
     private sealed record Choice<T>(T Value, string Text)
     {
@@ -402,35 +455,50 @@ internal sealed class CdnCredentialEditorDialog : Form
     }
 
     private readonly Guid _id;
-    private readonly TextBox _name = new() { Name = "CdnCredentialName" };
+    private readonly TextBox _name = new() { Name = "CredentialName" };
+    private readonly ComboBox _provider = new()
+    {
+        Name = "CredentialProvider",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
     private readonly ComboBox _type = new()
     {
         Name = "CdnCredentialType",
         DropDownStyle = ComboBoxStyle.DropDownList
     };
+    private readonly TextBox _accessKeyId = new() { Name = "CredentialAccessKeyId" };
     private readonly TextBox _header = new() { Name = "CdnCredentialHeader" };
     private readonly TextBox _secret = new()
     {
-        Name = "CdnCredentialSecret",
+        Name = "CredentialSecret",
+        UseSystemPasswordChar = true
+    };
+    private readonly TextBox _sessionToken = new()
+    {
+        Name = "CredentialSessionToken",
         UseSystemPasswordChar = true
     };
     private readonly CheckBox _showSecret = new()
     {
-        Name = "ShowCdnCredentialSecret",
+        Name = "ShowCredentialSecret",
         Text = "显示秘密值",
         AutoSize = true
     };
-    private readonly Button _save = EditorLayout.SaveButton("SaveCdnCredentialButton");
-    private readonly Button _cancel = EditorLayout.CancelButton("CancelCdnCredentialButton");
+    private readonly Button _save = EditorLayout.SaveButton("SaveCredentialButton");
+    private readonly Button _cancel = EditorLayout.CancelButton("CancelCredentialButton");
 
-    public CdnCredential Credential { get; private set; }
+    public CredentialProfile Credential { get; private set; }
 
-    public CdnCredentialEditorDialog(CdnCredential? credential)
+    public CredentialEditorDialog(CredentialProfile? credential)
     {
-        Credential = credential ?? new CdnCredential();
+        Credential = credential ?? new CredentialProfile
+        {
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.BearerToken
+        };
         _id = Credential.Id;
-        Name = "CdnCredentialEditorDialog";
-        Text = credential is null ? "新增 CDN 独立凭据" : "编辑 CDN 独立凭据";
+        Name = "CredentialEditorDialog";
+        Text = credential is null ? "新增统一凭据" : "编辑统一凭据";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(640, 380);
         MinimumSize = new Size(560, 340);
@@ -438,21 +506,21 @@ internal sealed class CdnCredentialEditorDialog : Form
         AutoScaleMode = AutoScaleMode.Font;
         Icon = UiIcons.CreateApplicationIcon();
 
-        _type.Items.AddRange([
-            new Choice<CdnAuthenticationType>(CdnAuthenticationType.None, "无认证"),
-            new Choice<CdnAuthenticationType>(CdnAuthenticationType.BearerToken, "Bearer Token"),
-            new Choice<CdnAuthenticationType>(CdnAuthenticationType.CustomHeader, "自定义 Header")
-        ]);
+        foreach (var provider in Enum.GetValues<CredentialProviderKind>())
+            _provider.Items.Add(new Choice<CredentialProviderKind>(provider, ProviderText(provider)));
 
         var fields = EditorLayout.Fields();
         EditorLayout.AddField(fields, "名称：", _name);
-        EditorLayout.AddField(fields, "认证类型：", _type);
+        EditorLayout.AddField(fields, "提供方：", _provider);
+        EditorLayout.AddField(fields, "凭据类型：", _type);
+        EditorLayout.AddField(fields, "Access Key ID：", _accessKeyId);
         EditorLayout.AddField(fields, "Header 名称：", _header);
         EditorLayout.AddField(fields, "秘密值：", _secret);
+        EditorLayout.AddField(fields, "Session Token：", _sessionToken);
         EditorLayout.AddWide(fields, _showSecret);
         EditorLayout.AddWide(fields, new Label
         {
-            Text = "秘密值与 S3 Access Key/SecretKey 分开保存，并使用 Windows DPAPI CurrentUser 加密。",
+            Text = "对象存储与 CDN 共用同一个类型化凭据目录；配置只保存凭据引用，统一配置载荷使用 Windows DPAPI CurrentUser 加密。",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             MaximumSize = new Size(520, 0)
@@ -461,11 +529,19 @@ internal sealed class CdnCredentialEditorDialog : Form
         _save.Text = "确定";
 
         _name.Text = Credential.Name;
+        _accessKeyId.Text = Credential.AccessKeyId;
         _header.Text = Credential.HeaderName;
         _secret.Text = Credential.Secret;
-        SelectType(Credential.AuthenticationType);
+        _sessionToken.Text = Credential.SessionToken;
+        SelectChoice(_provider, Credential.Provider);
+        PopulateKinds(Credential.Kind);
+        _provider.SelectedIndexChanged += (_, _) => PopulateKinds(null);
         _type.SelectedIndexChanged += (_, _) => UpdateState();
-        _showSecret.CheckedChanged += (_, _) => _secret.UseSystemPasswordChar = !_showSecret.Checked;
+        _showSecret.CheckedChanged += (_, _) =>
+        {
+            _secret.UseSystemPasswordChar = !_showSecret.Checked;
+            _sessionToken.UseSystemPasswordChar = !_showSecret.Checked;
+        };
         _save.Click += (_, _) => Save();
         AcceptButton = _save;
         CancelButton = _cancel;
@@ -474,30 +550,41 @@ internal sealed class CdnCredentialEditorDialog : Form
 
     private void UpdateState()
     {
-        var type = _type.SelectedItem is Choice<CdnAuthenticationType> choice
+        var type = _type.SelectedItem is Choice<CredentialKind> choice
             ? choice.Value
-            : CdnAuthenticationType.None;
-        _header.Enabled = type == CdnAuthenticationType.CustomHeader;
-        _secret.Enabled = type != CdnAuthenticationType.None;
+            : CredentialKind.BearerToken;
+        _accessKeyId.Enabled = type == CredentialKind.AccessKeyPair;
+        _header.Enabled = type == CredentialKind.CustomHeader;
+        _sessionToken.Enabled = type == CredentialKind.AccessKeyPair;
+        _secret.Enabled = true;
     }
 
     private void Save()
     {
-        var type = _type.SelectedItem is Choice<CdnAuthenticationType> choice
+        var type = _type.SelectedItem is Choice<CredentialKind> choice
             ? choice.Value
-            : CdnAuthenticationType.None;
-        var candidate = new CdnCredential
+            : CredentialKind.BearerToken;
+        var provider = _provider.SelectedItem is Choice<CredentialProviderKind> providerChoice
+            ? providerChoice.Value
+            : CredentialProviderKind.GenericHttp;
+        var candidate = new CredentialProfile
         {
             Id = _id,
             Name = _name.Text.Trim(),
-            AuthenticationType = type,
-            HeaderName = type == CdnAuthenticationType.CustomHeader ? _header.Text.Trim() : string.Empty,
-            Secret = type == CdnAuthenticationType.None ? string.Empty : _secret.Text
+            Provider = provider,
+            Kind = type,
+            AccessKeyId = type == CredentialKind.AccessKeyPair ? _accessKeyId.Text.Trim() : string.Empty,
+            HeaderName = type == CredentialKind.CustomHeader ? _header.Text.Trim() : string.Empty,
+            Secret = _secret.Text,
+            SessionToken = type == CredentialKind.AccessKeyPair ? _sessionToken.Text : string.Empty
         };
-        var errors = CdnConfigurationValidator.Validate(CdnConfiguration.Empty, [candidate]);
-        if (errors.Count > 0)
+        try
         {
-            MessageBox.Show(this, string.Join(Environment.NewLine, errors), "凭据无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            candidate.Validate();
+        }
+        catch (ArgumentException exception)
+        {
+            MessageBox.Show(this, exception.Message, "凭据无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         Credential = candidate;
@@ -505,18 +592,61 @@ internal sealed class CdnCredentialEditorDialog : Form
         Close();
     }
 
-    private void SelectType(CdnAuthenticationType type)
+    private void PopulateKinds(CredentialKind? selected)
     {
-        for (var index = 0; index < _type.Items.Count; index++)
+        var provider = _provider.SelectedItem is Choice<CredentialProviderKind> choice
+            ? choice.Value
+            : CredentialProviderKind.GenericHttp;
+        CredentialKind[] kinds = provider switch
         {
-            if (_type.Items[index] is Choice<CdnAuthenticationType> choice && choice.Value == type)
+            CredentialProviderKind.GenericHttp =>
+                [CredentialKind.BearerToken, CredentialKind.CustomHeader],
+            CredentialProviderKind.AmazonWebServices =>
+                [CredentialKind.AccessKeyPair, CredentialKind.SecretValue],
+            _ => [CredentialKind.AccessKeyPair]
+        };
+        _type.Items.Clear();
+        foreach (var kind in kinds)
+            _type.Items.Add(new Choice<CredentialKind>(kind, KindText(kind)));
+        SelectChoice(_type, selected is CredentialKind value && kinds.Contains(value) ? value : kinds[0]);
+        UpdateState();
+    }
+
+    private static void SelectChoice<T>(ComboBox combo, T value)
+    {
+        for (var index = 0; index < combo.Items.Count; index++)
+        {
+            if (combo.Items[index] is Choice<T> choice && EqualityComparer<T>.Default.Equals(choice.Value, value))
             {
-                _type.SelectedIndex = index;
+                combo.SelectedIndex = index;
                 return;
             }
         }
-        _type.SelectedIndex = 0;
+        combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
     }
+
+    private static string KindText(CredentialKind kind) => kind switch
+    {
+        CredentialKind.AccessKeyPair => "Access Key / Secret Key",
+        CredentialKind.BearerToken => "Bearer Token",
+        CredentialKind.CustomHeader => "自定义 Header",
+        CredentialKind.SecretValue => "秘密值",
+        _ => kind.ToString()
+    };
+
+    private static string ProviderText(CredentialProviderKind provider) => provider switch
+    {
+        CredentialProviderKind.S3Compatible => "S3 Compatible",
+        CredentialProviderKind.AmazonWebServices => "Amazon Web Services",
+        CredentialProviderKind.AlibabaCloud => "Alibaba Cloud",
+        CredentialProviderKind.TencentCloud => "Tencent Cloud",
+        CredentialProviderKind.Cloudflare => "Cloudflare",
+        CredentialProviderKind.Backblaze => "Backblaze",
+        CredentialProviderKind.GoogleCloud => "Google Cloud",
+        CredentialProviderKind.Supabase => "Supabase",
+        CredentialProviderKind.GenericHttp => "通用 HTTP",
+        _ => provider.ToString()
+    };
 }
 
 internal sealed class CdnBindingEditorDialog : Form

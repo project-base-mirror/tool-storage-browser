@@ -79,17 +79,17 @@ public sealed class CdnJobInfrastructureTests
             BaseUrl = "https://cdn.example",
             CredentialId = credentialId
         };
-        var credential = new CdnCredential
+        var credential = new CredentialProfile
         {
             Id = credentialId,
             Name = "token",
-            AuthenticationType = CdnAuthenticationType.BearerToken,
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.BearerToken,
             Secret = "secret"
         };
         var provider = new RecordingProvider();
         var executor = new StoreBackedCdnJobExecutor(
-            new ConfigurationStore(new CdnConfiguration([profile], [])),
-            new CredentialStore([credential]),
+            new ConfigurationStore(new CdnConfiguration([profile], []), [credential]),
             [provider]);
         var job = new CdnJobRecord
         {
@@ -127,7 +127,7 @@ public sealed class CdnJobInfrastructureTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) =>
@@ -135,7 +135,7 @@ public sealed class CdnJobInfrastructureTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken)
         {
@@ -146,7 +146,7 @@ public sealed class CdnJobInfrastructureTests
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CdnCredential? credential,
+            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken)
         {
@@ -156,22 +156,33 @@ public sealed class CdnJobInfrastructureTests
         }
     }
 
-    private sealed class ConfigurationStore(CdnConfiguration configuration) : ICdnConfigurationStore
+    private sealed class ConfigurationStore(
+        CdnConfiguration cdnConfiguration,
+        IReadOnlyList<CredentialProfile> credentials) : IExplorerConfigurationStore
     {
-        public Task<CdnConfiguration> LoadAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(configuration);
-        public Task SaveAsync(CdnConfiguration value, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-    }
+        private ExplorerConfiguration _configuration = new(
+            ConnectionProfileConfiguration.Empty,
+            cdnConfiguration,
+            credentials);
 
-    private sealed class CredentialStore(IReadOnlyList<CdnCredential> credentials) : ICdnCredentialStore
-    {
-        public Task<IReadOnlyList<CdnCredential>> LoadAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(credentials);
+        public Task<ExplorerConfiguration> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(_configuration);
+
         public Task SaveAsync(
-            IReadOnlyCollection<CdnCredential> value,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            ExplorerConfiguration configuration,
+            CancellationToken cancellationToken = default)
+        {
+            _configuration = configuration;
+            return Task.CompletedTask;
+        }
+
+        public Task<ExplorerConfiguration> UpdateAsync(
+            Func<ExplorerConfiguration, ExplorerConfiguration> update,
+            CancellationToken cancellationToken = default)
+        {
+            _configuration = update(_configuration);
+            return Task.FromResult(_configuration);
+        }
     }
 
     private sealed class RecordingProvider : ICdnProvider

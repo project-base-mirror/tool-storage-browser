@@ -31,7 +31,11 @@ internal sealed class ConnectionDialog : Form
     private readonly TextBox _awsRoleArn = new() { Name = "AwsRoleArnTextBox" };
     private readonly TextBox _awsRoleSessionName = new() { Name = "AwsRoleSessionNameTextBox" };
     private readonly TextBox _awsRoleSourceIdentity = new() { Name = "AwsRoleSourceIdentityTextBox" };
-    private readonly TextBox _awsExternalId = new() { Name = "AwsExternalIdTextBox", UseSystemPasswordChar = true };
+    private readonly ComboBox _awsExternalIdCredential = new()
+    {
+        Name = "AwsExternalIdCredentialComboBox",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
     private readonly NumericUpDown _awsSessionDuration = new()
     {
         Name = "AwsSessionDurationNumericUpDown",
@@ -41,10 +45,11 @@ internal sealed class ConnectionDialog : Form
         Value = 3600
     };
     private readonly TextBox _awsWebIdentityTokenFile = new() { Name = "AwsWebIdentityTokenFileTextBox" };
-    private readonly TextBox _accessKey = new() { Name = "AccessKeyTextBox" };
-    private readonly TextBox _secretKey = new() { Name = "SecretKeyTextBox", UseSystemPasswordChar = true };
-    private readonly CheckBox _useSessionToken = new() { Name = "UseSessionTokenCheckBox", Text = "使用临时 Session Token", AutoSize = true };
-    private readonly TextBox _sessionToken = new() { Name = "SessionTokenTextBox", UseSystemPasswordChar = true };
+    private readonly ComboBox _credential = new()
+    {
+        Name = "StorageCredentialComboBox",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
     private readonly RadioButton _auto = new() { Text = "自动", Checked = true, AutoSize = true };
     private readonly RadioButton _virtual = new() { Text = "Virtual Hosted", AutoSize = true };
     private readonly RadioButton _path = new() { Text = "Path Style", AutoSize = true };
@@ -86,19 +91,17 @@ internal sealed class ConnectionDialog : Form
     private readonly Label _endpointLabel = FieldLabel("Endpoint：");
     private readonly Label _regionLabel = FieldLabel("Region：");
     private readonly Label _regionHint = HintLabel("Amazon S3 使用区域；不需要 Region 的服务会自动采用正确的签名值并隐藏此项。");
-    private readonly Label _sessionTokenLabel = FieldLabel("Session Token：");
-    private readonly Label _accessKeyLabel = FieldLabel("Access Key：");
-    private readonly Label _secretKeyLabel = FieldLabel("Secret Key：");
+    private readonly Label _credentialLabel = FieldLabel("关联凭据：");
     private readonly Label _awsProfileLabel = FieldLabel("AWS Profile：");
     private readonly Label _awsSourceProfileLabel = FieldLabel("源 AWS Profile：");
     private readonly Label _awsRoleArnLabel = FieldLabel("目标 Role ARN：");
     private readonly Label _awsRoleSessionNameLabel = FieldLabel("角色会话名称：");
     private readonly Label _awsRoleSourceIdentityLabel = FieldLabel("Source Identity：");
-    private readonly Label _awsExternalIdLabel = FieldLabel("External ID：");
+    private readonly Label _awsExternalIdLabel = FieldLabel("External ID 凭据：");
     private readonly Label _awsSessionDurationLabel = FieldLabel("会话时长（秒）：");
     private readonly Label _awsWebIdentityTokenFileLabel = FieldLabel("Token 文件：");
     private readonly Label _credentialHint = HintLabel("选择凭据的实际来源；环境和角色凭据不会保存到连接文件。");
-    private readonly TableLayoutPanel _secretPanel = new() { Dock = DockStyle.Fill, ColumnCount = 2, Height = 28 };
+    private readonly IReadOnlyList<CredentialProfile> _credentials;
     private readonly Dictionary<S3ServiceType, ConnectionDraft> _connectionDrafts = [];
     private readonly Guid _id;
     private bool _loading;
@@ -107,9 +110,13 @@ internal sealed class ConnectionDialog : Form
 
     public ConnectionProfile Profile { get; private set; }
 
-    public ConnectionDialog(IS3StorageService storage, ConnectionProfile? profile = null)
+    public ConnectionDialog(
+        IS3StorageService storage,
+        ConnectionProfile? profile = null,
+        IReadOnlyList<CredentialProfile>? credentials = null)
     {
         _storage = storage;
+        _credentials = credentials ?? [];
         Profile = S3ProviderCatalog.RepairLegacyServiceType(
             profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
         _id = Profile.Id;
@@ -147,7 +154,6 @@ internal sealed class ConnectionDialog : Form
         _accountType.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _provider.SelectedIndexChanged += (_, _) => ApplyAccountSelection(applyPreset: true);
         _credentialSource.SelectedIndexChanged += (_, _) => UpdateCredentialSourceVisibility();
-        _useSessionToken.CheckedChanged += (_, _) => UpdateSessionTokenVisibility();
         _https.CheckedChanged += (_, _) => ApplyHttpsToEndpoint();
         _test.Click += async (_, _) => await TestConnectionAsync();
         _save.Click += (_, _) => SaveProfile();
@@ -227,21 +233,10 @@ internal sealed class ConnectionDialog : Form
         AddField(basicTable, ref row, _awsRoleArnLabel, _awsRoleArn);
         AddField(basicTable, ref row, _awsRoleSessionNameLabel, _awsRoleSessionName);
         AddField(basicTable, ref row, _awsRoleSourceIdentityLabel, _awsRoleSourceIdentity);
-        AddField(basicTable, ref row, _awsExternalIdLabel, _awsExternalId);
+        AddField(basicTable, ref row, _awsExternalIdLabel, _awsExternalIdCredential);
         AddField(basicTable, ref row, _awsSessionDurationLabel, _awsSessionDuration);
         AddField(basicTable, ref row, _awsWebIdentityTokenFileLabel, _awsWebIdentityTokenFile);
-        AddField(basicTable, ref row, _accessKeyLabel, _accessKey);
-
-        _secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _secretPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _secretKey.Dock = DockStyle.Fill;
-        _secretPanel.Controls.Add(_secretKey, 0, 0);
-        var show = new CheckBox { Text = "显示", AutoSize = true };
-        show.CheckedChanged += (_, _) => _secretKey.UseSystemPasswordChar = !show.Checked;
-        _secretPanel.Controls.Add(show, 1, 0);
-        AddField(basicTable, ref row, _secretKeyLabel, _secretPanel);
-        AddField(basicTable, ref row, new Label(), _useSessionToken);
-        AddField(basicTable, ref row, _sessionTokenLabel, _sessionToken);
+        AddField(basicTable, ref row, _credentialLabel, _credential);
         basic.Controls.Add(basicTable);
 
         _advancedGroup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -370,19 +365,15 @@ internal sealed class ConnectionDialog : Form
             _name.Text = profile.Name;
             _endpoint.Text = profile.Endpoint;
             _region.Text = string.IsNullOrWhiteSpace(profile.Region) ? definition.DefaultRegion : profile.Region;
-            _accessKey.Text = profile.AccessKey;
-            _secretKey.Text = profile.SecretKey;
-            _sessionToken.Text = profile.SessionToken;
             SelectChoice(_credentialSource, profile.CredentialSource);
             _awsProfileName.Text = profile.AwsProfileName;
             _awsSourceProfileName.Text = profile.AwsSourceProfileName;
             _awsRoleArn.Text = profile.AwsRoleArn;
             _awsRoleSessionName.Text = profile.AwsRoleSessionName;
             _awsRoleSourceIdentity.Text = profile.AwsRoleSourceIdentity;
-            _awsExternalId.Text = profile.AwsExternalId;
+            PopulateCredentialChoices(profile.ServiceType, profile.CredentialId, profile.AwsExternalIdCredentialId);
             _awsSessionDuration.Value = Math.Clamp(profile.AwsSessionDurationSeconds, 900, 43200);
             _awsWebIdentityTokenFile.Text = profile.AwsWebIdentityTokenFile;
-            _useSessionToken.Checked = profile.UsesTemporarySessionCredentials;
             _defaultBucket.Text = profile.DefaultBucket;
             _externalBuckets.Lines = profile.ExternalBuckets.ToArray();
             _auto.Checked = profile.AddressingStyle == AddressingStyle.Auto;
@@ -407,7 +398,6 @@ internal sealed class ConnectionDialog : Form
         _connectionDrafts[profile.ServiceType] = CaptureConnectionDraft();
         ApplyAccountSelection(applyPreset: false);
         UpdateCredentialSourceVisibility();
-        UpdateSessionTokenVisibility();
     }
 
     private void ApplyAccountSelection(bool applyPreset)
@@ -467,6 +457,10 @@ internal sealed class ConnectionDialog : Form
             }
 
             _activeServiceType = serviceType;
+            PopulateCredentialChoices(
+                serviceType,
+                SelectedNullableGuid(_credential),
+                SelectedNullableGuid(_awsExternalIdCredential));
             UpdateCredentialSourceVisibility();
         }
         finally
@@ -503,14 +497,6 @@ internal sealed class ConnectionDialog : Form
         _auto.Checked = draft.AddressingStyle == AddressingStyle.Auto;
     }
 
-    private void UpdateSessionTokenVisibility()
-    {
-        var storedKeysVisible = _useSessionToken.Visible;
-        var visible = storedKeysVisible && _useSessionToken.Checked;
-        _sessionTokenLabel.Visible = _sessionToken.Visible = visible;
-        if (storedKeysVisible && !visible) _sessionToken.Text = string.Empty;
-    }
-
     private void UpdateCredentialSourceVisibility()
     {
         var serviceType = SelectedServiceType();
@@ -528,27 +514,24 @@ internal sealed class ConnectionDialog : Form
         _awsRoleArnLabel.Visible = _awsRoleArn.Visible = roleSession;
         _awsRoleSessionNameLabel.Visible = _awsRoleSessionName.Visible = roleSession;
         _awsRoleSourceIdentityLabel.Visible = _awsRoleSourceIdentity.Visible = assumeRole;
-        _awsExternalIdLabel.Visible = _awsExternalId.Visible = assumeRole;
+        _awsExternalIdLabel.Visible = _awsExternalIdCredential.Visible = assumeRole;
         _awsSessionDurationLabel.Visible = _awsSessionDuration.Visible = roleSession;
         _awsWebIdentityTokenFileLabel.Visible = _awsWebIdentityTokenFile.Visible = webIdentity;
-        _accessKeyLabel.Visible = _accessKey.Visible = storedKeys;
-        _secretKeyLabel.Visible = _secretPanel.Visible = storedKeys;
-        _useSessionToken.Visible = storedKeys;
+        _credentialLabel.Visible = _credential.Visible = storedKeys;
 
         _credentialHint.Text = source switch
         {
-            CredentialSourceKind.StoredKeys => "Secret Key 与 Session Token 使用 Windows DPAPI CurrentUser 加密保存。",
+            CredentialSourceKind.StoredKeys => "连接只保存统一凭据 ID；请先在“工具 → 凭据中心”创建或维护 Access Key、Secret Key 与 Session Token。",
             CredentialSourceKind.AwsSharedProfile => "只保存 Profile 名称；凭据从 ~/.aws/credentials 与 ~/.aws/config 读取。",
             CredentialSourceKind.AwsEnvironmentVariables => "读取 AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY 和可选 AWS_SESSION_TOKEN，不写入磁盘。",
             CredentialSourceKind.AwsContainerRole => "锁定容器凭据端点；缺少 AWS_CONTAINER_CREDENTIALS_* 时会直接报错，不回退到其他身份。",
             CredentialSourceKind.AwsInstanceRole => "锁定 EC2 Instance Metadata 角色；不会回退到本机 Profile。",
             CredentialSourceKind.AwsDefaultChain => "按 AWS SDK 顺序解析并在连接测试中显示实际来源；需要固定身份时请选择上面的明确来源。",
             CredentialSourceKind.AwsSso => "只保存 SSO Profile 名称；测试连接可由用户触发登录，浏览器令牌由 AWS SDK 独立缓存且不会进入连接包。",
-            CredentialSourceKind.AwsAssumeRole => "源 Profile 与角色配置分开保存；External ID 使用 DPAPI 加密，仅显示是否已配置。",
+            CredentialSourceKind.AwsAssumeRole => "源 Profile 与角色配置分开保存；External ID 引用凭据中心中的 AWS SecretValue。",
             CredentialSourceKind.AwsWebIdentity => "只保存 Token 文件的绝对路径；令牌内容由 AWS SDK 按需读取，不写入连接配置或日志。",
             _ => string.Empty
         };
-        UpdateSessionTokenVisibility();
     }
 
     private void ApplyHttpsToEndpoint()
@@ -585,6 +568,16 @@ internal sealed class ConnectionDialog : Form
             ? SelectedValue(_credentialSource, CredentialSourceKind.StoredKeys)
             : CredentialSourceKind.StoredKeys;
         var storedKeys = credentialSource == CredentialSourceKind.StoredKeys;
+        var credentialId = storedKeys ? SelectedNullableGuid(_credential) : null;
+        var credential = credentialId is Guid storedCredentialId
+            ? _credentials.FirstOrDefault(value => value.Id == storedCredentialId)
+            : null;
+        var externalIdCredentialId = credentialSource == CredentialSourceKind.AwsAssumeRole
+            ? SelectedNullableGuid(_awsExternalIdCredential)
+            : null;
+        var externalIdCredential = externalIdCredentialId is Guid externalIdId
+            ? _credentials.FirstOrDefault(value => value.Id == externalIdId)
+            : null;
 
         return new ConnectionProfile
         {
@@ -596,9 +589,10 @@ internal sealed class ConnectionDialog : Form
             Endpoint = endpoint,
             Region = region,
             SignatureRegion = signingRegion,
-            AccessKey = storedKeys ? _accessKey.Text.Trim() : string.Empty,
-            SecretKey = storedKeys ? _secretKey.Text : string.Empty,
-            SessionToken = storedKeys && _useSessionToken.Checked ? _sessionToken.Text : string.Empty,
+            CredentialId = credentialId,
+            AccessKey = credential?.AccessKeyId ?? string.Empty,
+            SecretKey = credential?.Secret ?? string.Empty,
+            SessionToken = credential?.SessionToken ?? string.Empty,
             CredentialSource = credentialSource,
             AwsProfileName = credentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso
                 ? _awsProfileName.Text.Trim()
@@ -615,7 +609,8 @@ internal sealed class ConnectionDialog : Form
             AwsRoleSourceIdentity = credentialSource == CredentialSourceKind.AwsAssumeRole
                 ? _awsRoleSourceIdentity.Text.Trim()
                 : string.Empty,
-            AwsExternalId = credentialSource == CredentialSourceKind.AwsAssumeRole ? _awsExternalId.Text : string.Empty,
+            AwsExternalIdCredentialId = externalIdCredentialId,
+            AwsExternalId = externalIdCredential?.Secret ?? string.Empty,
             AwsSessionDurationSeconds = credentialSource is CredentialSourceKind.AwsAssumeRole or CredentialSourceKind.AwsWebIdentity
                 ? (int)_awsSessionDuration.Value
                 : 3600,
@@ -725,6 +720,44 @@ internal sealed class ConnectionDialog : Form
 
     private static T SelectedValue<T>(ComboBox comboBox, T fallback) where T : struct, Enum =>
         comboBox.SelectedItem is Choice<T> choice ? choice.Value : fallback;
+
+    private static Guid? SelectedNullableGuid(ComboBox comboBox) =>
+        comboBox.SelectedItem is Choice<Guid?> choice ? choice.Value : null;
+
+    private static void SelectNullableGuid(ComboBox comboBox, Guid? value)
+    {
+        for (var index = 0; index < comboBox.Items.Count; index++)
+        {
+            if (comboBox.Items[index] is Choice<Guid?> choice && choice.Value == value)
+            {
+                comboBox.SelectedIndex = index;
+                return;
+            }
+        }
+        comboBox.SelectedIndex = comboBox.Items.Count > 0 ? 0 : -1;
+    }
+
+    private void PopulateCredentialChoices(
+        S3ServiceType serviceType,
+        Guid? selectedCredentialId,
+        Guid? selectedExternalIdCredentialId)
+    {
+        _credential.Items.Clear();
+        foreach (var credential in _credentials
+                     .Where(value => value.IsCompatibleWith(serviceType))
+                     .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+            _credential.Items.Add(new Choice<Guid?>(credential.Id, $"{credential.Name} · {credential.Fingerprint}"));
+        SelectNullableGuid(_credential, selectedCredentialId);
+
+        _awsExternalIdCredential.Items.Clear();
+        _awsExternalIdCredential.Items.Add(new Choice<Guid?>(null, "(不使用 External ID)"));
+        foreach (var credential in _credentials
+                     .Where(value => value.Provider == CredentialProviderKind.AmazonWebServices &&
+                         value.Kind == CredentialKind.SecretValue)
+                     .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+            _awsExternalIdCredential.Items.Add(new Choice<Guid?>(credential.Id, credential.Name));
+        SelectNullableGuid(_awsExternalIdCredential, selectedExternalIdCredentialId);
+    }
 
     private S3ServiceType SelectedServiceType()
     {

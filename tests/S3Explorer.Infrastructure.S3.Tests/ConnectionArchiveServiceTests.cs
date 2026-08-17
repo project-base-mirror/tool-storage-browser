@@ -34,7 +34,8 @@ public sealed class ConnectionArchiveServiceTests
     [Fact]
     public void PasswordProtectedExportCanMoveReadyToUseCredentials()
     {
-        var archive = _service.Export([CreateProfile()], includeCredentials: true, password: "portable-password");
+        var (profile, credential) = CreateUnifiedProfile();
+        var archive = _service.Export([profile], includeCredentials: true, password: "portable-password", credentials: [credential]);
         var json = Encoding.UTF8.GetString(archive);
 
         Assert.DoesNotContain("access-value", json);
@@ -52,7 +53,8 @@ public sealed class ConnectionArchiveServiceTests
     [Fact]
     public void WrongPasswordIsReportedAsAuthenticationFailure()
     {
-        var archive = _service.Export([CreateProfile()], includeCredentials: true, password: "portable-password");
+        var (profile, credential) = CreateUnifiedProfile();
+        var archive = _service.Export([profile], includeCredentials: true, password: "portable-password", credentials: [credential]);
 
         Assert.Throws<ConnectionArchiveAuthenticationException>(() =>
             _service.Import(archive, "wrong-password"));
@@ -103,7 +105,8 @@ public sealed class ConnectionArchiveServiceTests
     [Fact]
     public void TamperedCiphertextDoesNotImport()
     {
-        var archive = _service.Export([CreateProfile()], includeCredentials: true, password: "portable-password");
+        var (profile, credential) = CreateUnifiedProfile();
+        var archive = _service.Export([profile], includeCredentials: true, password: "portable-password", credentials: [credential]);
         var document = Assert.IsType<JsonObject>(JsonNode.Parse(Encoding.UTF8.GetString(archive)));
         var encryptedPayload = Assert.IsAssignableFrom<JsonValue>(document["encryptedPayload"])
             .GetValue<string>();
@@ -133,7 +136,7 @@ public sealed class ConnectionArchiveServiceTests
         var text = Encoding.UTF8.GetString(archive);
         var imported = Assert.Single(_service.Import(archive).Profiles);
 
-        Assert.Contains("\"version\": 3", text, StringComparison.Ordinal);
+        Assert.Contains("\"version\": 4", text, StringComparison.Ordinal);
         Assert.Contains("audit", text, StringComparison.Ordinal);
         Assert.DoesNotContain("stale-", text, StringComparison.Ordinal);
         Assert.Equal(CredentialSourceKind.AwsSharedProfile, imported.CredentialSource);
@@ -162,6 +165,13 @@ public sealed class ConnectionArchiveServiceTests
     [Fact]
     public void AssumeRoleArchiveSeparatesPortableConfigurationFromProtectedExternalId()
     {
+        var externalIdCredential = new CredentialProfile
+        {
+            Name = "Audit role External ID",
+            Provider = CredentialProviderKind.AmazonWebServices,
+            Kind = CredentialKind.SecretValue,
+            Secret = "customer-external-secret"
+        };
         var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
         {
             Name = "Audit role",
@@ -170,7 +180,8 @@ public sealed class ConnectionArchiveServiceTests
             AwsRoleArn = "arn:aws:iam::123456789012:role/Audit",
             AwsRoleSessionName = "s3explorer-audit",
             AwsRoleSourceIdentity = "operator-42",
-            AwsExternalId = "customer-external-secret",
+            AwsExternalIdCredentialId = externalIdCredential.Id,
+            AwsExternalId = externalIdCredential.Secret,
             AwsSessionDurationSeconds = 1800
         };
 
@@ -184,7 +195,11 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal("bootstrap", credentialFree.AwsSourceProfileName);
         Assert.Equal("operator-42", credentialFree.AwsRoleSourceIdentity);
 
-        var protectedArchive = _service.Export([profile], includeCredentials: true, password: "portable-password");
+        var protectedArchive = _service.Export(
+            [profile],
+            includeCredentials: true,
+            password: "portable-password",
+            credentials: [externalIdCredential]);
         Assert.DoesNotContain(profile.AwsExternalId, Encoding.UTF8.GetString(protectedArchive), StringComparison.Ordinal);
         Assert.True(_service.Inspect(protectedArchive).RequiresPassword);
         Assert.Equal(profile.AwsExternalId,
@@ -225,7 +240,7 @@ public sealed class ConnectionArchiveServiceTests
             [], CdnConfiguration.Empty, [], package,
             new ConnectionArchiveImportSelection(package.Profiles.Select(profile => profile.Id).ToArray(), []),
             importStorageCredentials: false,
-            importCdnCredentials: false,
+            importCredentials: false,
             ConnectionImportConflictStrategy.Rename,
             targetGroupId: groupId);
 
@@ -284,7 +299,7 @@ public sealed class ConnectionArchiveServiceTests
         var archive = _service.Export(
             [storage],
             cdnConfiguration: configuration,
-            cdnCredentials: [credential]);
+            credentials: [credential]);
         var json = Encoding.UTF8.GetString(archive);
         var inspection = _service.Inspect(archive);
         var package = _service.Import(archive);
@@ -293,11 +308,11 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Contains("production delivery", json, StringComparison.Ordinal);
         Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
         Assert.Equal(1, inspection.CdnProfileCount);
-        Assert.Equal(0, inspection.CdnCredentialCount);
+        Assert.Equal(0, inspection.CredentialCount);
         Assert.Null(Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
         Assert.Equal("production delivery", Assert.Single(package.ImportedCdnConfiguration.Profiles).Notes);
         Assert.Single(package.ImportedCdnConfiguration.Bindings);
-        Assert.Empty(package.ImportedCdnCredentials);
+        Assert.Empty(package.ImportedCredentials);
     }
 
     [Fact]
@@ -315,7 +330,7 @@ public sealed class ConnectionArchiveServiceTests
             includeCredentials: true,
             password: "portable-password",
             cdnConfiguration: configuration,
-            cdnCredentials: [credential]);
+            credentials: [credential]);
         var json = Encoding.UTF8.GetString(archive);
         var inspection = _service.Inspect(archive);
         var package = _service.Import(archive, "portable-password");
@@ -323,10 +338,10 @@ public sealed class ConnectionArchiveServiceTests
         Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
         Assert.DoesNotContain("cdn-auth", json, StringComparison.Ordinal);
         Assert.True(inspection.ContainsCredentials);
-        Assert.Equal(1, inspection.CdnCredentialCount);
-        Assert.Equal("cdn-secret-value", Assert.Single(package.ImportedCdnCredentials).Secret);
+        Assert.Equal(1, inspection.CredentialCount);
+        Assert.Equal("cdn-secret-value", Assert.Single(package.ImportedCredentials).Secret);
         Assert.Equal(
-            Assert.Single(package.ImportedCdnCredentials).Id,
+            Assert.Single(package.ImportedCredentials).Id,
             Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
     }
 
@@ -353,7 +368,7 @@ public sealed class ConnectionArchiveServiceTests
             ConnectionImportConflictStrategy.Rename);
 
         var importedStorage = Assert.Single(merged.Profiles);
-        var importedCredential = Assert.Single(merged.CdnCredentials);
+        var importedCredential = Assert.Single(merged.Credentials);
         var importedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
         var importedBinding = Assert.Single(merged.CdnConfiguration.Bindings);
         Assert.NotEqual(storage.Id, importedStorage.Id);
@@ -362,7 +377,7 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal(importedCredential.Id, importedCdn.CredentialId);
         Assert.Equal(importedStorage.Id, importedBinding.StorageProfileId);
         Assert.Equal(importedCdn.Id, importedBinding.CdnProfileId);
-        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.CdnCredentials);
+        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.Credentials);
     }
 
     [Fact]
@@ -387,9 +402,9 @@ public sealed class ConnectionArchiveServiceTests
             importCredentials: false,
             ConnectionImportConflictStrategy.Rename);
 
-        Assert.Empty(merged.CdnCredentials);
+        Assert.Empty(merged.Credentials);
         Assert.Null(Assert.Single(merged.CdnConfiguration.Profiles).CredentialId);
-        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.CdnCredentials);
+        CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.Credentials);
     }
 
     [Fact]
@@ -433,7 +448,7 @@ public sealed class ConnectionArchiveServiceTests
             ConnectionImportConflictStrategy.Replace);
 
         Assert.Equal(existingStorage.Id, Assert.Single(merged.Profiles).Id);
-        var mergedCredential = Assert.Single(merged.CdnCredentials);
+        var mergedCredential = Assert.Single(merged.Credentials);
         var mergedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
         var mergedBinding = Assert.Single(merged.CdnConfiguration.Bindings);
         Assert.Equal(existingCredential.Id, mergedCredential.Id);
@@ -493,11 +508,11 @@ public sealed class ConnectionArchiveServiceTests
             package,
             new ConnectionArchiveImportSelection([importedStorage.Id], [importedCdn.Id]),
             importStorageCredentials: true,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Equal(existingStorage.Id, Assert.Single(merged.Profiles).Id);
-        Assert.Equal(existingCredential.Id, Assert.Single(merged.CdnCredentials).Id);
+        Assert.Equal(existingCredential.Id, Assert.Single(merged.Credentials).Id);
         Assert.Equal(existingCdn.Id, Assert.Single(merged.CdnConfiguration.Profiles).Id);
         Assert.Equal(existingBinding.Id, Assert.Single(merged.CdnConfiguration.Bindings).Id);
     }
@@ -519,16 +534,16 @@ public sealed class ConnectionArchiveServiceTests
         var first = _service.MergePackage(
             [], CdnConfiguration.Empty, [], package, selection,
             importStorageCredentials: true,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
         var second = _service.MergePackage(
-            first.Profiles, first.CdnConfiguration, first.CdnCredentials, package, selection,
+            first.Profiles, first.CdnConfiguration, first.Credentials, package, selection,
             importStorageCredentials: true,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Equal(first.Profiles, second.Profiles);
-        Assert.Equal(first.CdnCredentials, second.CdnCredentials);
+        Assert.Equal(first.Credentials, second.Credentials);
         Assert.Equal(first.CdnConfiguration.Profiles, second.CdnConfiguration.Profiles);
         Assert.Equal(first.CdnConfiguration.Bindings, second.CdnConfiguration.Bindings);
     }
@@ -552,7 +567,7 @@ public sealed class ConnectionArchiveServiceTests
             package,
             new ConnectionArchiveImportSelection([], [cdn.Id]),
             importStorageCredentials: false,
-            importCdnCredentials: false,
+            importCredentials: false,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Equal(localStorage.Id, Assert.Single(merged.Profiles).Id);
@@ -560,6 +575,64 @@ public sealed class ConnectionArchiveServiceTests
         var binding = Assert.Single(merged.CdnConfiguration.Bindings);
         Assert.Equal(localStorage.Id, binding.StorageProfileId);
         Assert.Equal(importedCdn.Id, binding.CdnProfileId);
+    }
+
+    [Fact]
+    public void CdnOnlySelectionRejectsMissingStorageDependencyInsteadOfDroppingBinding()
+    {
+        var archivedStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "archived-storage" };
+        var unrelatedLocal = CreateProfile() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "unrelated-local",
+            Endpoint = "https://different.example.test"
+        };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var package = new ConnectionArchivePackage(
+            [archivedStorage],
+            ContainsCredentials: false,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            new CdnConfiguration([cdn], [CreateCdnBinding(archivedStorage.Id, cdn.Id)]));
+
+        var exception = Assert.Throws<InvalidDataException>(() => _service.MergePackage(
+            [unrelatedLocal],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            new ConnectionArchiveImportSelection([], [cdn.Id]),
+            importStorageCredentials: false,
+            importCredentials: false,
+            ConnectionImportConflictStrategy.Rename));
+
+        Assert.Contains("依赖对象存储连接", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CredentialNameConflictWithSkipFailsInsteadOfCreatingDisconnectedProfile()
+    {
+        var (profile, importedCredential) = CreateUnifiedProfile();
+        var localCredential = importedCredential with
+        {
+            Id = Guid.NewGuid(),
+            Secret = "different-secret"
+        };
+        var package = new ConnectionArchivePackage(
+            [profile],
+            ContainsCredentials: true,
+            ExportedAtUtc: DateTimeOffset.UtcNow,
+            Credentials: [importedCredential]);
+
+        var exception = Assert.Throws<InvalidDataException>(() => _service.MergePackage(
+            [],
+            CdnConfiguration.Empty,
+            [localCredential],
+            package,
+            new ConnectionArchiveImportSelection([profile.Id], []),
+            importStorageCredentials: true,
+            importCredentials: true,
+            ConnectionImportConflictStrategy.Skip));
+
+        Assert.Contains("凭据未能导入", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -580,7 +653,7 @@ public sealed class ConnectionArchiveServiceTests
             package,
             new ConnectionArchiveImportSelection([storage.Id], []),
             importStorageCredentials: false,
-            importCdnCredentials: false,
+            importCredentials: false,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Single(merged.Profiles);
@@ -637,7 +710,7 @@ public sealed class ConnectionArchiveServiceTests
         {
             Id = Guid.NewGuid(),
             Name = "local-token-renamed",
-            HeaderName = "X-Ignored-For-Bearer"
+            HeaderName = string.Empty
         };
         var archivedCdn = CreateCdnProfile(archivedCredential.Id) with
         {
@@ -668,11 +741,11 @@ public sealed class ConnectionArchiveServiceTests
             package,
             new ConnectionArchiveImportSelection([archivedStorage.Id], [archivedCdn.Id]),
             importStorageCredentials: true,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Equal(localStorage.Id, Assert.Single(merged.Profiles).Id);
-        Assert.Equal(localCredential.Id, Assert.Single(merged.CdnCredentials).Id);
+        Assert.Equal(localCredential.Id, Assert.Single(merged.Credentials).Id);
         Assert.Equal(localCdn.Id, Assert.Single(merged.CdnConfiguration.Profiles).Id);
         var binding = Assert.Single(merged.CdnConfiguration.Bindings);
         Assert.Equal(localStorage.Id, binding.StorageProfileId);
@@ -690,7 +763,12 @@ public sealed class ConnectionArchiveServiceTests
             "oss-cn-shanghai");
         var localHangzhou = archivedHangzhou with { Id = Guid.NewGuid(), Name = "local-hangzhou" };
         var localShanghai = archivedShanghai with { Id = Guid.NewGuid(), Name = "local-shanghai" };
-        var selectedCredential = CreateCdnCredential() with { Id = Guid.NewGuid(), Name = "archive-selected-token" };
+        var selectedCredential = CreateCdnCredential() with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archive-selected-token",
+            HeaderName = "Legacy-Bearer-Header"
+        };
         var ignoredCredential = CreateCdnCredential() with
         {
             Id = Guid.NewGuid(),
@@ -732,7 +810,7 @@ public sealed class ConnectionArchiveServiceTests
                     CreateCdnBinding(archivedHangzhou.Id, selectedCdn.Id),
                     CreateCdnBinding(archivedShanghai.Id, ignoredCdn.Id)
                 ]),
-            cdnCredentials: [selectedCredential, ignoredCredential]);
+            credentials: [selectedCredential, ignoredCredential]);
         var package = _service.Import(archive, "portable-password");
         var selection = new ConnectionArchiveImportSelection([], [selectedCdn.Id]);
 
@@ -743,26 +821,26 @@ public sealed class ConnectionArchiveServiceTests
             package,
             selection,
             importStorageCredentials: false,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
         var second = _service.MergePackage(
             first.Profiles,
             first.CdnConfiguration,
-            first.CdnCredentials,
+            first.Credentials,
             package,
             selection,
             importStorageCredentials: false,
-            importCdnCredentials: true,
+            importCredentials: true,
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Equal(2, first.Profiles.Count);
-        Assert.Equal(localCredential.Id, Assert.Single(first.CdnCredentials).Id);
+        Assert.Equal(localCredential.Id, Assert.Single(first.Credentials).Id);
         Assert.Equal(localCdn.Id, Assert.Single(first.CdnConfiguration.Profiles).Id);
         var binding = Assert.Single(first.CdnConfiguration.Bindings);
         Assert.Equal(localHangzhou.Id, binding.StorageProfileId);
         Assert.Equal(localCdn.Id, binding.CdnProfileId);
         Assert.Equal(first.Profiles, second.Profiles);
-        Assert.Equal(first.CdnCredentials, second.CdnCredentials);
+        Assert.Equal(first.Credentials, second.Credentials);
         Assert.Equal(first.CdnConfiguration.Profiles, second.CdnConfiguration.Profiles);
         Assert.Equal(first.CdnConfiguration.Bindings, second.CdnConfiguration.Bindings);
     }
@@ -800,6 +878,64 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Contains("不在连接包内", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SharedCredentialIdIsPreservedForAliyunStorageAndAliyunCdnRoundTripAndMerge()
+    {
+        var sharedCredential = new CredentialProfile
+        {
+            Name = "aliyun-shared",
+            Provider = CredentialProviderKind.AlibabaCloud,
+            Kind = CredentialKind.AccessKeyPair,
+            AccessKeyId = "aliyun-access-id",
+            Secret = "aliyun-secret-key"
+        };
+        var storage = CreateAliyunProfile("archived-oss", "game-assets") with
+        {
+            Id = Guid.NewGuid(),
+            CredentialId = sharedCredential.Id,
+            CredentialSource = CredentialSourceKind.StoredKeys
+        };
+        var cdnProfile = CreateCdnProfile(sharedCredential.Id) with
+        {
+            Id = Guid.NewGuid(),
+            Name = "archived-cdn",
+            ProviderId = CdnProfile.AlibabaCloudProviderId,
+            BaseUrl = "https://cdn.aliyuncs.com"
+        };
+
+        var archive = _service.Export(
+            [storage],
+            includeCredentials: true,
+            password: "portable-password",
+            cdnConfiguration: new CdnConfiguration(
+                [cdnProfile],
+                [CreateCdnBinding(storage.Id, cdnProfile.Id)]),
+            credentials: [sharedCredential]);
+        var package = _service.Import(archive, "portable-password");
+
+        Assert.Single(package.ImportedCredentials);
+        Assert.Equal(sharedCredential.Id, Assert.Single(package.ImportedCredentials).Id);
+        Assert.Equal(sharedCredential.Id, Assert.Single(package.Profiles).CredentialId);
+        Assert.Equal(sharedCredential.Id, Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+
+        var merged = _service.MergePackage(
+            [],
+            CdnConfiguration.Empty,
+            [],
+            package,
+            [storage.Id],
+            importCredentials: true,
+            ConnectionImportConflictStrategy.Rename);
+
+        var mergedCredential = Assert.Single(merged.Credentials);
+        var mergedStorage = Assert.Single(merged.Profiles);
+        var mergedCdn = Assert.Single(merged.CdnConfiguration.Profiles);
+
+        Assert.Single(merged.Credentials);
+        Assert.Equal(mergedCredential.Id, mergedStorage.CredentialId);
+        Assert.Equal(mergedCredential.Id, mergedCdn.CredentialId);
+    }
+
     private static ConnectionProfile CreateProfile() => new()
     {
         Name = "Portable",
@@ -814,10 +950,26 @@ public sealed class ConnectionArchiveServiceTests
         ExternalBuckets = ["other-bucket"]
     };
 
-    private static CdnCredential CreateCdnCredential() => new()
+    private static (ConnectionProfile Profile, CredentialProfile Credential) CreateUnifiedProfile()
     {
+        var source = CreateProfile();
+        var credential = new CredentialProfile
+        {
+            Name = "Portable storage key",
+            Provider = CredentialProviderKind.S3Compatible,
+            Kind = CredentialKind.AccessKeyPair,
+            AccessKeyId = source.AccessKey,
+            Secret = source.SecretKey,
+            SessionToken = source.SessionToken
+        };
+        return (source with { CredentialId = credential.Id }, credential);
+    }
+
+    private static CredentialProfile CreateCdnCredential(CredentialKind kind = CredentialKind.BearerToken) => new()
+    {
+        Provider = CredentialProviderKind.GenericHttp,
+        Kind = kind,
         Name = "cdn-auth",
-        AuthenticationType = CdnAuthenticationType.BearerToken,
         Secret = "cdn-secret-value"
     };
 

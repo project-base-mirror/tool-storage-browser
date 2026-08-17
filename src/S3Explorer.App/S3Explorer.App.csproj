@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
+    <ProjectReference Include="..\S3Explorer.Infrastructure.Configuration\S3Explorer.Infrastructure.Configuration.csproj" />
     <ProjectReference Include="..\S3Explorer.Infrastructure.Cdn\S3Explorer.Infrastructure.Cdn.csproj" />
     <ProjectReference Include="..\S3Explorer.Infrastructure.S3\S3Explorer.Infrastructure.S3.csproj" />
   </ItemGroup>

@@ -96,17 +96,14 @@ public sealed class GenericHttpCdnProvider(ICdnDeliveryService deliveryService) 
 
 public sealed class StoreBackedCdnJobExecutor : ICdnJobExecutor
 {
-    private readonly ICdnConfigurationStore _configurationStore;
-    private readonly ICdnCredentialStore _credentialStore;
+    private readonly IExplorerConfigurationStore _configurationStore;
     private readonly IReadOnlyDictionary<string, ICdnProvider> _providers;
 
     public StoreBackedCdnJobExecutor(
-        ICdnConfigurationStore configurationStore,
-        ICdnCredentialStore credentialStore,
+        IExplorerConfigurationStore configurationStore,
         IEnumerable<ICdnProvider> providers)
     {
         _configurationStore = configurationStore;
-        _credentialStore = credentialStore;
         _providers = providers.ToDictionary(
             provider => provider.ProviderId,
             StringComparer.OrdinalIgnoreCase);
@@ -120,8 +117,7 @@ public sealed class StoreBackedCdnJobExecutor : ICdnJobExecutor
     {
         job.Validate();
         var configuration = await _configurationStore.LoadAsync(cancellationToken).ConfigureAwait(false);
-        var credentials = await _credentialStore.LoadAsync(cancellationToken).ConfigureAwait(false);
-        var profile = configuration.Profiles.FirstOrDefault(value => value.Id == job.CdnProfileId);
+        var profile = configuration.Cdn.Profiles.FirstOrDefault(value => value.Id == job.CdnProfileId);
         if (profile is null)
             return Failed("CDN 配置已不存在，无法执行任务。");
         if (!profile.Enabled)
@@ -129,17 +125,22 @@ public sealed class StoreBackedCdnJobExecutor : ICdnJobExecutor
         if (!_providers.TryGetValue(profile.ProviderId, out var provider))
             return Failed($"没有注册 CDN Provider：{profile.ProviderId}");
 
-        CdnCredential? credential = null;
+        CredentialProfile? credential = null;
         if (profile.CredentialId is Guid credentialId)
         {
-            credential = credentials.FirstOrDefault(value => value.Id == credentialId);
+            credential = configuration.CredentialVault.FirstOrDefault(value => value.Id == credentialId);
             if (credential is null)
                 return Failed($"CDN 配置“{profile.Name}”引用的凭据不存在。");
         }
 
         var urls = job.Urls.Select(value => new Uri(value, UriKind.Absolute)).ToArray();
+        var effectiveAction = job.Action == CdnJobAction.PurgeThenWarmup
+            ? job.Phase == CdnJobPhase.Warmup
+                ? CdnJobAction.Warmup
+                : CdnJobAction.PurgeUrl
+            : job.Action;
         var request = new CdnProviderRequest(
-            job.Action,
+            effectiveAction,
             profile,
             credential,
             urls,

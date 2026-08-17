@@ -66,7 +66,7 @@ internal sealed partial class MainForm : Form
     private readonly TransferRuntimeConfiguration _transferRuntime;
     private readonly IFolderSyncJobStore _syncJobStore;
     private readonly GitHubUpdateChecker _updateChecker;
-    private readonly ConfigurationTransactionCoordinator _configurationTransactions;
+    private readonly IExplorerConfigurationStore _configurationStore;
     private readonly ConnectionArchiveService _connectionArchive = new();
     private readonly TransferQueueControl _transfers;
     private readonly StatusStrip _status = new() { Name = "StatusBar" };
@@ -118,12 +118,12 @@ internal sealed partial class MainForm : Form
         TransferRuntimeConfiguration transferRuntime,
         IFolderSyncJobStore syncJobStore,
         GitHubUpdateChecker updateChecker,
+        IExplorerConfigurationStore configurationStore,
         ICdnConfigurationStore cdnConfigurationStore,
-        ICdnCredentialStore cdnCredentialStore,
+        ICredentialStore credentialStore,
         ICdnDeliveryService cdnDeliveryService,
         PersistentCdnJobQueue cdnJobQueue,
         ICdnCertificateInspector cdnCertificateInspector,
-        ConfigurationTransactionCoordinator configurationTransactions,
         AutomationSession? automation = null)
     {
         _profileStore = profileStore;
@@ -134,13 +134,13 @@ internal sealed partial class MainForm : Form
         _transferRuntime = transferRuntime;
         _syncJobStore = syncJobStore;
         _updateChecker = updateChecker;
+        _configurationStore = configurationStore;
         _cdnConfigurationStore = cdnConfigurationStore;
-        _cdnCredentialStore = cdnCredentialStore;
+        _credentialStore = credentialStore;
         _cdnDeliveryService = cdnDeliveryService;
         _cdnJobQueue = cdnJobQueue;
         _cdnUploadAutomation = new CdnUploadAutomationCoordinator(cdnJobQueue);
         _cdnCertificateInspector = cdnCertificateInspector;
-        _configurationTransactions = configurationTransactions;
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -295,6 +295,10 @@ internal sealed partial class MainForm : Form
         tools.DropDownItems.Add(Command("multipart-uploads", "未完成的分片上传...", (_, _) => ShowIncompleteMultipartUploads()));
         tools.DropDownItems.Add(Command("folder-sync", "文件夹同步...", (_, _) => ShowFolderSync()));
         tools.DropDownItems.Add(new ToolStripSeparator());
+        tools.DropDownItems.Add(Command(
+            "credential-center",
+            "凭据中心...",
+            async (_, _) => await ShowCdnConfigurationAsync(openCredentialCenter: true)));
         tools.DropDownItems.Add(Command("settings", "选项...", async (_, _) => await ShowSettingsAsync()));
         tools.DropDownItems.Add(Command("logs", "查看日志", (_, _) => OpenLog()));
         tools.DropDownItems.Add(Command("clear-cache", "清理缓存", (_, _) => MessageBox.Show(this, "当前版本没有持久对象缓存。", "清理缓存")));
@@ -768,17 +772,6 @@ internal sealed partial class MainForm : Form
         var warnings = new List<string>();
         try
         {
-            if (await _configurationTransactions.RecoverPendingAsync())
-                warnings.Add("已完成上次中断的连接/CDN 配置事务。");
-        }
-        catch (Exception exception)
-        {
-            _logger.Error("Failed to recover configuration transaction", exception);
-            warnings.Add($"配置事务恢复：{exception.GetType().Name}: {exception.Message}");
-        }
-
-        try
-        {
             _settings = await _settingsStore.LoadAsync();
             AddRecoveryWarning(warnings, "应用设置", _settingsStore);
         }
@@ -808,7 +801,7 @@ internal sealed partial class MainForm : Form
             var configuration = await _profileStore.LoadConfigurationAsync();
             _profiles = configuration.Profiles;
             _profileGroups = configuration.Groups;
-            AddRecoveryWarning(warnings, "对象存储连接", _profileStore as IRecoveryAwareStore);
+            AddRecoveryWarning(warnings, "统一配置", _configurationStore as IRecoveryAwareStore);
         }
         catch (Exception exception)
         {
@@ -887,6 +880,7 @@ internal sealed partial class MainForm : Form
         var hasIssueLink = _commands.TryGetValue("report-issue", out var issueLink) && issueLink.Enabled;
         var hasConnectionImport = _commands.TryGetValue("import-connections", out var importConnections) && importConnections.Enabled;
         var hasConnectionExport = _commands.TryGetValue("export-all-connections", out var exportConnections);
+        var hasCredentialCenter = _commands.TryGetValue("credential-center", out var credentialCenter);
         var hasCdnConfiguration = _commands.TryGetValue("cdn-configure", out var cdnConfiguration);
         var hasCdnUrlCommand = _commands.TryGetValue("cdn-copy-url", out var cdnCopyUrl);
         var checks = new List<AutomationCheck>
@@ -909,6 +903,8 @@ internal sealed partial class MainForm : Form
                 $"Home={projectHome is not null}; Issue={issueLink is not null}"),
             new("connection-transfer-commands", hasConnectionImport && hasConnectionExport,
                 $"Import={importConnections is not null}; Export={exportConnections is not null}"),
+            new("credential-center-command", hasCredentialCenter,
+                $"Present={credentialCenter is not null}"),
             new("cdn-commands", hasCdnConfiguration && hasCdnUrlCommand,
                 $"Configure={cdnConfiguration is not null}; CopyUrl={cdnCopyUrl is not null}")
         };
@@ -1195,7 +1191,7 @@ internal sealed partial class MainForm : Form
     private async Task NewConnectionAsync()
     {
         var groupId = SelectedTargetGroupId();
-        using var dialog = new ConnectionDialog(_storage);
+        using var dialog = new ConnectionDialog(_storage, credentials: _credentials);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var profile = dialog.Profile with
         {
@@ -1303,7 +1299,7 @@ internal sealed partial class MainForm : Form
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
-        using var dialog = new ConnectionDialog(_storage, profile);
+        using var dialog = new ConnectionDialog(_storage, profile, _credentials);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var proposed = _profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray();
         await SaveProfilesAndRefreshAsync(proposed);
@@ -1362,9 +1358,10 @@ internal sealed partial class MainForm : Form
             _cdnConfiguration.Bindings
                 .Where(binding => binding.StorageProfileId != profile.Id)
                 .ToArray());
-        await _configurationTransactions.SaveAsync(
-            new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials, _profileGroups),
-            new ConfigurationSnapshot(proposedProfiles, proposedCdnConfiguration, _cdnCredentials, _profileGroups));
+        await _configurationStore.SaveAsync(new ExplorerConfiguration(
+            new ConnectionProfileConfiguration(proposedProfiles, _profileGroups),
+            proposedCdnConfiguration,
+            _credentials));
         _profiles = proposedProfiles;
         _cdnConfiguration = proposedCdnConfiguration;
         if (_currentProfile?.Id == profile.Id) Disconnect();
@@ -1427,17 +1424,12 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        var (cdnConfiguration, cdnCredentials) = SelectCdnArchiveData(profiles, exportAll);
+        var (cdnConfiguration, credentials) = SelectArchiveData(profiles, exportAll);
 
         using var options = new ConnectionExportOptionsDialog(
             profiles.Length,
-            profiles.Count(profile => profile.HasStoredCredentials ||
-                profile.CredentialSource == CredentialSourceKind.AwsAssumeRole &&
-                !string.IsNullOrWhiteSpace(profile.AwsExternalId)),
             cdnConfiguration.Profiles.Count,
-            cdnCredentials.Count(credential =>
-                credential.AuthenticationType != CdnAuthenticationType.None &&
-                !string.IsNullOrEmpty(credential.Secret)));
+            credentials.Count);
         if (options.ShowDialog(this) != DialogResult.OK) return;
 
         var suggestedName = exportAll
@@ -1461,15 +1453,15 @@ internal sealed partial class MainForm : Form
                 options.IncludeCredentials,
                 options.Password,
                 cdnConfiguration,
-                cdnCredentials);
+                credentials);
             await File.WriteAllBytesAsync(saveDialog.FileName, archive);
             _logger.Info($"Connections exported count={profiles.Length} credentials={options.IncludeCredentials} file={saveDialog.FileName}");
             MessageBox.Show(this,
                 $"已导出 {profiles.Length} 个对象存储连接、{cdnConfiguration.Profiles.Count} 个 CDN 配置和 " +
                 $"{cdnConfiguration.Bindings.Count} 个 CDN 关联。\n\n" +
                 (options.IncludeCredentials
-                    ? "连接包包含密码加密的 S3/CDN 凭据。请通过其他安全渠道传递迁移密码。"
-                    : "连接包不包含任何秘密值；CDN 认证引用已移除。"),
+                    ? "连接包包含密码加密的统一凭据。请通过其他安全渠道传递迁移密码。"
+                    : "连接包不包含任何秘密值；无法解析的凭据引用已移除。"),
                 "导出完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
@@ -1528,7 +1520,7 @@ internal sealed partial class MainForm : Form
                 package,
                 _profiles,
                 _cdnConfiguration,
-                _cdnCredentials,
+                _credentials,
                 _connectionArchive,
                 _profileGroups);
             if (preview.ShowDialog(this) != DialogResult.OK) return;
@@ -1536,35 +1528,28 @@ internal sealed partial class MainForm : Form
             var selectedCdn = preview.SelectedCdnProfiles;
             var previousProfiles = _profiles;
             var previousCdnConfiguration = _cdnConfiguration;
-            var previousCdnCredentials = _cdnCredentials;
+            var previousCredentials = _credentials;
             var merged = _connectionArchive.MergePackage(
                 _profiles,
                 _cdnConfiguration,
-                _cdnCredentials,
+                _credentials,
                 package,
                 new ConnectionArchiveImportSelection(
                     selectedStorage.Select(profile => profile.Id).ToArray(),
                     selectedCdn.Select(profile => profile.Id).ToArray()),
-                preview.ImportStorageCredentials,
-                preview.ImportCdnCredentials,
+                preview.ImportCredentials,
+                preview.ImportCredentials,
                 preview.ConflictStrategy,
                 preview.TargetGroupId);
 
-            await _configurationTransactions.SaveAsync(
-                new ConfigurationSnapshot(
-                    previousProfiles,
-                    previousCdnConfiguration,
-                    previousCdnCredentials,
-                    _profileGroups),
-                new ConfigurationSnapshot(
-                    merged.Profiles,
-                    merged.CdnConfiguration,
-                    merged.CdnCredentials,
-                    _profileGroups));
+            await _configurationStore.SaveAsync(new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(merged.Profiles, _profileGroups),
+                merged.CdnConfiguration,
+                merged.Credentials));
 
             _profiles = merged.Profiles;
             _cdnConfiguration = merged.CdnConfiguration;
-            _cdnCredentials = merged.CdnCredentials;
+            _credentials = merged.Credentials;
             PopulateProfiles();
 
             if (_currentProfile is not null)
@@ -1582,24 +1567,22 @@ internal sealed partial class MainForm : Form
                 previousCdnConfiguration.Bindings,
                 _cdnConfiguration.Bindings,
                 binding => binding.Id);
-            var changedCdnCredentials = CountChangedRecords(
-                previousCdnCredentials,
-                _cdnCredentials,
+            var changedCredentials = CountChangedRecords(
+                previousCredentials,
+                _credentials,
                 credential => credential.Id);
             _logger.Info(
                 $"Connections imported selectedStorage={selectedStorage.Count} changedStorage={changedCount} " +
                 $"selectedCdn={selectedCdn.Count} " +
                 $"cdnProfiles={changedCdnProfiles} cdnBindings={changedCdnBindings} " +
-                $"cdnCredentials={changedCdnCredentials} " +
-                $"storageCredentials={preview.ImportStorageCredentials} " +
-                $"importCdnCredentials={preview.ImportCdnCredentials} " +
+                $"credentials={changedCredentials} " +
+                $"importCredentials={preview.ImportCredentials} " +
                 $"strategy={preview.ConflictStrategy} file={openDialog.FileName}");
             MessageBox.Show(this,
                 $"导入处理完成：选择 {selectedStorage.Count} 个对象存储连接，实际新增或更新 {changedCount} 个。\n" +
                 $"选择 {selectedCdn.Count} 个 CDN 配置；配置 {changedCdnProfiles} 个、关联 {changedCdnBindings} 个、" +
-                $"凭据 {changedCdnCredentials} 个发生变化。\n\n" +
-                $"对象存储凭据：{(preview.ImportStorageCredentials ? "已导入" : "未导入")}；" +
-                $"CDN 凭据：{(preview.ImportCdnCredentials ? "已导入" : "未导入")}。",
+                $"统一凭据 {changedCredentials} 个发生变化。\n\n" +
+                $"统一凭据：{(preview.ImportCredentials ? "已导入（共享引用保持一致）" : "未导入")}。",
                 "导入完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
@@ -1617,12 +1600,12 @@ internal sealed partial class MainForm : Form
         return after.Count(profile => !previous.TryGetValue(profile.Id, out var oldProfile) || oldProfile != profile);
     }
 
-    private (CdnConfiguration Configuration, IReadOnlyList<CdnCredential> Credentials) SelectCdnArchiveData(
+    private (CdnConfiguration Configuration, IReadOnlyList<CredentialProfile> Credentials) SelectArchiveData(
         IReadOnlyCollection<ConnectionProfile> profiles,
         bool exportAll)
     {
         if (exportAll)
-            return (_cdnConfiguration, _cdnCredentials);
+            return (_cdnConfiguration, _credentials);
 
         var storageIds = profiles.Select(profile => profile.Id).ToHashSet();
         var bindings = _cdnConfiguration.Bindings
@@ -1632,11 +1615,15 @@ internal sealed partial class MainForm : Form
         var cdnProfiles = _cdnConfiguration.Profiles
             .Where(profile => cdnProfileIds.Contains(profile.Id))
             .ToArray();
-        var credentialIds = cdnProfiles
+        var credentialIds = profiles
+            .SelectMany(profile => new[] { profile.CredentialId, profile.AwsExternalIdCredentialId })
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .Concat(cdnProfiles
             .Where(profile => profile.CredentialId.HasValue)
-            .Select(profile => profile.CredentialId!.Value)
+            .Select(profile => profile.CredentialId!.Value))
             .ToHashSet();
-        var credentials = _cdnCredentials
+        var credentials = _credentials
             .Where(credential => credentialIds.Contains(credential.Id))
             .ToArray();
         return (new CdnConfiguration(cdnProfiles, bindings), credentials);

@@ -162,7 +162,7 @@ internal sealed class CdnJobsDialog : Form
                     Tag = job.Id,
                     ToolTipText = string.Join(Environment.NewLine, job.Urls)
                 };
-                item.SubItems.Add(ActionText(job.Action));
+                item.SubItems.Add(ActionText(job.Action, job.Phase));
                 item.SubItems.Add(profileName);
                 item.SubItems.Add(urlSummary);
                 item.SubItems.Add($"{job.AttemptCount}/{job.MaxAttempts}");
@@ -250,7 +250,7 @@ internal sealed class CdnJobsDialog : Form
             $"任务 ID：{selected.Id}{Environment.NewLine}" +
             $"幂等键：{selected.IdempotencyKey}{Environment.NewLine}" +
             $"状态：{StateText(selected.State)}{Environment.NewLine}" +
-            $"操作：{ActionText(selected.Action)}{Environment.NewLine}" +
+            $"操作：{ActionText(selected.Action, selected.Phase)}{Environment.NewLine}" +
             $"尝试：{selected.AttemptCount}/{selected.MaxAttempts}{Environment.NewLine}" +
             $"Provider 任务 ID：{(selected.ProviderTaskId.Length == 0 ? "无" : selected.ProviderTaskId)}{Environment.NewLine}" +
             $"状态码：{selected.LastStatusCode?.ToString() ?? "无"}{Environment.NewLine}" +
@@ -281,4 +281,11 @@ internal sealed class CdnJobsDialog : Form
         CdnJobAction.PurgeThenWarmup => "刷新后预热",
         _ => action.ToString()
     };
+
+    private static string ActionText(CdnJobAction action, CdnJobPhase phase) =>
+        action == CdnJobAction.PurgeThenWarmup
+            ? phase == CdnJobPhase.Warmup
+                ? "刷新后预热（预热阶段）"
+                : "刷新后预热（刷新阶段）"
+            : ActionText(action);
 }

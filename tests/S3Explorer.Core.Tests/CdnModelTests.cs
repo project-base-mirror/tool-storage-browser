@@ -136,7 +136,7 @@ public sealed class CdnModelTests
             Secret = "first\r\nsecond"
         };
 
-        var errors = CdnConfigurationValidator.Validate(
+        var errors = CdnConfigurationValidator.ValidateLegacy(
             CdnConfiguration.Empty,
             [credential]);
 

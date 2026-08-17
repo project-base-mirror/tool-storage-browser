@@ -26,6 +26,28 @@ public sealed class CdnJobQueueTests
     }
 
     [Fact]
+    public async Task PurgeThenWarmupCompletesInTwoOrderedPhases()
+    {
+        var executor = new SequenceExecutor(
+            new CdnProviderResult(CdnProviderOperationState.Completed, "purged"),
+            new CdnProviderResult(CdnProviderOperationState.Completed, "warmed"));
+        await using var queue = new PersistentCdnJobQueue(new MemoryStore(), executor);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(Job("two-phase") with
+        {
+            Action = CdnJobAction.PurgeThenWarmup
+        }, TestContext.Current.CancellationToken);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await queue.WaitForIdleAsync(timeout.Token);
+
+        var job = Assert.Single(queue.Snapshot.Jobs);
+        Assert.Equal(CdnJobState.Completed, job.State);
+        Assert.Equal(CdnJobPhase.Warmup, job.Phase);
+        Assert.Equal([CdnJobPhase.Purge, CdnJobPhase.Warmup], executor.Phases);
+    }
+
+    [Fact]
     public async Task RetryableFailureIsRetriedAndCompleted()
     {
         var now = DateTimeOffset.Parse("2026-07-28T00:00:00Z");
@@ -286,12 +308,14 @@ public sealed class CdnJobQueueTests
     {
         private readonly Queue<CdnProviderResult> _results = new(results);
         public int CallCount { get; private set; }
+        public List<CdnJobPhase> Phases { get; } = [];
 
         public Task<CdnProviderResult> ExecuteAsync(
             CdnJobRecord job,
             CancellationToken cancellationToken)
         {
             CallCount++;
+            Phases.Add(job.Phase);
             return Task.FromResult(_results.Count > 0
                 ? _results.Dequeue()
                 : new CdnProviderResult(CdnProviderOperationState.Completed, "done"));

@@ -6,13 +6,13 @@ namespace S3Explorer.App;
 internal sealed partial class MainForm
 {
     private readonly ICdnConfigurationStore _cdnConfigurationStore;
-    private readonly ICdnCredentialStore _cdnCredentialStore;
+    private readonly ICredentialStore _credentialStore;
     private readonly ICdnDeliveryService _cdnDeliveryService;
     private readonly PersistentCdnJobQueue _cdnJobQueue;
     private readonly CdnUploadAutomationCoordinator _cdnUploadAutomation;
     private readonly ICdnCertificateInspector _cdnCertificateInspector;
     private CdnConfiguration _cdnConfiguration = CdnConfiguration.Empty;
-    private IReadOnlyList<CdnCredential> _cdnCredentials = [];
+    private IReadOnlyList<CredentialProfile> _credentials = [];
     private ToolStripMenuItem? _cdnObjectContextMenu;
     private ToolStripMenuItem? _cdnObjectContextCopy;
     private ToolStripMenuItem? _cdnObjectContextOpen;
@@ -214,7 +214,7 @@ internal sealed partial class MainForm
     {
         var warnings = new List<string>();
         var configuration = CdnConfiguration.Empty;
-        IReadOnlyList<CdnCredential> credentials = [];
+        IReadOnlyList<CredentialProfile> credentials = [];
         try
         {
             configuration = await _cdnConfigurationStore.LoadAsync();
@@ -227,7 +227,7 @@ internal sealed partial class MainForm
 
         try
         {
-            credentials = await _cdnCredentialStore.LoadAsync();
+            credentials = await _credentialStore.LoadAsync();
         }
         catch (Exception exception)
         {
@@ -236,7 +236,7 @@ internal sealed partial class MainForm
         }
 
         _cdnConfiguration = configuration;
-        _cdnCredentials = credentials;
+        _credentials = credentials;
         try
         {
             CdnConfigurationValidator.EnsureValid(configuration, credentials);
@@ -247,39 +247,41 @@ internal sealed partial class MainForm
             warnings.Add($"CDN 配置关联：{exception.Message}");
         }
         AddRecoveryWarning(warnings, "CDN 配置", _cdnConfigurationStore as IRecoveryAwareStore);
-        AddRecoveryWarning(warnings, "CDN 独立凭据", _cdnCredentialStore as IRecoveryAwareStore);
         return warnings;
     }
 
     private async Task ShowCdnConfigurationAsync(
         ConnectionProfile? initialProfile = null,
-        string? initialBucket = null)
+        string? initialBucket = null,
+        bool openCredentialCenter = false)
     {
         using var dialog = new CdnConfigurationDialog(
             _profiles,
             _cdnConfiguration,
-            _cdnCredentials,
+            _credentials,
             initialProfile ?? _currentProfile,
             initialBucket ?? _currentBucket,
             _cdnCertificateInspector,
             _storage,
             _cdnDeliveryService,
-            PersistCdnCertificateResultAsync);
+            PersistCdnCertificateResultAsync,
+            openCredentialCenter);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
         try
         {
             CdnConfigurationValidator.EnsureValid(dialog.Configuration, dialog.Credentials);
-            await _configurationTransactions.SaveAsync(
-                new ConfigurationSnapshot(_profiles, _cdnConfiguration, _cdnCredentials),
-                new ConfigurationSnapshot(_profiles, dialog.Configuration, dialog.Credentials));
-            _cdnCredentials = dialog.Credentials;
+            await _configurationStore.SaveAsync(new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(_profiles, _profileGroups),
+                dialog.Configuration,
+                dialog.Credentials));
+            _credentials = dialog.Credentials;
             _cdnConfiguration = dialog.Configuration;
             UpdateCommandStates();
             MessageBox.Show(
                 this,
-                "CDN 配置、独立凭据和 Bucket/前缀关联已保存。",
+                "CDN 配置、统一凭据和 Bucket/前缀关联已保存。",
                 "CDN 配置",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -287,7 +289,7 @@ internal sealed partial class MainForm
         catch (Exception exception)
         {
             _logger.Error("Failed to save CDN configuration", exception);
-            ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和独立凭据", exception);
+            ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和统一凭据", exception);
         }
     }
 
@@ -328,7 +330,7 @@ internal sealed partial class MainForm
 
     private bool TryResolveSelectedCdnTarget(
         out CdnResolvedTarget? target,
-        out CdnCredential? credential,
+        out CredentialProfile? credential,
         bool showMessage)
     {
         target = null;
@@ -366,13 +368,13 @@ internal sealed partial class MainForm
 
     private bool TryResolveCdnCredential(
         CdnResolvedTarget target,
-        out CdnCredential? credential,
+        out CredentialProfile? credential,
         bool showMessage)
     {
         credential = null;
         if (target.Profile.CredentialId is not Guid credentialId)
             return true;
-        credential = _cdnCredentials.FirstOrDefault(value => value.Id == credentialId);
+        credential = _credentials.FirstOrDefault(value => value.Id == credentialId);
         if (credential is not null)
             return true;
         if (showMessage)
@@ -426,7 +428,7 @@ internal sealed partial class MainForm
         ShowCdnDownloadTest(target, credential);
     }
 
-    private void ShowCdnDownloadTest(CdnResolvedTarget target, CdnCredential? credential)
+    private void ShowCdnDownloadTest(CdnResolvedTarget target, CredentialProfile? credential)
     {
         using var dialog = new CdnDownloadTestDialog(
             _cdnDeliveryService,
