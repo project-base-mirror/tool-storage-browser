@@ -19,6 +19,7 @@ if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
 }
 $runRoot = Join-Path $repositoryRoot "artifacts\installer-lifecycle\$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+$startMenuShortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\S3 Explorer\S3 Explorer.lnk"
 
 function Invoke-Msi {
     param(
@@ -40,7 +41,10 @@ function Invoke-Msi {
 }
 
 function Test-InstalledApplication {
-    param([switch]$RequireUpdater)
+    param(
+        [switch]$RequireUpdater,
+        [switch]$RequireStableStartMenuShortcut
+    )
 
     $gui = Join-Path $InstallDirectory "S3Explorer.exe"
     $cli = Join-Path $InstallDirectory "s3explorer-cli.exe"
@@ -50,6 +54,24 @@ function Test-InstalledApplication {
     }
     if ($RequireUpdater -and -not (Test-Path -LiteralPath $updater)) {
         throw "Installed maintenance updater is missing from $InstallDirectory."
+    }
+
+    if ($RequireStableStartMenuShortcut) {
+        if (-not (Test-Path -LiteralPath $startMenuShortcutPath -PathType Leaf)) {
+            throw "Installed start menu shortcut is missing: $startMenuShortcutPath"
+        }
+
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($startMenuShortcutPath)
+        $expectedTarget = [IO.Path]::GetFullPath($gui)
+        $actualTarget = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+        if ($actualTarget -cne $expectedTarget) {
+            throw "Start menu shortcut target '$actualTarget' does not match '$expectedTarget'."
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$shortcut.IconLocation) -and
+            [string]$shortcut.IconLocation -match '(?i)\\Windows\\Installer\\') {
+            throw "Start menu shortcut still depends on the Windows Installer icon cache: $($shortcut.IconLocation)"
+        }
     }
 
     $versionOutput = & $cli version --output json --non-interactive 2>&1
@@ -92,7 +114,7 @@ try {
 
     Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log")
     $installed = $true
-    Test-InstalledApplication -RequireUpdater
+    Test-InstalledApplication -RequireUpdater -RequireStableStartMenuShortcut
 
     $registry = Get-ItemProperty -LiteralPath "HKLM:\Software\project-base-mirror\S3 Explorer" -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace([string]$registry.InstallerFlavor)) {
@@ -107,6 +129,9 @@ try {
     $installed = $false
     if (Test-Path -LiteralPath (Join-Path $InstallDirectory "S3Explorer.exe")) {
         throw "GUI executable remains after uninstall."
+    }
+    if (Test-Path -LiteralPath $startMenuShortcutPath) {
+        throw "Start menu shortcut remains after uninstall: $startMenuShortcutPath"
     }
     $remainingMarker = Get-ItemPropertyValue `
         -LiteralPath "HKLM:\Software\project-base-mirror\S3 Explorer" `

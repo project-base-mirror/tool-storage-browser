@@ -84,16 +84,7 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="APPLICATIONFOLDER" Name="S3 Explorer">
         <Component Id="ApplicationFiles" Guid="*">
-          <File Id="S3ExplorerExe" Source="$(PayloadDir)\S3Explorer.exe" KeyPath="yes">
-            <Shortcut
-                Id="StartMenuShortcut"
-                Directory="ApplicationProgramsFolder"
-                Name="S3 Explorer"
-                Description="S3 与 S3-compatible 对象存储管理工具"
-                WorkingDirectory="APPLICATIONFOLDER"
-                Icon="S3ExplorerIcon.exe"
-                Advertise="yes" />
-          </File>
+          <File Id="S3ExplorerExe" Source="$(PayloadDir)\S3Explorer.exe" KeyPath="yes" />
           <RegistryValue
               Root="HKLM"
               Key="Software\project-base-mirror\S3 Explorer"
@@ -106,7 +97,6 @@
               Name="InstallLocation"
               Type="string"
               Value="[APPLICATIONFOLDER]" />
-          <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
         </Component>
         <Component Id="CliFiles" Guid="*">
           <File Id="S3ExplorerCliExe" Source="$(PayloadDir)\s3explorer-cli.exe" />
@@ -115,7 +105,24 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ApplicationProgramsFolder" Name="S3 Explorer" />
+      <Directory Id="ApplicationProgramsFolder" Name="S3 Explorer">
+        <Component Id="StartMenuShortcutComponent" Guid="*">
+          <Shortcut
+              Id="StartMenuShortcut"
+              Name="S3 Explorer"
+              Description="S3 与 S3-compatible 对象存储管理工具"
+              Target="[APPLICATIONFOLDER]S3Explorer.exe"
+              WorkingDirectory="APPLICATIONFOLDER" />
+          <RegistryValue
+              Root="HKCU"
+              Key="Software\project-base-mirror\S3 Explorer"
+              Name="StartMenuShortcut"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        </Component>
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="DesktopFolder">
@@ -125,8 +132,7 @@
             Name="S3 Explorer"
             Description="S3 与 S3-compatible 对象存储管理工具"
             Target="[APPLICATIONFOLDER]S3Explorer.exe"
-            WorkingDirectory="APPLICATIONFOLDER"
-            Icon="S3ExplorerIcon.exe" />
+            WorkingDirectory="APPLICATIONFOLDER" />
         <RegistryValue
             Root="HKCU"
             Key="Software\project-base-mirror\S3 Explorer"
@@ -139,6 +145,7 @@
 
     <Feature Id="MainFeature" Title="S3 Explorer 主程序" Level="1" AllowAbsent="no">
       <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
       <ComponentRef Id="CliFiles" />
       <Files Include="$(PayloadDir)\**" Directory="APPLICATIONFOLDER">
         <Exclude Files="$(PayloadDir)\S3Explorer.exe" />
