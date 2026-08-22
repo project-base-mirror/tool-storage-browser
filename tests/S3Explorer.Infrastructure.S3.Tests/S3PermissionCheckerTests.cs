@@ -10,7 +10,7 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 public sealed class S3PermissionCheckerTests
 {
     [Fact]
-    public async Task ReadCheckReportsListAndHeadWithoutClaimingContentGet()
+    public async Task ReadCheckReportsHeadAndBoundedContentGetSeparately()
     {
         var (checker, storage) = CreateChecker();
         storage.HasObject = true;
@@ -23,7 +23,10 @@ public sealed class S3PermissionCheckerTests
         var head = Assert.Single(result.Checks, value => value.Name == "HeadObject");
         Assert.Equal(PermissionCheckState.Passed, head.State);
         Assert.Contains("不会证明对象内容 GET", head.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain(result.Checks, value => value.Name == "GetObject");
+        var get = Assert.Single(result.Checks, value => value.Name == "GetObject");
+        Assert.Equal(PermissionCheckState.Passed, get.State);
+        Assert.Contains("小文件内容", get.Message, StringComparison.Ordinal);
+        Assert.Contains("download", storage.Operations);
     }
 
     [Fact]
@@ -37,6 +40,36 @@ public sealed class S3PermissionCheckerTests
 
         Assert.Equal(PermissionCheckState.Indeterminate,
             Assert.Single(result.Checks, value => value.Name == "HeadObject").State);
+    }
+
+    [Fact]
+    public async Task ReadCheckNeverDownloadsLargeObjectForPermissionVerification()
+    {
+        var (checker, storage) = CreateChecker();
+        storage.HasObject = true;
+        storage.ObjectSize = 10 * 1024 * 1024;
+
+        var result = await checker.CheckAsync(
+            Request(StoragePermissionOperation.Read),
+            TestContext.Current.CancellationToken);
+
+        var get = Assert.Single(result.Checks, value => value.Name == "GetObject");
+        Assert.Equal(PermissionCheckState.Indeterminate, get.State);
+        Assert.Contains("避免下载大文件", get.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("download", storage.Operations);
+    }
+
+    [Fact]
+    public async Task ReadProbePassesHardTransportLimit()
+    {
+        var (checker, storage) = CreateChecker();
+        storage.HasObject = true;
+
+        await checker.CheckAsync(
+            Request(StoragePermissionOperation.Read),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(64 * 1024, storage.MaximumDownloadBytes);
     }
 
     [Fact]
@@ -88,6 +121,43 @@ public sealed class S3PermissionCheckerTests
     }
 
     [Fact]
+    public async Task CancelledUploadStillAttemptsCleanupWithIndependentToken()
+    {
+        var (checker, storage) = CreateChecker();
+        storage.CancelUpload = true;
+
+        var result = await checker.CheckAsync(
+            Request(StoragePermissionOperation.Publish, allowMutation: true),
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains("delete", storage.Operations);
+        Assert.NotEqual(storage.UploadCancellationToken, storage.DeleteCancellationToken);
+        var put = Assert.Single(result.Checks, value => value.Name == "PutObject");
+        Assert.Equal(PermissionCheckState.Indeterminate, put.State);
+        var delete = Assert.Single(result.Checks, value => value.Name == "DeleteObject");
+        Assert.Equal(PermissionCheckState.Passed, delete.State);
+    }
+
+    [Fact]
+    public async Task CancellationBeforeUploadDoesNotReportRemoteCleanup()
+    {
+        var (checker, storage) = CreateChecker();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await checker.CheckAsync(
+            Request(StoragePermissionOperation.Publish, allowMutation: true),
+            cancellation.Token);
+
+        Assert.DoesNotContain("upload", storage.Operations);
+        Assert.DoesNotContain("delete", storage.Operations);
+        Assert.Equal(
+            PermissionCheckState.Indeterminate,
+            Assert.Single(result.Checks, value => value.Name == "PutObject").State);
+        Assert.DoesNotContain(result.Checks, value => value.Name == "DeleteObject");
+    }
+
+    [Fact]
     public async Task AccessDeniedKeepsSafeProviderDiagnostics()
     {
         var (checker, storage) = CreateChecker();
@@ -136,9 +206,14 @@ public sealed class S3PermissionCheckerTests
     public class StorageProxy : DispatchProxy
     {
         public bool HasObject { get; set; }
+        public long ObjectSize { get; set; } = 1;
         public bool FailDelete { get; set; }
+        public bool CancelUpload { get; set; }
         public Exception? ListException { get; set; }
         public List<string> Operations { get; } = [];
+        public long MaximumDownloadBytes { get; private set; }
+        public CancellationToken DeleteCancellationToken { get; private set; }
+        public CancellationToken UploadCancellationToken { get; private set; }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -148,9 +223,10 @@ public sealed class S3PermissionCheckerTests
             {
                 nameof(IS3StorageService.ListObjectsAsync) => ListObjects(),
                 nameof(IS3StorageService.GetObjectPropertiesAsync) => GetProperties(args),
-                nameof(IS3StorageService.UploadFileAsync) => Record("upload"),
+                nameof(IS3StorageService.DownloadFileAsync) => Download(args),
+                nameof(IS3StorageService.UploadFileAsync) => Upload(args),
                 nameof(IS3StorageService.PutObjectAclAsync) => Record("acl"),
-                nameof(IS3StorageService.DeleteObjectsAsync) => Delete(),
+                nameof(IS3StorageService.DeleteObjectsAsync) => Delete(args),
                 _ => throw new NotSupportedException(targetMethod.Name)
             };
         }
@@ -161,7 +237,7 @@ public sealed class S3PermissionCheckerTests
             if (ListException is not null)
                 return Task.FromException<PagedObjectResult>(ListException);
             IReadOnlyList<S3ObjectEntry> items = HasObject
-                ? [new S3ObjectEntry("deploy/file.txt", "file.txt", 1, false, DateTimeOffset.UtcNow, "STANDARD")]
+                ? [new S3ObjectEntry("deploy/file.txt", "file.txt", ObjectSize, false, DateTimeOffset.UtcNow, "STANDARD")]
                 : [];
             return Task.FromResult(new PagedObjectResult(items, null, false));
         }
@@ -177,15 +253,33 @@ public sealed class S3PermissionCheckerTests
             null,
             new Dictionary<string, string>()));
 
+        private Task Download(object?[] args)
+        {
+            Operations.Add("download");
+            MaximumDownloadBytes = ((TransferOperationContext)args[4]!).Options.MaximumDownloadBytes;
+            File.WriteAllBytes((string)args[3]!, [0x2A]);
+            return Task.CompletedTask;
+        }
+
+        private Task Upload(object?[] args)
+        {
+            Operations.Add("upload");
+            UploadCancellationToken = (CancellationToken)args[6]!;
+            if (CancelUpload)
+                return Task.FromException(new OperationCanceledException());
+            return Task.CompletedTask;
+        }
+
         private Task Record(string operation)
         {
             Operations.Add(operation);
             return Task.CompletedTask;
         }
 
-        private Task Delete()
+        private Task Delete(object?[] args)
         {
             Operations.Add("delete");
+            DeleteCancellationToken = (CancellationToken)args[3]!;
             return FailDelete
                 ? Task.FromException(new InvalidOperationException("simulated cleanup failure"))
                 : Task.CompletedTask;

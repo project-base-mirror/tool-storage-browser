@@ -366,6 +366,13 @@ public sealed partial class S3StorageService : IS3StorageService
                 VersionId = versionId
             }, cancellationToken).ConfigureAwait(false);
 
+            var maximumDownloadBytes = transferContext.Options.MaximumDownloadBytes;
+            if (maximumDownloadBytes > 0 && metadata.ContentLength > maximumDownloadBytes)
+                throw new TransferExecutionException(new TransferFailureInfo(
+                    $"远端对象大小 {metadata.ContentLength} bytes 超过本次下载上限 {maximumDownloadBytes} bytes。",
+                    TransferFailureCategory.Validation,
+                    Retryable: false));
+
             var remote = new RemoteObjectIdentity(
                 metadata.ContentLength,
                 metadata.ETag,
@@ -404,9 +411,16 @@ public sealed partial class S3StorageService : IS3StorageService
                     BucketName = bucket,
                     Key = key,
                     VersionId = versionId,
-                    ByteRange = completed > 0 ? new ByteRange(completed, remote.Length - 1) : null
+                    ByteRange = maximumDownloadBytes > 0
+                        ? new ByteRange(completed, Math.Min(remote.Length, maximumDownloadBytes) - 1)
+                        : completed > 0 ? new ByteRange(completed, remote.Length - 1) : null
                 };
                 using var response = await client.GetObjectAsync(request, cancellationToken).ConfigureAwait(false);
+                if (maximumDownloadBytes > 0 && response.ContentLength > maximumDownloadBytes - completed)
+                    throw new TransferExecutionException(new TransferFailureInfo(
+                        $"远端响应超过本次下载上限 {maximumDownloadBytes} bytes。",
+                        TransferFailureCategory.Validation,
+                        Retryable: false));
                 if (!SameIdentity(metadata.ETag, response.ETag) ||
                     !SameIdentity(metadata.VersionId, response.VersionId))
                 {
@@ -428,11 +442,22 @@ public sealed partial class S3StorageService : IS3StorageService
                 var bytesSinceCheckpoint = 0L;
                 while (true)
                 {
+                    if (maximumDownloadBytes > 0 && completed >= maximumDownloadBytes)
+                        break;
+                    var readBuffer = maximumDownloadBytes > 0
+                        ? Math.Min(buffer.Length, checked((int)(maximumDownloadBytes - completed)))
+                        : buffer.Length;
                     var read = await response.ResponseStream
-                        .ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                        .ReadAsync(buffer.AsMemory(0, readBuffer), cancellationToken)
                         .ConfigureAwait(false);
                     if (read == 0)
                         break;
+
+                    if (maximumDownloadBytes > 0 && completed > maximumDownloadBytes - read)
+                        throw new TransferExecutionException(new TransferFailureInfo(
+                            $"远端响应在传输期间超过本次下载上限 {maximumDownloadBytes} bytes。",
+                            TransferFailureCategory.Validation,
+                            Retryable: false));
 
                     await transferContext.BandwidthLimiter
                         .WaitAsync(TransferDirection.Download, read, cancellationToken)

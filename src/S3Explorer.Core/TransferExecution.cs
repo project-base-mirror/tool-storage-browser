@@ -7,6 +7,8 @@ public sealed record TransferExecutionOptions
     public int MultipartConcurrency { get; init; } = 4;
     public long UploadBytesPerSecond { get; init; }
     public long DownloadBytesPerSecond { get; init; }
+    /// <summary>Optional hard upper bound for a single download. Zero means unlimited.</summary>
+    public long MaximumDownloadBytes { get; init; }
 
     public void Validate()
     {
@@ -18,6 +20,8 @@ public sealed record TransferExecutionOptions
             throw new ArgumentOutOfRangeException(nameof(MultipartConcurrency));
         if (UploadBytesPerSecond < 0 || DownloadBytesPerSecond < 0)
             throw new ArgumentOutOfRangeException(nameof(UploadBytesPerSecond));
+        if (MaximumDownloadBytes < 0)
+            throw new ArgumentOutOfRangeException(nameof(MaximumDownloadBytes));
     }
 }
 

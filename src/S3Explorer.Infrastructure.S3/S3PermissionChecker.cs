@@ -5,6 +5,9 @@ namespace S3Explorer.Infrastructure.S3;
 
 public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePermissionChecker
 {
+    private const long MaximumReadProbeBytes = 64 * 1024;
+    private static readonly TimeSpan ProbeCleanupTimeout = TimeSpan.FromSeconds(15);
+
     public async Task<PermissionCheckResult> CheckAsync(
         StoragePermissionCheckRequest request,
         CancellationToken cancellationToken = default)
@@ -24,7 +27,7 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
                 request.Bucket.Trim(),
                 prefix,
                 null,
-                1,
+                100,
                 cancellationToken).ConfigureAwait(false);
             checks.Add(Passed("storage", "ListBucket", "目标 Bucket/Prefix 可列举。"));
         }
@@ -59,6 +62,26 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
                 {
                     checks.Add(FromException("storage", "HeadObject", exception));
                 }
+            }
+
+
+            var contentCandidate = listing?.Items.FirstOrDefault(value =>
+                !value.IsDirectory && value.Size >= 0 && value.Size <= MaximumReadProbeBytes);
+            if (contentCandidate is null)
+            {
+                checks.Add(new PermissionCheck(
+                    "storage",
+                    "GetObject",
+                    PermissionCheckState.Indeterminate,
+                    $"前 100 个对象中没有不超过 {MaximumReadProbeBytes / 1024} KiB 的文件；为避免下载大文件，未执行内容读取。"));
+            }
+            else
+            {
+                await CheckBoundedObjectReadAsync(
+                    request,
+                    contentCandidate,
+                    checks,
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -100,6 +123,41 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
         };
     }
 
+    private async Task CheckBoundedObjectReadAsync(
+        StoragePermissionCheckRequest request,
+        S3ObjectEntry candidate,
+        ICollection<PermissionCheck> checks,
+        CancellationToken cancellationToken)
+    {
+        var localPath = Path.Combine(
+            Path.GetTempPath(),
+            "s3explorer-read-permission-" + Guid.NewGuid().ToString("N") + ".probe");
+        var temporaryPath = ResumableDownloadFile.TemporaryPath(localPath);
+        try
+        {
+            await storage.DownloadFileAsync(
+                request.Profile,
+                request.Bucket.Trim(),
+                candidate.Key,
+                localPath,
+                CreateTransferContext(),
+                cancellationToken).ConfigureAwait(false);
+            checks.Add(Passed(
+                "storage",
+                "GetObject",
+                $"已读取小文件内容（{candidate.Size} bytes），确认对象内容 GET 权限。"));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            checks.Add(FromException("storage", "GetObject", exception));
+        }
+        finally
+        {
+            TryDelete(localPath);
+            TryDelete(temporaryPath);
+        }
+    }
+
     private async Task RunMutationProbeAsync(
         StoragePermissionCheckRequest request,
         string prefix,
@@ -108,12 +166,14 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
     {
         var key = prefix + ".s3explorer-permission-probe/" + Guid.NewGuid().ToString("N") + ".txt";
         var localPath = Path.Combine(Path.GetTempPath(), "s3explorer-permission-" + Guid.NewGuid().ToString("N") + ".txt");
-        var uploaded = false;
+        var uploadStarted = false;
+        var cleanupRequired = false;
         try
         {
             await File.WriteAllTextAsync(localPath, "S3 Explorer permission probe", cancellationToken).ConfigureAwait(false);
             try
             {
+                uploadStarted = true;
                 await storage.UploadFileAsync(
                     request.Profile,
                     request.Bucket.Trim(),
@@ -122,7 +182,7 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
                     string.Empty,
                     CreateTransferContext(),
                     cancellationToken).ConfigureAwait(false);
-                uploaded = true;
+                cleanupRequired = true;
                 checks.Add(Passed("storage", "PutObject", "远端探针写入成功。"));
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -149,37 +209,44 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
                 }
             }
 
-            try
+        }
+        catch (OperationCanceledException)
+        {
+            cleanupRequired = uploadStarted;
+            checks.Add(new PermissionCheck(
+                "storage",
+                "PutObject",
+                PermissionCheckState.Indeterminate,
+                "权限探针被取消；远端写入结果可能未知。")
             {
-                await storage.DeleteObjectsAsync(
-                    request.Profile,
-                    request.Bucket.Trim(),
-                    [key],
-                    cancellationToken).ConfigureAwait(false);
-                uploaded = false;
-                checks.Add(Passed("storage", "DeleteObject", "远端探针已清理。"));
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                checks.Add(FromException("storage", "DeleteObject", exception) with
-                {
-                    Message = "远端探针清理失败；对象可能仍保留在目标 Prefix。"
-                });
-            }
+                Required = false
+            });
         }
         finally
         {
             try { if (File.Exists(localPath)) File.Delete(localPath); }
             catch { }
-            if (uploaded && !checks.Any(value => value.Name == "DeleteObject"))
-                checks.Add(new PermissionCheck(
-                    "storage",
-                    "DeleteObject",
-                    PermissionCheckState.Indeterminate,
-                    $"操作中断，远端探针可能仍存在：{key}")
+            if (cleanupRequired)
+            {
+                using var cleanupTimeout = new CancellationTokenSource(ProbeCleanupTimeout);
+                try
                 {
-                    Required = false
-                });
+                    await storage.DeleteObjectsAsync(
+                        request.Profile,
+                        request.Bucket.Trim(),
+                        [key],
+                        cleanupTimeout.Token).ConfigureAwait(false);
+                    checks.Add(Passed("storage", "DeleteObject", $"远端探针已清理：{key}"));
+                }
+                catch (Exception exception)
+                {
+                    checks.Add(FromException("storage", "DeleteObject", exception) with
+                    {
+                        Required = true,
+                        Message = $"远端探针清理失败；对象可能仍保留在 s3://{request.Bucket.Trim()}/{key}。"
+                    });
+                }
+            }
         }
     }
 
@@ -191,7 +258,7 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
         var limiter = new SharedTransferBandwidthLimiter();
         limiter.Configure(0, 0);
         return new TransferOperationContext(
-            new TransferExecutionOptions(),
+            new TransferExecutionOptions { MaximumDownloadBytes = MaximumReadProbeBytes },
             limiter,
             null,
             null,
@@ -223,6 +290,12 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
             name,
             PermissionCheckState.Indeterminate,
             SensitiveDataRedactor.Redact(exception.Message));
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch { }
     }
 
     private static string NormalizePrefix(string? prefix)
