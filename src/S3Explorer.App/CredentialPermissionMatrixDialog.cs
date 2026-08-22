@@ -13,14 +13,14 @@ internal sealed class CredentialPermissionMatrixDialog : Form
     private readonly Button _check = new()
     {
         Name = "CheckSelectedCredentialPermissionsButton",
-        Text = "立即检查",
+        Text = "立即检查 OSS/CDN",
         AutoSize = true,
-        MinimumSize = new Size(104, 34)
+        MinimumSize = new Size(148, 34)
     };
     private readonly Button _probe = new()
     {
         Name = "ProbeSelectedCredentialPermissionsButton",
-        Text = "探针检查...",
+        Text = "存储探针...",
         AutoSize = true,
         MinimumSize = new Size(112, 34)
     };
@@ -104,7 +104,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         var safety = new Label
         {
             AutoSize = true,
-            Text = "“立即检查”不产生远端写入；“探针检查”会要求逐次确认，并真实上传、设置可选 ACL 后删除临时对象。",
+            Text = "“立即检查 OSS/CDN”会同时检查所选凭据关联的对象存储和 CDN：阿里云 CDN 查询控制面域名权限，通用 CDN 执行认证 HEAD。CDN 刷新/预热不会自动提交真实任务。",
             ForeColor = Color.DarkOrange,
             Margin = new Padding(0, 8, 0, 0)
         };
@@ -203,6 +203,12 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         _grid.Columns.Add(StateColumn("PutObjectAcl", "ACL"));
         _grid.Columns.Add(StateColumn("CdnQueryOrAuthentication", "CDN 查询/认证", 105));
         _grid.Columns.Add(StateColumn("RefreshOrPush", "CDN 刷新/预热", 118));
+        if (_grid.Columns["CdnQueryOrAuthentication"] is { } cdnQueryColumn)
+            cdnQueryColumn.HeaderCell.ToolTipText =
+                "随“立即检查 OSS/CDN”执行：阿里云检查域名查询权限，通用 HTTP CDN 检查认证响应。";
+        if (_grid.Columns["RefreshOrPush"] is { } refreshColumn)
+            refreshColumn.HeaderCell.ToolTipText =
+                "刷新/预热会产生真实控制面任务，当前无副作用检查不会自动提交，因此通常显示 ?。";
         _grid.Columns.Add(TextColumn("LastChecked", "最近检查", 160));
         _grid.SelectionChanged += (_, _) => UpdateActions();
     }
@@ -262,7 +268,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         var selected = SelectedCredential is not null;
         _grid.Enabled = !busy;
         _check.Enabled = busy || selected;
-        _check.Text = busy ? "取消检查" : "立即检查";
+        _check.Text = busy ? "取消检查" : "立即检查 OSS/CDN";
         _probe.Enabled = !busy && selected;
     }
 
