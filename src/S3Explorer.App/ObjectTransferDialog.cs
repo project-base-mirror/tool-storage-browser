@@ -9,14 +9,33 @@ internal sealed record ObjectTransferOptions(
 
 internal sealed class ObjectTransferDialog : Form
 {
-    private readonly TextBox _bucket = new() { Dock = DockStyle.Fill };
+    private readonly BucketPicker _bucket;
     private readonly TextBox _prefix = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _conflict = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Button _ok = new() { Text = "确定", Size = new Size(92, 32) };
     private readonly Button _cancel = new() { Text = "取消", Size = new Size(92, 32), DialogResult = DialogResult.Cancel };
 
-    public ObjectTransferDialog(bool move, string bucket, string prefix, int itemCount)
+    public ObjectTransferDialog(
+        bool move,
+        string bucket,
+        string prefix,
+        int itemCount,
+        ConnectionProfile? profile = null,
+        IS3StorageService? storage = null,
+        BucketDiscoveryCache? bucketDiscoveryCache = null)
     {
+        _bucket = new BucketPicker(
+            bucketDiscoveryCache ?? new BucketDiscoveryCache(),
+            storage is null
+                ? null
+                : async (selectedProfile, token) =>
+                    (await storage.ListBucketsAsync(selectedProfile, token).ConfigureAwait(true))
+                    .Select(value => value.Name)
+                    .ToArray())
+        {
+            Name = "ObjectTransferDestinationBucket",
+            Dock = DockStyle.Fill
+        };
         Text = move ? "移动到" : "复制到";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(560, 275);
@@ -24,7 +43,7 @@ internal sealed class ObjectTransferDialog : Form
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
 
-        _bucket.Text = bucket;
+        _bucket.BucketText = bucket;
         _prefix.Text = prefix;
         _conflict.DisplayMember = nameof(ConflictOption.Text);
         _conflict.ValueMember = nameof(ConflictOption.Policy);
@@ -65,13 +84,17 @@ internal sealed class ObjectTransferDialog : Form
         AcceptButton = _ok;
         CancelButton = _cancel;
         _ok.Click += (_, _) => Confirm();
+        if (profile is not null)
+        {
+            Shown += async (_, _) => await _bucket.RefreshAsync(profile, preserve: true);
+        }
     }
 
     public ObjectTransferOptions? Options { get; private set; }
 
     private void Confirm()
     {
-        var bucket = _bucket.Text.Trim();
+        var bucket = _bucket.BucketText.Trim();
         if (string.IsNullOrWhiteSpace(bucket))
         {
             MessageBox.Show(this, "目标 Bucket 不能为空。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);

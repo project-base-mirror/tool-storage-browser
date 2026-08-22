@@ -660,12 +660,13 @@ internal sealed class CdnBindingEditorDialog : Form
     }
 
     private readonly Guid _id;
+    private readonly IReadOnlyList<ConnectionProfile> _storageProfiles;
     private readonly ComboBox _storage = new()
     {
         Name = "CdnBindingStorageProfile",
         DropDownStyle = ComboBoxStyle.DropDownList
     };
-    private readonly TextBox _bucket = new() { Name = "CdnBindingBucket" };
+    private readonly BucketPicker _bucket;
     private readonly TextBox _sourcePrefix = new() { Name = "CdnBindingSourcePrefix" };
     private readonly ComboBox _cdn = new()
     {
@@ -708,8 +709,21 @@ internal sealed class CdnBindingEditorDialog : Form
         IReadOnlyList<CdnProfile> cdnProfiles,
         ConnectionProfile? initialProfile,
         string? initialBucket,
+        BucketDiscoveryCache? bucketDiscoveryCache = null,
+        IS3StorageService? storage = null,
         bool copying = false)
     {
+        _storageProfiles = storageProfiles;
+        var cache = bucketDiscoveryCache ?? new BucketDiscoveryCache();
+        _bucket = new BucketPicker(
+            cache,
+            storage is null
+                ? null
+                : async (profile, token) =>
+                    (await storage.ListBucketsAsync(profile, token).ConfigureAwait(true))
+                    .Select(bucket => bucket.Name)
+                    .ToArray());
+        _bucket.Name = "CdnBindingBucket";
         Binding = binding ?? new CdnBinding();
         _id = Binding.Id;
         Name = "CdnBindingEditorDialog";
@@ -760,7 +774,7 @@ internal sealed class CdnBindingEditorDialog : Form
 
         var storageId = binding?.StorageProfileId ?? initialProfile?.Id ?? Guid.Empty;
         SelectValue(_storage, storageId);
-        _bucket.Text = binding?.Bucket ?? initialBucket ?? string.Empty;
+        _bucket.BucketText = binding?.Bucket ?? initialBucket ?? string.Empty;
         _sourcePrefix.Text = binding?.SourcePrefix ?? string.Empty;
         SelectValue(_cdn, binding?.CdnProfileId ?? cdnProfiles.FirstOrDefault()?.Id ?? Guid.Empty);
         _targetPrefix.Text = binding?.CdnPathPrefix ?? string.Empty;
@@ -768,13 +782,25 @@ internal sealed class CdnBindingEditorDialog : Form
         SelectAction(_overwriteAction, binding?.OverwriteAction ?? CdnUploadAction.None);
         _default.Checked = binding?.IsDefault ?? true;
         _enabled.Checked = binding?.Enabled ?? true;
+        _storage.SelectedIndexChanged += async (_, _) =>
+        {
+            var profile = SelectedProfile();
+            if (profile is not null)
+                await _bucket.RefreshAsync(profile, preserve: true);
+        };
+        Shown += async (_, _) =>
+        {
+            var profile = SelectedProfile();
+            if (profile is not null)
+                await _bucket.RefreshAsync(profile, preserve: true);
+        };
     }
 
     private void Save()
     {
         var storageId = Selected(_storage);
         var cdnId = Selected(_cdn);
-        if (storageId == Guid.Empty || cdnId == Guid.Empty || string.IsNullOrWhiteSpace(_bucket.Text))
+        if (storageId == Guid.Empty || cdnId == Guid.Empty || string.IsNullOrWhiteSpace(_bucket.BucketText))
         {
             MessageBox.Show(
                 this,
@@ -788,7 +814,7 @@ internal sealed class CdnBindingEditorDialog : Form
         {
             Id = _id,
             StorageProfileId = storageId,
-            Bucket = _bucket.Text.Trim(),
+            Bucket = _bucket.BucketText.Trim(),
             SourcePrefix = CdnUrlMapper.NormalizePrefix(_sourcePrefix.Text),
             CdnProfileId = cdnId,
             CdnPathPrefix = CdnUrlMapper.NormalizePrefix(_targetPrefix.Text),
@@ -818,6 +844,12 @@ internal sealed class CdnBindingEditorDialog : Form
             }
         }
         combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
+    }
+
+    private ConnectionProfile? SelectedProfile()
+    {
+        var id = Selected(_storage);
+        return _storageProfiles.FirstOrDefault(profile => profile.Id == id);
     }
 
     private static void SelectAction(ComboBox combo, CdnUploadAction value)

@@ -53,6 +53,8 @@ internal static class Program
             var settingsStore = new AppSettingsStore(Path.Combine(dataRoot, "settings.json"));
             var permissionCheckHistoryStore = new PermissionCheckHistoryStore(
                 Path.Combine(dataRoot, "permission-check-history.json"));
+            var bucketDiscoveryCache = new BucketDiscoveryCache(
+                Path.Combine(dataRoot, "bucket-cache.json"));
             var logger = new SimpleFileLogger(Path.Combine(runtime.LocalDataRoot, "logs"));
             var transferStore = new JsonTransferTaskStore(Path.Combine(dataRoot, "transfers.json"));
             var syncJobStore = new JsonFolderSyncJobStore(Path.Combine(dataRoot, "sync-jobs.json"));
@@ -109,7 +111,8 @@ internal static class Program
                 cdnCertificateInspector,
                 automation,
                 permissionCheckHistoryStore,
-                runtime.DevelopmentMode);
+                runtime.DevelopmentMode,
+                bucketDiscoveryCache);
             if (singleInstance is not null)
             {
                 _ = form.Handle;

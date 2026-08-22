@@ -9,20 +9,11 @@ internal sealed class FolderSyncJobDialog : Form
         public override string ToString() => Profile.Name;
     }
 
-    private const string EmptyBucketText = "（没有可用 Bucket）";
-    private const string LoadingBucketText = "（正在读取 Bucket...）";
     private readonly IS3StorageService _storage;
     private readonly TextBox _name = new();
     private readonly TextBox _local = new();
     private readonly ComboBox _profile = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly ComboBox _bucket = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly Label _bucketStatus = new()
-    {
-        AutoSize = true,
-        ForeColor = SystemColors.GrayText,
-        MaximumSize = new Size(520, 0),
-        Margin = new Padding(6, 0, 3, 8)
-    };
+    private readonly BucketPicker _bucket;
     private readonly TextBox _prefix = new();
     private readonly ComboBox _direction = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly CheckBox _newFiles = new() { Text = "同步新增文件", Checked = true, AutoSize = true };
@@ -44,9 +35,14 @@ internal sealed class FolderSyncJobDialog : Form
         FolderSyncJob? job = null,
         ConnectionProfile? initialProfile = null,
         string? initialBucket = null,
-        string? initialPrefix = null)
+        string? initialPrefix = null,
+        BucketDiscoveryCache? bucketCache = null)
     {
         _storage = storage;
+        _bucket = new BucketPicker(bucketCache ?? new BucketDiscoveryCache(),
+            async (profile, token) =>
+                (await _storage.ListBucketsAsync(profile, token)).Select(bucket => bucket.Name).ToArray())
+        { Name = "FolderSyncBucket" };
         Job = job ?? new FolderSyncJob();
         _id = Job.Id;
         Text = job is null ? "添加文件夹同步任务" : "编辑文件夹同步任务";
@@ -97,8 +93,10 @@ internal sealed class FolderSyncJobDialog : Form
 
         AddField(table, ref row, "连接：", _profile);
         AddField(table, ref row, "Bucket：", _bucket);
-        table.Controls.Add(_bucketStatus, 0, row);
-        table.SetColumnSpan(_bucketStatus, 3);
+        var bucketStatus = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, MaximumSize = new Size(520, 0), Margin = new Padding(6, 0, 3, 8) };
+        _bucket.StatusChanged += (_, _) => bucketStatus.Text = _bucket.StatusText;
+        table.Controls.Add(bucketStatus, 0, row);
+        table.SetColumnSpan(bucketStatus, 3);
         row++;
         AddField(table, ref row, "S3 前缀：", _prefix);
         AddHint(table, ref row, "前缀可留空；示例 backups/site/。同步仅在指定 Bucket 与前缀内操作。");
@@ -212,76 +210,11 @@ internal sealed class FolderSyncJobDialog : Form
         _bucketLoad?.Cancel();
         _bucketLoad?.Dispose();
         _bucketLoad = new CancellationTokenSource();
-        var token = _bucketLoad.Token;
-
-        _bucket.Items.Clear();
-        _bucket.Items.Add(LoadingBucketText);
-        _bucket.SelectedIndex = 0;
-        _bucket.Enabled = false;
-        _save.Enabled = false;
-        _bucketStatus.Text = "正在根据连接读取 Bucket...";
-
         if (_profile.SelectedItem is not ProfileChoice selected)
-        {
-            ShowNoBuckets("没有可用连接。");
             return;
-        }
-
-        try
-        {
-            var buckets = await _storage.ListBucketsAsync(selected.Profile, token);
-            if (token.IsCancellationRequested ||
-                _profile.SelectedItem is not ProfileChoice current ||
-                current.Profile.Id != selected.Profile.Id)
-                return;
-
-            var names = buckets
-                .Select(bucket => bucket.Name)
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(name => !string.Equals(name, selected.Profile.DefaultBucket, StringComparison.Ordinal))
-                .ThenBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (!string.IsNullOrWhiteSpace(preserveBucket) &&
-                !names.Contains(preserveBucket, StringComparer.Ordinal))
-            {
-                names.Add(preserveBucket);
-            }
-
-            if (names.Count == 0)
-            {
-                ShowNoBuckets("该连接没有可用 Bucket；请先创建 Bucket，或在账户高级设置中配置默认/外部 Bucket。");
-                return;
-            }
-
-            _bucket.Items.Clear();
-            _bucket.Items.AddRange(names.Cast<object>().ToArray());
-            var selectedIndex = !string.IsNullOrWhiteSpace(preserveBucket)
-                ? names.FindIndex(name => string.Equals(name, preserveBucket, StringComparison.Ordinal))
-                : -1;
-            _bucket.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-            _bucket.Enabled = true;
-            _save.Enabled = true;
-            var configuredCount = names.Count(name => selected.Profile.KnownBuckets.Contains(name, StringComparer.Ordinal));
-            _bucketStatus.Text = configuredCount > 0
-                ? $"显示 {names.Count:N0} 个 Bucket，其中 {configuredCount:N0} 个来自账户的默认/外部 Bucket 配置。"
-                : $"显示该连接可访问的 {names.Count:N0} 个 Bucket。";
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception exception)
-        {
-            if (!token.IsCancellationRequested)
-                ShowNoBuckets($"无法读取 Bucket：{exception.Message}。账户也没有可用的默认/外部 Bucket。");
-        }
-    }
-
-    private void ShowNoBuckets(string status)
-    {
-        _bucket.Items.Clear();
-        _bucket.Items.Add(EmptyBucketText);
-        _bucket.SelectedIndex = 0;
-        _bucket.Enabled = false;
-        _save.Enabled = false;
-        _bucketStatus.Text = status;
+        _bucket.BucketText = preserveBucket ?? _bucket.BucketText;
+        await _bucket.RefreshAsync(selected.Profile, preserve: true, _bucketLoad.Token);
+        _save.Enabled = true;
     }
 
     private void SaveJob()
@@ -290,8 +223,8 @@ internal sealed class FolderSyncJobDialog : Form
         {
             if (_profile.SelectedItem is not ProfileChoice selected)
                 throw new InvalidOperationException("请先创建并选择对象存储连接。");
-            if (!_bucket.Enabled || _bucket.SelectedItem is not string bucket || string.IsNullOrWhiteSpace(bucket))
-                throw new InvalidOperationException("当前连接没有可用 Bucket。");
+            var bucket = _bucket.BucketText.Trim();
+            if (bucket.Length == 0) throw new InvalidOperationException("请填写或选择 Bucket。");
             if (!_newFiles.Checked && !_changedFiles.Checked && !_deletions.Checked)
                 throw new InvalidOperationException("任务至少需要包含新增、更改或删除中的一类操作。");
 
@@ -305,7 +238,7 @@ internal sealed class FolderSyncJobDialog : Form
                 LocalDirectory = local,
                 ProfileId = selected.Profile.Id,
                 ProfileName = selected.Profile.Name,
-                Bucket = bucket.Trim(),
+                Bucket = bucket,
                 Prefix = S3Path.NormalizePrefix(_prefix.Text),
                 Direction = _direction.SelectedIndex == 1 ? FolderSyncDirection.Download : FolderSyncDirection.Upload,
                 IncludeNewFiles = _newFiles.Checked,

@@ -12,6 +12,7 @@ internal sealed class CdnConfigurationDialog : Form
     private readonly IReadOnlyList<ConnectionProfile> _storageProfiles;
     private readonly ICdnCertificateInspector? _certificateInspector;
     private readonly IS3StorageService? _storage;
+    private readonly BucketDiscoveryCache _bucketDiscoveryCache;
     private readonly ICdnDeliveryService? _deliveryService;
     private readonly Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? _persistCertificateResult;
     private readonly List<CdnProfile> _profiles;
@@ -91,11 +92,13 @@ internal sealed class CdnConfigurationDialog : Form
         IS3StorageService? storage = null,
         ICdnDeliveryService? deliveryService = null,
         Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? persistCertificateResult = null,
-        IReadOnlyList<ConnectionGroup>? connectionGroups = null)
+        IReadOnlyList<ConnectionGroup>? connectionGroups = null,
+        BucketDiscoveryCache? bucketDiscoveryCache = null)
     {
         _storageProfiles = storageProfiles;
         _certificateInspector = certificateInspector;
         _storage = storage;
+        _bucketDiscoveryCache = bucketDiscoveryCache ?? new BucketDiscoveryCache();
         _deliveryService = deliveryService;
         _persistCertificateResult = persistCertificateResult;
         _profiles = [.. configuration.Profiles];
@@ -467,7 +470,9 @@ internal sealed class CdnConfigurationDialog : Form
             _storageProfiles,
             _profiles,
             initialProfile,
-            initialBucket);
+            initialBucket,
+            _bucketDiscoveryCache,
+            _storage);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _bindings.Add(dialog.Binding);
         MarkDirty();
@@ -479,7 +484,7 @@ internal sealed class CdnConfigurationDialog : Form
         var id = SelectedId(_bindingGrid);
         var binding = id is Guid value ? _bindings.FirstOrDefault(item => item.Id == value) : null;
         if (binding is null) return;
-        using var dialog = new CdnBindingEditorDialog(binding, _storageProfiles, _profiles, null, null);
+        using var dialog = new CdnBindingEditorDialog(binding, _storageProfiles, _profiles, null, null, _bucketDiscoveryCache, _storage);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _bindings[_bindings.IndexOf(binding)] = dialog.Binding;
         _bindingStatuses.Remove(binding.Id);
@@ -494,7 +499,7 @@ internal sealed class CdnConfigurationDialog : Form
         if (binding is null) return;
         var copy = binding with { Id = Guid.NewGuid(), IsDefault = false };
         using var dialog = new CdnBindingEditorDialog(
-            copy, _storageProfiles, _profiles, null, null, copying: true);
+            copy, _storageProfiles, _profiles, null, null, _bucketDiscoveryCache, _storage, copying: true);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var candidate = new CdnConfiguration([.. _profiles], [.. _bindings, dialog.Binding]);
         var errors = CdnConfigurationValidator.Validate(candidate, _credentials);

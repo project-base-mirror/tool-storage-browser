@@ -39,6 +39,7 @@ internal sealed partial class MainForm : Form
     private readonly IS3StorageService _storage;
     private readonly AppSettingsStore _settingsStore;
     private readonly SimpleFileLogger _logger;
+    private readonly BucketDiscoveryCache _bucketDiscoveryCache;
     private readonly AutomationSession? _automation;
     private readonly bool _developmentMode;
 
@@ -130,7 +131,8 @@ internal sealed partial class MainForm : Form
         ICdnCertificateInspector cdnCertificateInspector,
         AutomationSession? automation = null,
         PermissionCheckHistoryStore? permissionCheckHistoryStore = null,
-        bool developmentMode = false)
+        bool developmentMode = false,
+        BucketDiscoveryCache? bucketDiscoveryCache = null)
     {
         _profileStore = profileStore;
         _storage = storage;
@@ -148,6 +150,7 @@ internal sealed partial class MainForm : Form
         _cdnUploadAutomation = new CdnUploadAutomationCoordinator(cdnJobQueue);
         _cdnCertificateInspector = cdnCertificateInspector;
         _permissionCheckHistoryStore = permissionCheckHistoryStore ?? new PermissionCheckHistoryStore();
+        _bucketDiscoveryCache = bucketDiscoveryCache ?? new BucketDiscoveryCache();
         _automation = automation;
         _developmentMode = developmentMode;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
@@ -1731,6 +1734,18 @@ internal sealed partial class MainForm : Form
             if (revision != _navigationRevision || cancellationToken.IsCancellationRequested)
                 return;
 
+            try
+            {
+                await _bucketDiscoveryCache.RecordSuccessfulDiscoveryAsync(
+                    profile,
+                    buckets.Select(bucket => bucket.Name),
+                    cancellationToken: cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.Warning($"Bucket discovery cache update failed for {profile.Name}: {exception.Message}");
+            }
+
             profile = await RecordConnectionHealthAsync(profile, succeeded: true);
             profileNode.Tag = profile;
             ApplyProfileNodePresentation(profile, profileNode);
@@ -2684,7 +2699,8 @@ internal sealed partial class MainForm : Form
             _settings,
             _currentProfile,
             _currentBucket,
-            _currentPrefix);
+            _currentPrefix,
+            _bucketDiscoveryCache);
         dialog.ShowDialog(this);
         if (dialog.QueuedTransfers) SetTransferVisibility(true);
     }

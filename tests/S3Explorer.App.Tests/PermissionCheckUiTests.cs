@@ -155,7 +155,7 @@ public sealed class PermissionCheckUiTests
             Assert.Null(dialog.Request);
             Assert.Equal(DialogResult.None, dialog.DialogResult);
 
-            Assert.IsType<TextBox>(dialog.Controls.Find("StoragePermissionProbeBucket", true).Single()).Text = "release";
+            Assert.IsType<BucketPicker>(dialog.Controls.Find("StoragePermissionProbeBucket", true).Single()).BucketText = "release";
             Assert.IsType<TextBox>(dialog.Controls.Find("StoragePermissionProbePrefix", true).Single()).Text = "isolated/probe";
             Assert.IsType<TextBox>(dialog.Controls.Find("StoragePermissionProbeConfirmation", true).Single()).Text = "PROBE";
             Assert.IsType<CheckBox>(dialog.Controls.Find("StoragePermissionProbeConfirm", true).Single()).Checked = true;

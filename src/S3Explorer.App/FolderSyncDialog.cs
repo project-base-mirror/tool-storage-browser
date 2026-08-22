@@ -14,6 +14,7 @@ internal sealed class FolderSyncDialog : Form
     private readonly IFolderSyncJobStore _jobStore;
     private readonly IProfileStore _profileStore;
     private readonly IS3StorageService _storage;
+    private readonly BucketDiscoveryCache _bucketCache;
     private readonly PersistentTransferQueue _transferQueue;
     private readonly ConnectionProfile? _initialProfile;
     private readonly string? _initialBucket;
@@ -106,11 +107,13 @@ internal sealed class FolderSyncDialog : Form
         AppSettings settings,
         ConnectionProfile? initialProfile = null,
         string? initialBucket = null,
-        string? initialPrefix = null)
+        string? initialPrefix = null,
+        BucketDiscoveryCache? bucketCache = null)
     {
         _jobStore = jobStore;
         _profileStore = profileStore;
         _storage = storage;
+        _bucketCache = bucketCache ?? new BucketDiscoveryCache();
         _transferQueue = transferQueue;
         _initialProfile = initialProfile;
         _initialBucket = initialBucket;
@@ -533,7 +536,7 @@ internal sealed class FolderSyncDialog : Form
             MessageBox.Show(this, "请先在主窗口创建对象存储连接。", "文件夹同步", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        using var dialog = new FolderSyncJobDialog(_storage, _profiles, null, _initialProfile, _initialBucket, _initialPrefix);
+        using var dialog = new FolderSyncJobDialog(_storage, _profiles, null, _initialProfile, _initialBucket, _initialPrefix, _bucketCache);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var proposed = _jobs.Append(dialog.Job).ToList();
         await _jobStore.SaveAsync(proposed);
@@ -545,7 +548,7 @@ internal sealed class FolderSyncDialog : Form
     {
         var job = CurrentJob();
         if (job is null) return;
-        using var dialog = new FolderSyncJobDialog(_storage, _profiles, job);
+        using var dialog = new FolderSyncJobDialog(_storage, _profiles, job, bucketCache: _bucketCache);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var index = _jobs.FindIndex(item => item.Id == job.Id);
         var proposed = _jobs.ToList();

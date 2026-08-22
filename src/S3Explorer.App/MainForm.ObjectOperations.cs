@@ -390,7 +390,13 @@ internal sealed partial class MainForm
             selected.Select(entry => new ObjectClipboardEntry(
                 entry.Key, entry.Name, entry.IsDirectory, entry.Size)).ToArray(), move);
         using var dialog = new ObjectTransferDialog(
-            move, _currentBucket!, _currentPrefix, selected.Count);
+            move,
+            _currentBucket!,
+            _currentPrefix,
+            selected.Count,
+            _currentProfile,
+            _storage,
+            _bucketDiscoveryCache);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Options is null) return;
         await QueueObjectTransferAsync(
             payload, dialog.Options.DestinationBucket,

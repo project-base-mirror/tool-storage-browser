@@ -264,7 +264,8 @@ internal sealed partial class MainForm
             _storage,
             _cdnDeliveryService,
             PersistCdnCertificateResultAsync,
-            _profileGroups);
+            _profileGroups,
+            _bucketDiscoveryCache);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 

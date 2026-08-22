@@ -151,7 +151,10 @@ internal sealed partial class MainForm
             return;
         }
 
-        using var probeDialog = new StoragePermissionProbeDialog(profiles);
+        using var probeDialog = new StoragePermissionProbeDialog(
+            profiles,
+            _storage,
+            _bucketDiscoveryCache);
         if (probeDialog.ShowDialog(owner) != DialogResult.OK || probeDialog.Request is not { } request)
             return;
 
