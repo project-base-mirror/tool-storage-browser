@@ -27,16 +27,20 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private static string WindowTitle(string? profileName = null) =>
-        string.IsNullOrWhiteSpace(profileName)
-            ? $"S3 Explorer v{DisplayVersion}"
-            : $"S3 Explorer v{DisplayVersion} - {profileName}";
+    private string WindowTitle(string? profileName = null)
+    {
+        var build = _developmentMode ? " [Debug]" : string.Empty;
+        return string.IsNullOrWhiteSpace(profileName)
+            ? $"S3 Explorer v{DisplayVersion}{build}"
+            : $"S3 Explorer v{DisplayVersion}{build} - {profileName}";
+    }
 
     private readonly IProfileStore _profileStore;
     private readonly IS3StorageService _storage;
     private readonly AppSettingsStore _settingsStore;
     private readonly SimpleFileLogger _logger;
     private readonly AutomationSession? _automation;
+    private readonly bool _developmentMode;
 
     private readonly MenuStrip _menu = new() { Name = "MainMenu" };
     private readonly ToolStrip _toolbar = new() { Name = "MainToolbar", GripStyle = ToolStripGripStyle.Hidden, ImageScalingSize = new Size(22, 22), Padding = new Padding(3, 2, 3, 2) };
@@ -125,7 +129,8 @@ internal sealed partial class MainForm : Form
         PersistentCdnJobQueue cdnJobQueue,
         ICdnCertificateInspector cdnCertificateInspector,
         AutomationSession? automation = null,
-        PermissionCheckHistoryStore? permissionCheckHistoryStore = null)
+        PermissionCheckHistoryStore? permissionCheckHistoryStore = null,
+        bool developmentMode = false)
     {
         _profileStore = profileStore;
         _storage = storage;
@@ -144,6 +149,7 @@ internal sealed partial class MainForm : Form
         _cdnCertificateInspector = cdnCertificateInspector;
         _permissionCheckHistoryStore = permissionCheckHistoryStore ?? new PermissionCheckHistoryStore();
         _automation = automation;
+        _developmentMode = developmentMode;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
         Name = "MainWindow";
@@ -179,7 +185,7 @@ internal sealed partial class MainForm : Form
             {
                 await InitializeAsync();
                 _automation?.Ready(this);
-                if (_automation is null && _settings.CheckForUpdatesOnStartup)
+                if (_automation is null && !_developmentMode && _settings.CheckForUpdatesOnStartup)
                     _ = CheckForUpdatesAsync(automatic: true);
             }
             catch (Exception exception)

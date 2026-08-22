@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
 using S3Explorer.Infrastructure.Configuration;
@@ -15,25 +16,21 @@ internal static class Program
         try
         {
             var options = AutomationOptions.Parse(args);
-            var instanceKey = options.Enabled
-                ? options.InstanceKey
-                : SingleInstanceCoordinator.ApplicationInstanceKey;
-            using var singleInstance = string.IsNullOrEmpty(instanceKey)
+            var runtime = ApplicationRuntimeContext.Resolve(
+                options,
+                developmentMode: IsDebugBuild || Debugger.IsAttached,
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            using var singleInstance = string.IsNullOrEmpty(runtime.InstanceKey)
                 ? null
-                : SingleInstanceCoordinator.Acquire(instanceKey);
+                : SingleInstanceCoordinator.Acquire(runtime.InstanceKey);
             if (singleInstance is { IsPrimary: false })
                 return 0;
 
             ApplicationConfiguration.Initialize();
             automation = options.Enabled ? new AutomationSession(options) : null;
 
-            var dataRoot = options.Enabled
-                ? options.DataDirectory.Length > 0
-                    ? options.DataDirectory
-                    : Path.Combine(Path.GetDirectoryName(options.StatePath)!, "data")
-                : Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "S3Explorer");
+            var dataRoot = runtime.DataRoot;
             var configurationStore = ExplorerConfigurationStore
                 .OpenAsync(dataRoot)
                 .GetAwaiter()
@@ -42,26 +39,21 @@ internal static class Program
             var cdnConfigurationStore = new ExplorerCdnConfigurationStore(configurationStore);
             var credentialStore = new ExplorerCredentialStore(configurationStore);
             var storageService = new S3StorageService(new S3ClientFactory());
-            var settingsStore = new AppSettingsStore(
-                options.Enabled ? Path.Combine(dataRoot, "settings.json") : null);
+            var settingsStore = new AppSettingsStore(Path.Combine(dataRoot, "settings.json"));
             var permissionCheckHistoryStore = new PermissionCheckHistoryStore(
-                options.Enabled ? Path.Combine(dataRoot, "permission-check-history.json") : null);
-            var logger = new SimpleFileLogger(
-                options.Enabled ? Path.Combine(dataRoot, "logs") : null);
-            var transferStore = new JsonTransferTaskStore(
-                options.Enabled ? Path.Combine(dataRoot, "transfers.json") : null);
-            var syncJobStore = new JsonFolderSyncJobStore(
-                options.Enabled ? Path.Combine(dataRoot, "sync-jobs.json") : null);
+                Path.Combine(dataRoot, "permission-check-history.json"));
+            var logger = new SimpleFileLogger(Path.Combine(runtime.LocalDataRoot, "logs"));
+            var transferStore = new JsonTransferTaskStore(Path.Combine(dataRoot, "transfers.json"));
+            var syncJobStore = new JsonFolderSyncJobStore(Path.Combine(dataRoot, "sync-jobs.json"));
             var cdnDeliveryService = new GenericHttpCdnDeliveryService();
-            var cdnJobStore = new JsonCdnJobStore(
-                options.Enabled ? Path.Combine(dataRoot, "cdn-jobs.json") : null);
+            var cdnJobStore = new JsonCdnJobStore(Path.Combine(dataRoot, "cdn-jobs.json"));
             var cdnJobExecutor = new StoreBackedCdnJobExecutor(
                 configurationStore,
                 [new GenericHttpCdnProvider(cdnDeliveryService), new AliyunCdnProvider()]);
             var cdnJobQueue = new PersistentCdnJobQueue(cdnJobStore, cdnJobExecutor);
             var cdnCertificateInspector = new TlsCdnCertificateInspector();
             using var updateChecker = new GitHubUpdateChecker(
-                cachePath: options.Enabled ? Path.Combine(dataRoot, "update-cache.json") : null);
+                cachePath: Path.Combine(runtime.LocalDataRoot, "update-cache.json"));
             var transferRuntime = new TransferRuntimeConfiguration();
             var transferExecutor = new S3TransferTaskExecutor(
                 profileStore,
@@ -105,7 +97,8 @@ internal static class Program
                 cdnJobQueue,
                 cdnCertificateInspector,
                 automation,
-                permissionCheckHistoryStore);
+                permissionCheckHistoryStore,
+                runtime.DevelopmentMode);
             if (singleInstance is not null)
             {
                 _ = form.Handle;
@@ -130,6 +123,18 @@ internal static class Program
             if (automation is null)
                 MessageBox.Show(exception.Message, "S3 Explorer 启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
+        }
+    }
+
+    private static bool IsDebugBuild
+    {
+        get
+        {
+#if DEBUG
+            return true;
+#else
+            return false;
+#endif
         }
     }
 }

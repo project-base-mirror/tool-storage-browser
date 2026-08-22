@@ -65,6 +65,8 @@ Windows 上最容易发现的入口位于仓库根目录。双击或在命令行
 
 应用项目：`src/S3Explorer.App/S3Explorer.App.csproj`
 
+在 Visual Studio 中把 `S3Explorer.App` 设为启动项目后直接按 F5 即可验证桌面界面。Debug 构建或附加调试器启动时会显示 `[Debug]` 标记，并使用独立的单实例键和 `%APPDATA%\S3Explorer.Debug` 数据目录；它可以与已经驻留托盘的正式安装版同时运行，也不会读写正式配置。Release 发布包仍使用 `%APPDATA%\S3Explorer` 和正式单实例键。
+
 ## 测试
 
 运行全部单元测试和默认测试：
