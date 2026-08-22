@@ -31,6 +31,17 @@ internal static class Program
             automation = options.Enabled ? new AutomationSession(options) : null;
 
             var dataRoot = runtime.DataRoot;
+            if (runtime.DevelopmentMode)
+            {
+                var productionRoot = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    ApplicationRuntimeContext.ProductionDataDirectoryName);
+                DevelopmentConfigurationSnapshot.RefreshAsync(
+                        productionRoot,
+                        dataRoot)
+                    .GetAwaiter()
+                    .GetResult();
+            }
             var configurationStore = ExplorerConfigurationStore
                 .OpenAsync(dataRoot)
                 .GetAwaiter()

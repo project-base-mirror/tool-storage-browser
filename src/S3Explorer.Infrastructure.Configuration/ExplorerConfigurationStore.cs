@@ -63,6 +63,26 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
         finally { semaphore.Release(); }
     }
 
+    /// <summary>
+    /// Writes a complete configuration without first loading or migrating the target directory.
+    /// This is intended for authoritative snapshot replacement where a corrupt previous target
+    /// must not block a valid incoming configuration.
+    /// </summary>
+    public static async Task<ExplorerConfigurationStore> CreateOrReplaceAsync(
+        string dataRoot,
+        ExplorerConfiguration configuration,
+        IConfigurationPayloadProtector? protector = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var store = new ExplorerConfigurationStore(
+            dataRoot,
+            protector ?? new DpapiConfigurationPayloadProtector());
+        await store.SaveAsync(configuration, cancellationToken).ConfigureAwait(false);
+        return store;
+    }
+
     public async Task<ExplorerConfiguration> LoadAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
