@@ -5,7 +5,10 @@ namespace S3Explorer.App;
 
 internal sealed class CredentialPermissionResultDialog : Form
 {
-    public CredentialPermissionResultDialog(CredentialProfile credential, PermissionCheckReport report)
+    public CredentialPermissionResultDialog(
+        CredentialProfile credential,
+        PermissionCheckReport report,
+        bool mutationProbe = false)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(report);
@@ -33,7 +36,9 @@ internal sealed class CredentialPermissionResultDialog : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             ForeColor = SystemColors.GrayText,
-            Text = "本页只执行无副作用检查。Put/Delete/ACL 与 CDN 刷新写权限显示“无法确定”是预期结果；需要显式写入探针时请使用 CLI permission check --probe-write --yes。",
+            Text = mutationProbe
+                ? "本次已执行一次性对象存储写入探针：上传临时对象、按需设置 Private ACL，并尝试删除临时对象。若 DeleteObject 未通过，请按结果中的目标 Prefix 检查可能残留的探针对象。"
+                : "本页只执行无副作用检查。Put/Delete/ACL 与 CDN 刷新写权限显示“无法确定”是预期结果；如需验证对象存储写入权限，请打开“凭据 → 权限检查...”执行一次性写入探针。",
             MaximumSize = new Size(790, 0),
             Margin = new Padding(0, 0, 0, 10)
         };

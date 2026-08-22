@@ -126,14 +126,15 @@ public sealed class CdnDialogLayoutTests
 
             var tabs = Assert.IsType<TabControl>(
                 Assert.Single(dialog.Controls.Find("CdnConfigurationTabs", searchAllChildren: true)));
-            Assert.Equal(3, tabs.TabPages.Count);
+            Assert.Equal(2, tabs.TabPages.Count);
+            Assert.DoesNotContain(tabs.TabPages.Cast<TabPage>(), page => page.Name == "CredentialCenterTab");
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnProfileButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnProfileButton"));
             var certificate = FindButton(dialog, "CheckCdnCertificateButton");
             AssertButtonIsReadable(dialog, certificate);
             Assert.True(certificate.Enabled);
-            AssertButtonIsReadable(dialog, FindButton(dialog, "AddCredentialButton"));
-            AssertButtonIsReadable(dialog, FindButton(dialog, "CheckCredentialPermissionsButton"));
+            Assert.Empty(dialog.Controls.Find("AddCredentialButton", searchAllChildren: true));
+            Assert.Empty(dialog.Controls.Find("CheckCredentialPermissionsButton", searchAllChildren: true));
             AssertButtonIsReadable(dialog, FindButton(dialog, "AddCdnBindingButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "CopyCdnBindingButton"));
             AssertButtonIsReadable(dialog, FindButton(dialog, "CheckCdnBindingsButton"));
@@ -231,6 +232,8 @@ public sealed class CdnDialogLayoutTests
             Assert.Contains("ListBucket", details.Text, StringComparison.Ordinal);
             Assert.Contains("PutObject", details.Text, StringComparison.Ordinal);
             Assert.DoesNotContain("test-secret", details.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("permission check --probe-write", AllControlText(dialog), StringComparison.Ordinal);
+            Assert.Contains("凭据 → 权限检查", AllControlText(dialog), StringComparison.Ordinal);
         });
     }
 
@@ -309,12 +312,20 @@ public sealed class CdnDialogLayoutTests
                 AccessKeyId = "test-access",
                 Secret = "test-secret"
             };
-            using (var center = new CdnConfigurationDialog(
-                       [], CdnConfiguration.Empty, [credential], openCredentialCenter: true))
+            using (var center = new CredentialCenterDialog(
+                       [], [credential], CdnConfiguration.Empty))
             {
-                var tabs = Assert.IsType<TabControl>(Assert.Single(
-                    center.Controls.Find("CdnConfigurationTabs", searchAllChildren: true)));
-                Assert.Equal("凭据中心", tabs.SelectedTab?.Text);
+                Assert.Equal("凭据中心", center.Text);
+                Assert.NotNull(Assert.Single(center.Controls.Find("CredentialCenterGrid", searchAllChildren: true)));
+                AssertButtonIsReadable(center, FindButton(center, "AddCredentialButton"));
+                AssertButtonIsReadable(center, FindButton(center, "CheckCredentialPermissionsButton"));
+                var save = FindButton(center, "SaveCredentialCenterButton");
+                var cancel = FindButton(center, "CancelCredentialCenterButton");
+                AssertButtonIsReadable(center, save);
+                AssertButtonIsReadable(center, cancel);
+                Assert.False(save.Enabled);
+                Assert.Same(save, center.AcceptButton);
+                Assert.Same(cancel, center.CancelButton);
             }
 
             using var largerFont = new Font(SystemFonts.MessageBoxFont!.FontFamily, 12F);
@@ -327,6 +338,49 @@ public sealed class CdnDialogLayoutTests
             var secret = Assert.IsType<TextBox>(Assert.Single(
                 editor.Controls.Find("CredentialSecret", searchAllChildren: true)));
             Assert.True(secret.UseSystemPasswordChar);
+        });
+    }
+
+    [Fact]
+    public void CredentialAndCdnCentersValidateGroupedConnectionsWithoutDroppingGroups()
+    {
+        RunSta(() =>
+        {
+            var group = new ConnectionGroup { Name = "发布环境" };
+            var storage = new ConnectionProfile
+            {
+                Name = "release",
+                GroupId = group.Id,
+                Endpoint = "https://s3.example.test"
+            };
+
+            using (var credentials = new CredentialCenterDialog(
+                       [storage],
+                       [],
+                       CdnConfiguration.Empty,
+                       connectionGroups: [group]))
+            {
+                typeof(CredentialCenterDialog)
+                    .GetMethod("MarkDirty", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(credentials, null);
+                credentials.Show();
+                FindButton(credentials, "SaveCredentialCenterButton").PerformClick();
+                Assert.Equal(DialogResult.OK, credentials.DialogResult);
+            }
+
+            using (var cdn = new CdnConfigurationDialog(
+                       [storage],
+                       CdnConfiguration.Empty,
+                       [],
+                       connectionGroups: [group]))
+            {
+                typeof(CdnConfigurationDialog)
+                    .GetMethod("MarkDirty", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(cdn, null);
+                cdn.Show();
+                FindButton(cdn, "SaveCdnConfigurationButton").PerformClick();
+                Assert.Equal(DialogResult.OK, cdn.DialogResult);
+            }
         });
     }
 
@@ -449,7 +503,7 @@ public sealed class CdnDialogLayoutTests
 
             typeof(CdnConfigurationDialog)
                 .GetMethod("RefreshAll", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(dialog, [null, null, null]);
+                .Invoke(dialog, [null, null]);
 
             Assert.Equal(secondProfile.Id, Assert.Single(profiles.SelectedRows.Cast<DataGridViewRow>()).Tag);
             Assert.Equal(secondBinding.Id, Assert.Single(bindings.SelectedRows.Cast<DataGridViewRow>()).Tag);
@@ -681,6 +735,10 @@ public sealed class CdnDialogLayoutTests
             PerformLayout(child);
         control.PerformLayout();
     }
+
+    private static string AllControlText(Control control) =>
+        string.Join('\n', new[] { control.Text }.Concat(
+            control.Controls.Cast<Control>().Select(AllControlText)));
 
     private static void RunSta(Action action)
     {

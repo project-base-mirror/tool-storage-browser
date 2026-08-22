@@ -124,7 +124,8 @@ internal sealed partial class MainForm : Form
         ICdnDeliveryService cdnDeliveryService,
         PersistentCdnJobQueue cdnJobQueue,
         ICdnCertificateInspector cdnCertificateInspector,
-        AutomationSession? automation = null)
+        AutomationSession? automation = null,
+        PermissionCheckHistoryStore? permissionCheckHistoryStore = null)
     {
         _profileStore = profileStore;
         _storage = storage;
@@ -141,6 +142,7 @@ internal sealed partial class MainForm : Form
         _cdnJobQueue = cdnJobQueue;
         _cdnUploadAutomation = new CdnUploadAutomationCoordinator(cdnJobQueue);
         _cdnCertificateInspector = cdnCertificateInspector;
+        _permissionCheckHistoryStore = permissionCheckHistoryStore ?? new PermissionCheckHistoryStore();
         _automation = automation;
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
@@ -295,10 +297,6 @@ internal sealed partial class MainForm : Form
         tools.DropDownItems.Add(Command("multipart-uploads", "未完成的分片上传...", (_, _) => ShowIncompleteMultipartUploads()));
         tools.DropDownItems.Add(Command("folder-sync", "文件夹同步...", (_, _) => ShowFolderSync()));
         tools.DropDownItems.Add(new ToolStripSeparator());
-        tools.DropDownItems.Add(Command(
-            "credential-center",
-            "凭据中心...",
-            async (_, _) => await ShowCdnConfigurationAsync(openCredentialCenter: true)));
         tools.DropDownItems.Add(Command("settings", "选项...", async (_, _) => await ShowSettingsAsync()));
         tools.DropDownItems.Add(Command("logs", "查看日志", (_, _) => OpenLog()));
         tools.DropDownItems.Add(Command("clear-cache", "清理缓存", (_, _) => MessageBox.Show(this, "当前版本没有持久对象缓存。", "清理缓存")));
@@ -313,7 +311,7 @@ internal sealed partial class MainForm : Form
         help.DropDownItems.Add(new ToolStripMenuItem("关于", null, (_, _) =>
             MessageBox.Show(this, $"S3 Explorer v{Application.ProductVersion}\n\n原生 Windows S3 / S3-compatible 对象存储管理工具。\n.NET 10 · WinForms · AWS SDK for .NET", "关于", MessageBoxButtons.OK, MessageBoxIcon.Information)));
 
-        _menu.Items.AddRange([file, edit, view, bucket, objects, BuildCdnMenu(), tools, help]);
+        _menu.Items.AddRange([file, edit, view, bucket, objects, BuildCredentialMenu(), BuildCdnMenu(), tools, help]);
     }
 
     private void BuildToolbar()
@@ -881,8 +879,18 @@ internal sealed partial class MainForm : Form
         var hasConnectionImport = _commands.TryGetValue("import-connections", out var importConnections) && importConnections.Enabled;
         var hasConnectionExport = _commands.TryGetValue("export-all-connections", out var exportConnections);
         var hasCredentialCenter = _commands.TryGetValue("credential-center", out var credentialCenter);
+        var hasPermissionHistory = _commands.TryGetValue("permission-check-history", out var permissionHistory);
         var hasCdnConfiguration = _commands.TryGetValue("cdn-configure", out var cdnConfiguration);
         var hasCdnUrlCommand = _commands.TryGetValue("cdn-copy-url", out var cdnCopyUrl);
+        var credentialMenu = _menu.Items
+            .OfType<ToolStripMenuItem>()
+            .FirstOrDefault(item => item.Name == "CredentialMenu");
+        var cdnMenu = _menu.Items
+            .OfType<ToolStripMenuItem>()
+            .FirstOrDefault(item => item.Name == "CdnMenu");
+        var credentialMenuText = credentialMenu?.Text ?? string.Empty;
+        var credentialMenuItemCount = credentialMenu?.DropDownItems.Count ?? 0;
+        var cdnMenuText = cdnMenu?.Text ?? string.Empty;
         var checks = new List<AutomationCheck>
         {
             new("window-handle", IsHandleCreated && Handle != IntPtr.Zero, $"Handle={Handle}"),
@@ -905,8 +913,14 @@ internal sealed partial class MainForm : Form
                 $"Import={importConnections is not null}; Export={exportConnections is not null}"),
             new("credential-center-command", hasCredentialCenter,
                 $"Present={credentialCenter is not null}"),
-            new("cdn-commands", hasCdnConfiguration && hasCdnUrlCommand,
-                $"Configure={cdnConfiguration is not null}; CopyUrl={cdnCopyUrl is not null}")
+            new("permission-check-history-command", hasPermissionHistory,
+                $"Present={permissionHistory is not null}"),
+            new("credential-menu", credentialMenuText.StartsWith("凭据", StringComparison.Ordinal) &&
+                credentialMenuItemCount == 2,
+                $"Text={credentialMenuText}; Items={credentialMenuItemCount}"),
+            new("cdn-commands", hasCdnConfiguration && hasCdnUrlCommand &&
+                cdnMenuText.StartsWith("CDN / 分发", StringComparison.Ordinal),
+                $"Configure={cdnConfiguration is not null}; CopyUrl={cdnCopyUrl is not null}; Menu={cdnMenuText}")
         };
 
         var parent = CreateParentDirectoryItem(_objects.Font);

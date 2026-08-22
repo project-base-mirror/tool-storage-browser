@@ -252,8 +252,7 @@ internal sealed partial class MainForm
 
     private async Task ShowCdnConfigurationAsync(
         ConnectionProfile? initialProfile = null,
-        string? initialBucket = null,
-        bool openCredentialCenter = false)
+        string? initialBucket = null)
     {
         using var dialog = new CdnConfigurationDialog(
             _profiles,
@@ -265,23 +264,26 @@ internal sealed partial class MainForm
             _storage,
             _cdnDeliveryService,
             PersistCdnCertificateResultAsync,
-            openCredentialCenter);
+            _profileGroups);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
         try
         {
-            CdnConfigurationValidator.EnsureValid(dialog.Configuration, dialog.Credentials);
-            await _configurationStore.SaveAsync(new ExplorerConfiguration(
-                new ConnectionProfileConfiguration(_profiles, _profileGroups),
-                dialog.Configuration,
-                dialog.Credentials));
-            _credentials = dialog.Credentials;
-            _cdnConfiguration = dialog.Configuration;
+            var updated = await _configurationStore.UpdateAsync(current => current with
+            {
+                Cdn = dialog.Configuration
+            });
+            _profiles = updated.Storage.Profiles;
+            _profileGroups = updated.Storage.Groups;
+            _credentials = updated.CredentialVault;
+            _cdnConfiguration = updated.Cdn;
+            if (_currentProfile is not null)
+                _currentProfile = _profiles.FirstOrDefault(value => value.Id == _currentProfile.Id);
             UpdateCommandStates();
             MessageBox.Show(
                 this,
-                "CDN 配置、统一凭据和 Bucket/前缀关联已保存。",
+                "CDN 配置和 Bucket/前缀关联已保存。",
                 "CDN 配置",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -289,7 +291,7 @@ internal sealed partial class MainForm
         catch (Exception exception)
         {
             _logger.Error("Failed to save CDN configuration", exception);
-            ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和统一凭据", exception);
+            ErrorDialog.ShowException(this, "无法保存 CDN 配置", "CDN 配置和 Bucket/前缀关联", exception);
         }
     }
 

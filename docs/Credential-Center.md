@@ -24,11 +24,15 @@ S3 Explorer 使用一个统一的 Credential Vault 管理对象存储、AWS 外�
 
 ## 桌面端
 
-从“工具 → 凭据中心”打开“配置与凭据中心”。可以新增、查看和删除凭据，并在对象存储连接或 CDN 配置中选择已有凭据。删除仍被连接或 CDN Profile 引用的凭据会被阻止。
+从顶级“凭据 → 凭据中心”打开独立凭据中心。可以新增、查看、编辑和删除凭据，并在对象存储连接或 CDN 配置中选择已有凭据。删除仍被连接或 CDN Profile 引用的凭据会被阻止。CDN 配置与 Bucket/前缀关联仍保留在“CDN / 分发 → CDN 配置中心”，不会混入凭据窗口。
 
 保存配置时会校验引用关系、提供方和凭据类型的一致性。比如 Alibaba Cloud 凭据只能用于 Alibaba OSS 或 Alibaba CDN Profile；Generic HTTP CDN 使用 Bearer Token 或自定义 Header。修改凭据类型导致已有引用不再有效时，保存会失败并保留原配置。
 
-配置中心提供“检查关联权限”。默认检查是无副作用的：对象存储只检查列举和对象属性读取，写入、删除和 ACL 权限显示为“无法确定”；CDN 只执行配置端点和认证响应分类，不发送刷新请求。需要真实写权限验证时，必须通过 CLI 显式启用探针并确认。
+凭据中心提供“检查关联权限”。默认检查是无副作用的：对象存储只检查列举和对象属性读取，写入、删除和 ACL 权限显示为“无法确定”；CDN 只执行配置端点和认证响应分类，不发送刷新请求。
+
+“凭据 → 权限检查”按凭据和目标范围显示最近一次结果，并区分只读检查与写入探针。结果保存在非敏感的 `%APPDATA%\S3Explorer\permission-check-history.json` 中，只包含凭据名称、类型、指纹、目标和脱敏后的检查信息，不包含密钥、Token 或其他秘密值。
+
+需要验证 Put/Delete/ACL 时，可在该列表中选择“执行写入探针”。每次执行都必须选择具体对象存储连接、Bucket 和非空隔离 Prefix，再输入 `PROBE` 并勾选一次性确认。程序会上传临时对象、按需设置 Private ACL，然后删除临时对象；确认不会保存为永久设置。删除失败会明确提示对象可能残留。
 
 ## CLI
 
@@ -50,7 +54,7 @@ s3explorer-cli permission check --cdn-profile <name-or-id>
 s3explorer-cli permission check --storage-profile <name-or-id> --bucket <bucket> --operation publish --probe-write --yes
 ```
 
-`--probe-write` 会在指定范围创建临时探针对象、执行必要的 ACL 操作并删除它；只允许与 `--yes` 一起使用。删除探针失败会报告为失败，不会伪装成权限检查成功。探针应使用隔离 Bucket 或明确的专用前缀。
+CLI 仍可用于自动化。`--probe-write` 会在指定范围创建临时探针对象、执行必要的 ACL 操作并删除它；只允许与 `--yes` 一起使用。删除探针失败会报告为失败，不会伪装成权限检查成功。探针应使用隔离 Bucket 或明确的专用前缀。
 
 ## 连接包
 

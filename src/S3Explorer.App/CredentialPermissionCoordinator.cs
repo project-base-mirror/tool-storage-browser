@@ -6,7 +6,7 @@ namespace S3Explorer.App;
 
 /// <summary>
 /// Runs non-destructive, scope-aware permission checks for every configuration that references
-/// a credential. Destructive S3 write/delete probes remain an explicit CLI operation.
+/// a credential. Mutation probes remain a separate, explicitly confirmed one-shot operation.
 /// </summary>
 internal sealed class CredentialPermissionCoordinator(
     IS3StorageService storage,

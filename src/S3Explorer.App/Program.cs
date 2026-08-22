@@ -44,6 +44,8 @@ internal static class Program
             var storageService = new S3StorageService(new S3ClientFactory());
             var settingsStore = new AppSettingsStore(
                 options.Enabled ? Path.Combine(dataRoot, "settings.json") : null);
+            var permissionCheckHistoryStore = new PermissionCheckHistoryStore(
+                options.Enabled ? Path.Combine(dataRoot, "permission-check-history.json") : null);
             var logger = new SimpleFileLogger(
                 options.Enabled ? Path.Combine(dataRoot, "logs") : null);
             var transferStore = new JsonTransferTaskStore(
@@ -102,7 +104,8 @@ internal static class Program
                 cdnDeliveryService,
                 cdnJobQueue,
                 cdnCertificateInspector,
-                automation);
+                automation,
+                permissionCheckHistoryStore);
             if (singleInstance is not null)
             {
                 _ = form.Handle;

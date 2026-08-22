@@ -16,9 +16,9 @@ internal sealed class CdnConfigurationDialog : Form
     private readonly Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? _persistCertificateResult;
     private readonly List<CdnProfile> _profiles;
     private readonly List<CredentialProfile> _credentials;
+    private readonly IReadOnlyList<ConnectionGroup> _connectionGroups;
     private readonly List<CdnBinding> _bindings;
     private readonly DataGridView _profileGrid;
-    private readonly DataGridView _credentialGrid;
     private readonly DataGridView _bindingGrid;
     private readonly Dictionary<Guid, string> _certificateStatuses = [];
     private readonly Dictionary<Guid, string> _bindingStatuses = [];
@@ -50,16 +50,8 @@ internal sealed class CdnConfigurationDialog : Form
         AutoSize = true,
         MinimumSize = new Size(90, 34)
     };
-    private readonly Button _checkCredentialPermissions = new()
-    {
-        Name = "CheckCredentialPermissionsButton",
-        Text = "检查关联权限",
-        AutoSize = true,
-        MinimumSize = new Size(124, 34)
-    };
     private CancellationTokenSource? _certificateCancellation;
     private CancellationTokenSource? _bindingCancellation;
-    private CancellationTokenSource? _credentialPermissionCancellation;
     private readonly Button _save = new()
     {
         Name = "SaveCdnConfigurationButton",
@@ -88,7 +80,6 @@ internal sealed class CdnConfigurationDialog : Form
     private bool _accepting;
 
     public CdnConfiguration Configuration { get; private set; }
-    public IReadOnlyList<CredentialProfile> Credentials { get; private set; }
 
     public CdnConfigurationDialog(
         IReadOnlyList<ConnectionProfile> storageProfiles,
@@ -100,7 +91,7 @@ internal sealed class CdnConfigurationDialog : Form
         IS3StorageService? storage = null,
         ICdnDeliveryService? deliveryService = null,
         Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? persistCertificateResult = null,
-        bool openCredentialCenter = false)
+        IReadOnlyList<ConnectionGroup>? connectionGroups = null)
     {
         _storageProfiles = storageProfiles;
         _certificateInspector = certificateInspector;
@@ -109,12 +100,12 @@ internal sealed class CdnConfigurationDialog : Form
         _persistCertificateResult = persistCertificateResult;
         _profiles = [.. configuration.Profiles];
         _credentials = [.. credentials];
+        _connectionGroups = connectionGroups ?? [];
         _bindings = [.. configuration.Bindings];
         Configuration = configuration;
-        Credentials = credentials;
 
         Name = "CdnConfigurationDialog";
-        Text = "配置与凭据中心";
+        Text = "CDN 配置中心";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(980, 680);
         MinimumSize = new Size(820, 560);
@@ -143,19 +134,6 @@ internal sealed class CdnConfigurationDialog : Form
         profileTab.Buttons.Controls.Add(_checkCertificate);
         tabs.TabPages.Add(profileTab.Page);
 
-        var credentialTab = CreateTab(
-            "凭据中心",
-            "CredentialCenterTab",
-            "AddCredentialButton",
-            "EditCredentialButton",
-            "DeleteCredentialButton",
-            AddCredential,
-            EditCredential,
-            DeleteCredential);
-        _credentialGrid = credentialTab.Grid;
-        credentialTab.Buttons.Controls.Add(_checkCredentialPermissions);
-        tabs.TabPages.Add(credentialTab.Page);
-
         var bindingTab = CreateTab(
             "Bucket / 前缀关联",
             "CdnBindingsTab",
@@ -171,8 +149,6 @@ internal sealed class CdnConfigurationDialog : Form
         bindingTab.Buttons.Controls.SetChildIndex(_copyBinding, 2);
         bindingTab.Buttons.Controls.Add(_checkBindings);
         tabs.TabPages.Add(bindingTab.Page);
-        if (openCredentialCenter)
-            tabs.SelectedTab = credentialTab.Page;
 
         var root = new TableLayoutPanel
         {
@@ -188,7 +164,7 @@ internal sealed class CdnConfigurationDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(new Label
         {
-            Text = "统一凭据可由对象存储连接和兼容的 CDN Provider 共同引用；CDN 再按对象存储连接、Bucket 与最长前缀建立关联。",
+            Text = "CDN 配置可引用已有凭据；Bucket / 前缀关联用于连接对象存储与 CDN。",
             AutoSize = true,
             MaximumSize = new Size(920, 0),
             Margin = new Padding(0, 0, 0, 10)
@@ -239,20 +215,7 @@ internal sealed class CdnConfigurationDialog : Form
             }
             await CheckSelectedBindingsAsync();
         };
-        _checkCredentialPermissions.Click += async (_, _) =>
-        {
-            if (_credentialPermissionCancellation is not null)
-            {
-                _credentialPermissionCancellation.Cancel();
-                return;
-            }
-            await CheckSelectedCredentialPermissionsAsync();
-        };
         _profileGrid.SelectionChanged += (_, _) =>
-        {
-            UpdateOperationButtons();
-        };
-        _credentialGrid.SelectionChanged += (_, _) =>
         {
             UpdateOperationButtons();
         };
@@ -342,14 +305,11 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void RefreshAll(
         IReadOnlyCollection<Guid>? selectedProfiles = null,
-        IReadOnlyCollection<Guid>? selectedCredentials = null,
         IReadOnlyCollection<Guid>? selectedBindings = null)
     {
         selectedProfiles ??= SelectedIds(_profileGrid);
-        selectedCredentials ??= SelectedIds(_credentialGrid);
         selectedBindings ??= SelectedIds(_bindingGrid);
         RefreshProfiles(selectedProfiles);
-        RefreshCredentials(selectedCredentials);
         RefreshBindings(selectedBindings);
     }
 
@@ -382,25 +342,6 @@ internal sealed class CdnConfigurationDialog : Form
         }
         RestoreSelection(_profileGrid, selectedIds);
         UpdateOperationButtons();
-    }
-
-    private void RefreshCredentials(IReadOnlyCollection<Guid> selectedIds)
-    {
-        _credentialGrid.Columns.Clear();
-        _credentialGrid.Columns.Add("name", "名称");
-        _credentialGrid.Columns.Add("provider", "提供方");
-        _credentialGrid.Columns.Add("type", "凭据类型");
-        _credentialGrid.Columns.Add("identity", "安全标识");
-        foreach (var credential in _credentials.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
-        {
-            var index = _credentialGrid.Rows.Add(
-                credential.Name,
-                credential.Provider,
-                credential.Kind,
-                credential.Fingerprint);
-            _credentialGrid.Rows[index].Tag = credential.Id;
-        }
-        RestoreSelection(_credentialGrid, selectedIds);
     }
 
     private void RefreshBindings(IReadOnlyCollection<Guid> selectedIds)
@@ -509,62 +450,6 @@ internal sealed class CdnConfigurationDialog : Form
         RefreshAll();
     }
 
-    private void AddCredential()
-    {
-        using var dialog = new CredentialEditorDialog(null);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _credentials.Add(dialog.Credential);
-        MarkDirty();
-        RefreshAll(selectedCredentials: [dialog.Credential.Id]);
-    }
-
-    private void EditCredential()
-    {
-        var id = SelectedId(_credentialGrid);
-        var credential = id is Guid value ? _credentials.FirstOrDefault(item => item.Id == value) : null;
-        if (credential is null) return;
-        using var dialog = new CredentialEditorDialog(credential);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _credentials[_credentials.IndexOf(credential)] = dialog.Credential;
-        MarkDirty();
-        RefreshAll(selectedCredentials: [dialog.Credential.Id]);
-    }
-
-    private void DeleteCredential()
-    {
-        var id = SelectedId(_credentialGrid);
-        var credential = id is Guid value ? _credentials.FirstOrDefault(item => item.Id == value) : null;
-        if (credential is null) return;
-        var usedBy = _profiles
-            .Where(value => value.CredentialId == credential.Id)
-            .Select(value => "CDN：" + value.Name)
-            .Concat(_storageProfiles
-                .Where(value => value.CredentialId == credential.Id ||
-                    value.AwsExternalIdCredentialId == credential.Id)
-                .Select(value => "对象存储：" + value.Name))
-            .ToArray();
-        if (usedBy.Length > 0)
-        {
-            MessageBox.Show(
-                this,
-                $"凭据“{credential.Name}”仍被以下配置引用：{string.Join("、", usedBy)}。请先修改这些配置。",
-                "无法删除凭据",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-        if (MessageBox.Show(
-                this,
-                $"确定删除统一凭据“{credential.Name}”吗？",
-                "删除凭据",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes)
-            return;
-        _credentials.Remove(credential);
-        MarkDirty();
-        RefreshAll();
-    }
-
     private void AddBinding(ConnectionProfile? initialProfile = null, string? initialBucket = null)
     {
         if (_storageProfiles.Count == 0 || _profiles.Count == 0)
@@ -650,11 +535,10 @@ internal sealed class CdnConfigurationDialog : Form
         {
             var configuration = new CdnConfiguration([.. _profiles], [.. _bindings]);
             new ExplorerConfiguration(
-                new ConnectionProfileConfiguration(_storageProfiles, []),
+                new ConnectionProfileConfiguration(_storageProfiles, _connectionGroups),
                 configuration,
                 _credentials).Validate();
             Configuration = configuration;
-            Credentials = [.. _credentials];
             _accepting = true;
             DialogResult = DialogResult.OK;
             Close();
@@ -714,8 +598,7 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void UpdateDirtyState()
     {
-        _save.Enabled = _isDirty && _certificateCancellation is null && _bindingCancellation is null &&
-            _credentialPermissionCancellation is null;
+        _save.Enabled = _isDirty && _certificateCancellation is null && _bindingCancellation is null;
         _dirtyStatus.Text = _isDirty
             ? "有未保存的更改：新增、编辑、复制和删除将在此统一写入磁盘。"
             : "没有未保存的更改";
@@ -726,7 +609,6 @@ internal sealed class CdnConfigurationDialog : Form
     {
         _certificateCancellation?.Cancel();
         _bindingCancellation?.Cancel();
-        _credentialPermissionCancellation?.Cancel();
         if (_accepting || !_isDirty) return;
         using var confirmation = new DiscardCdnChangesDialog();
         if (confirmation.ShowDialog(this) != DialogResult.Yes)
@@ -759,14 +641,10 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void UpdateOperationButtons()
     {
-        var busy = _certificateCancellation is not null || _bindingCancellation is not null ||
-            _credentialPermissionCancellation is not null;
+        var busy = _certificateCancellation is not null || _bindingCancellation is not null;
         SetButtonEnabled("AddCdnProfileButton", !busy);
         SetButtonEnabled("EditCdnProfileButton", !busy && SelectedId(_profileGrid) is not null);
         SetButtonEnabled("DeleteCdnProfileButton", !busy && SelectedIds(_profileGrid).Length > 0);
-        SetButtonEnabled("AddCredentialButton", !busy);
-        SetButtonEnabled("EditCredentialButton", !busy && SelectedId(_credentialGrid) is not null);
-        SetButtonEnabled("DeleteCredentialButton", !busy && SelectedIds(_credentialGrid).Length > 0);
         SetButtonEnabled("AddCdnBindingButton", !busy);
         SetButtonEnabled("EditCdnBindingButton", !busy && SelectedId(_bindingGrid) is not null);
         SetButtonEnabled("DeleteCdnBindingButton", !busy && SelectedIds(_bindingGrid).Length > 0);
@@ -799,62 +677,7 @@ internal sealed class CdnConfigurationDialog : Form
         }
         _copyProfile.Enabled = _certificateCancellation is null && _bindingCancellation is null && SelectedId(_profileGrid) is not null;
         _copyBinding.Enabled = _certificateCancellation is null && _bindingCancellation is null && SelectedId(_bindingGrid) is not null;
-        if (_credentialPermissionCancellation is not null)
-        {
-            _checkCredentialPermissions.Text = "取消权限检查";
-            _checkCredentialPermissions.Enabled = true;
-        }
-        else
-        {
-            _checkCredentialPermissions.Text = "检查关联权限";
-            _checkCredentialPermissions.Enabled = _certificateCancellation is null && _bindingCancellation is null &&
-                _storage is not null && _deliveryService is not null && SelectedId(_credentialGrid) is not null;
-        }
         UpdateDirtyState();
-    }
-
-    private async Task CheckSelectedCredentialPermissionsAsync()
-    {
-        if (_storage is null || _deliveryService is null) return;
-        var credentialId = SelectedId(_credentialGrid);
-        var credential = credentialId is Guid id
-            ? _credentials.FirstOrDefault(value => value.Id == id)
-            : null;
-        if (credential is null) return;
-
-        using var cancellation = new CancellationTokenSource();
-        _credentialPermissionCancellation = cancellation;
-        UpdateOperationButtons();
-        try
-        {
-            var report = await new CredentialPermissionCoordinator(_storage, _deliveryService).CheckAsync(
-                credential,
-                _storageProfiles,
-                new CdnConfiguration(_profiles, _bindings),
-                cancellation.Token);
-            if (IsDisposed || Disposing) return;
-            using var dialog = new CredentialPermissionResultDialog(credential, report);
-            dialog.ShowDialog(this);
-        }
-        catch (OperationCanceledException)
-        {
-            // The button and form close both use cancellation as their normal control flow.
-        }
-        catch (Exception exception)
-        {
-            ErrorDialog.ShowException(
-                this,
-                "凭据权限检查失败",
-                "检查过程不会显示或记录秘密值。",
-                exception);
-        }
-        finally
-        {
-            if (ReferenceEquals(_credentialPermissionCancellation, cancellation))
-                _credentialPermissionCancellation = null;
-            if (!IsDisposed && !Disposing)
-                UpdateOperationButtons();
-        }
     }
 
     private void SetButtonEnabled(string name, bool enabled)
