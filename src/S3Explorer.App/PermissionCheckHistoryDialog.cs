@@ -6,18 +6,13 @@ namespace S3Explorer.App;
 internal sealed class PermissionCheckHistoryDialog : Form
 {
     private readonly PermissionCheckHistoryStore _store;
-    private readonly Func<IWin32Window, CancellationToken, Task>? _runMutationProbe;
     private readonly DataGridView _grid = new();
     private readonly Label _status = new() { AutoSize = true, ForeColor = SystemColors.GrayText };
     private IReadOnlyList<PermissionCheckHistoryEntry> _entries = Array.Empty<PermissionCheckHistoryEntry>();
-    private bool _probeRunning;
 
-    public PermissionCheckHistoryDialog(
-        PermissionCheckHistoryStore store,
-        Func<IWin32Window, CancellationToken, Task>? runMutationProbe = null)
+    public PermissionCheckHistoryDialog(PermissionCheckHistoryStore store)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        _runMutationProbe = runMutationProbe;
         Name = nameof(PermissionCheckHistoryDialog);
         Text = "权限检查记录";
         StartPosition = FormStartPosition.CenterParent;
@@ -45,15 +40,6 @@ internal sealed class PermissionCheckHistoryDialog : Form
 
         var detail = new Button { Name = "ViewPermissionCheckDetailsButton", Text = "查看详情", AutoSize = true };
         detail.Click += (_, _) => ShowSelectedDetails();
-        var probe = new Button
-        {
-            Name = "RunStoragePermissionProbeButton",
-            Text = "执行写入探针...",
-            AutoSize = true,
-            MinimumSize = new Size(132, 34),
-            Enabled = _runMutationProbe is not null
-        };
-        probe.Click += async (_, _) => await RunMutationProbeAsync(probe);
         var delete = new Button { Name = "DeletePermissionCheckHistoryButton", Text = "删除选中", AutoSize = true };
         delete.Click += async (_, _) => await RunUiActionAsync("删除权限检查记录", DeleteSelectedAsync);
         var clear = new Button { Name = "ClearPermissionCheckHistoryButton", Text = "清空记录", AutoSize = true };
@@ -64,7 +50,6 @@ internal sealed class PermissionCheckHistoryDialog : Form
         actions.Controls.Add(clear);
         actions.Controls.Add(delete);
         actions.Controls.Add(detail);
-        actions.Controls.Add(probe);
 
         var footer = new TableLayoutPanel
         {
@@ -90,11 +75,6 @@ internal sealed class PermissionCheckHistoryDialog : Form
         AcceptButton = close;
         CancelButton = close;
         Shown += async (_, _) => await RunUiActionAsync("加载权限检查记录", () => RefreshAsync());
-        FormClosing += (_, args) =>
-        {
-            if (_probeRunning)
-                args.Cancel = true;
-        };
     }
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
@@ -153,33 +133,6 @@ internal sealed class PermissionCheckHistoryDialog : Form
             return;
         await _store.DeleteAsync(entry.CredentialId, entry.TargetScope).ConfigureAwait(true);
         await RefreshAsync().ConfigureAwait(true);
-    }
-
-    private async Task RunMutationProbeAsync(Button button)
-    {
-        if (_runMutationProbe is null) return;
-        _probeRunning = true;
-        button.Enabled = false;
-        _grid.Enabled = false;
-        UseWaitCursor = true;
-        _status.Text = "正在执行写入探针，请等待临时对象完成清理...";
-        try
-        {
-            await _runMutationProbe(this, CancellationToken.None).ConfigureAwait(true);
-            await RefreshAsync().ConfigureAwait(true);
-        }
-        catch (Exception exception)
-        {
-            ErrorDialog.ShowException(this, "写入权限探针失败", "权限检查", exception);
-        }
-        finally
-        {
-            _probeRunning = false;
-            _grid.Enabled = true;
-            UseWaitCursor = false;
-            if (!IsDisposed && !Disposing)
-                button.Enabled = true;
-        }
     }
 
     private async Task RunUiActionAsync(string operation, Func<Task> action)

@@ -69,14 +69,67 @@ internal sealed partial class MainForm
 
     private async Task ShowPermissionChecksAsync()
     {
-        using var dialog = new PermissionCheckHistoryDialog(
+        using var dialog = new CredentialPermissionMatrixDialog(
+            _credentials,
             _permissionCheckHistoryStore,
+            RunCredentialPermissionCheckAsync,
             RunStoragePermissionProbeAsync);
         dialog.ShowDialog(this);
         await Task.CompletedTask;
     }
 
-    private async Task RunStoragePermissionProbeAsync(IWin32Window owner, CancellationToken cancellationToken)
+    private async Task RunCredentialPermissionCheckAsync(
+        CredentialProfile credential,
+        IWin32Window owner,
+        CancellationToken cancellationToken)
+    {
+        var resolvedProfiles = new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(_profiles, _profileGroups),
+                _cdnConfiguration,
+                _credentials)
+            .ResolveCredentialReferences()
+            .Storage.Profiles;
+
+        try
+        {
+            UseWaitCursor = true;
+            var report = await new CredentialPermissionCoordinator(_storage, _cdnDeliveryService)
+                .CheckAsync(
+                    credential,
+                    resolvedProfiles,
+                    _cdnConfiguration,
+                    cancellationToken);
+            await _permissionCheckHistoryStore.UpsertAsync(
+                credential,
+                report,
+                mutationProbe: false,
+                cancellationToken);
+            using var resultDialog = new CredentialPermissionResultDialog(credential, report);
+            resultDialog.ShowDialog(owner);
+        }
+        catch (OperationCanceledException)
+        {
+            // The matrix dialog exposes cancellation while the check is running.
+        }
+        catch (Exception exception)
+        {
+            _logger.Error("Credential permission check failed", exception);
+            ErrorDialog.ShowException(
+                owner,
+                "凭据权限检查失败",
+                "检查过程不会显示或记录秘密值。",
+                exception);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
+    }
+
+    private async Task RunStoragePermissionProbeAsync(
+        CredentialProfile selectedCredential,
+        IWin32Window owner,
+        CancellationToken cancellationToken)
     {
         var profiles = new ExplorerConfiguration(
                 new ConnectionProfileConfiguration(_profiles, _profileGroups),
@@ -84,14 +137,14 @@ internal sealed partial class MainForm
                 _credentials)
             .ResolveCredentialReferences()
             .Storage.Profiles
-            .Where(profile => profile.CredentialId is Guid)
+            .Where(profile => profile.CredentialId == selectedCredential.Id)
             .OrderBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (profiles.Length == 0)
         {
             MessageBox.Show(
                 owner,
-                "没有关联到凭据中心的对象存储连接。请先在连接设置中选择统一凭据。",
+                $"凭据“{selectedCredential.Name}”没有关联对象存储连接，无法执行写入探针。",
                 "无法执行写入探针",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -102,10 +155,7 @@ internal sealed partial class MainForm
         if (probeDialog.ShowDialog(owner) != DialogResult.OK || probeDialog.Request is not { } request)
             return;
 
-        var credential = request.Profile.CredentialId is Guid credentialId
-            ? _credentials.FirstOrDefault(value => value.Id == credentialId)
-            : null;
-        if (credential is null)
+        if (request.Profile.CredentialId != selectedCredential.Id)
             throw new InvalidOperationException("所选对象存储连接没有可用的统一凭据。");
 
         try
@@ -115,11 +165,11 @@ internal sealed partial class MainForm
                 .CheckAsync(request, cancellationToken);
             var report = new PermissionCheckReport([result]);
             await _permissionCheckHistoryStore.UpsertAsync(
-                credential,
+                selectedCredential,
                 report,
                 mutationProbe: true,
                 cancellationToken);
-            using var resultDialog = new CredentialPermissionResultDialog(credential, report, mutationProbe: true);
+            using var resultDialog = new CredentialPermissionResultDialog(selectedCredential, report, mutationProbe: true);
             resultDialog.ShowDialog(owner);
         }
         catch (OperationCanceledException)

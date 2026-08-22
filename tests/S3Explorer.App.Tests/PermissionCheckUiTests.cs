@@ -97,8 +97,45 @@ public sealed class PermissionCheckUiTests
             Assert.NotNull(dialog.Controls.Find("ViewPermissionCheckDetailsButton", true).SingleOrDefault());
             Assert.NotNull(dialog.Controls.Find("DeletePermissionCheckHistoryButton", true).SingleOrDefault());
             Assert.NotNull(dialog.Controls.Find("ClearPermissionCheckHistoryButton", true).SingleOrDefault());
-            var probe = Assert.IsType<Button>(dialog.Controls.Find("RunStoragePermissionProbeButton", true).Single());
-            Assert.False(probe.Enabled);
+            Assert.Empty(dialog.Controls.Find("RunStoragePermissionProbeButton", true));
+        });
+    }
+
+    [Fact]
+    public void PermissionMatrixShowsCredentialRowsPermissionColumnsAndActions()
+    {
+        RunSta(() =>
+        {
+            var credential = new CredentialProfile
+            {
+                Name = "release",
+                Provider = CredentialProviderKind.AlibabaCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "AKID",
+                Secret = "secret"
+            };
+            using var dialog = new CredentialPermissionMatrixDialog(
+                [credential],
+                new PermissionCheckHistoryStore(System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(),
+                    $"matrix-{Guid.NewGuid():N}.json")),
+                static (_, _, _) => Task.CompletedTask,
+                static (_, _, _) => Task.CompletedTask);
+            dialog.RefreshAsync().GetAwaiter().GetResult();
+
+            var grid = Assert.IsType<DataGridView>(dialog.Controls.Find("CredentialPermissionMatrixGrid", true).Single());
+            Assert.Equal(
+                ["Credential", "ListBucket", "HeadObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnQueryOrAuthentication", "RefreshOrPush", "LastChecked"],
+                grid.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
+            var row = Assert.Single(grid.Rows.Cast<DataGridViewRow>());
+            Assert.Equal("release", row.Cells["Credential"].Value);
+            Assert.All(
+                new[] { "ListBucket", "HeadObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnQueryOrAuthentication", "RefreshOrPush" },
+                name => Assert.Equal("—", row.Cells[name].Value));
+            Assert.Equal("从未检查", row.Cells["LastChecked"].Value);
+            Assert.NotNull(dialog.Controls.Find("CheckSelectedCredentialPermissionsButton", true).SingleOrDefault());
+            Assert.NotNull(dialog.Controls.Find("ProbeSelectedCredentialPermissionsButton", true).SingleOrDefault());
+            Assert.NotNull(dialog.Controls.Find("ViewCredentialPermissionHistoryButton", true).SingleOrDefault());
         });
     }
 
