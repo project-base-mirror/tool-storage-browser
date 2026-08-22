@@ -135,7 +135,7 @@ public sealed class CredentialCommandTests
             Name = "cdn",
             ProviderId = CdnProfile.GenericHttpProviderId,
             BaseUrl = "https://cdn.example.com",
-            CredentialId = credential.Id
+            ControlCredentialId = credential.Id
         };
         var store = new InMemoryExplorerConfigurationStore(new ExplorerConfiguration(
             new ConnectionProfileConfiguration([storageProfile], []),
@@ -213,7 +213,7 @@ public sealed class CredentialCommandTests
             Name = "cdn",
             ProviderId = CdnProfile.GenericHttpProviderId,
             BaseUrl = "https://cdn.example.com",
-            CredentialId = cdnCredential.Id
+            ControlCredentialId = cdnCredential.Id
         };
         var secretEnvironmentVariable = "S3EX_TEST_CRED_SECRET_ATOMIC";
         var originalSecret = Environment.GetEnvironmentVariable(secretEnvironmentVariable);
@@ -303,7 +303,7 @@ public sealed class CredentialCommandTests
                 Name = "concurrent-cdn",
                 ProviderId = CdnProfile.AlibabaCloudProviderId,
                 BaseUrl = "https://cdn.example.com",
-                CredentialId = cdnCredential.Id
+                ControlCredentialId = cdnCredential.Id
             };
             return current with
             {

@@ -16,14 +16,15 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
     {
         _handlerFactory = handlerFactory ?? (profile => new HttpClientHandler
         {
-            AllowAutoRedirect = profile.FollowRedirects,
+            // Redirects are handled below so that a credential-bearing request
+            // can never follow a cross-origin Location with its secret headers.
+            AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.All
         });
     }
 
     public async Task<CdnProbeResult> ProbeAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         long sampleBytes,
         CancellationToken cancellationToken)
@@ -37,13 +38,16 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Range = new RangeHeaderValue(0, sampleBytes - 1);
-        ApplyCredential(profile, request, credential);
+        ApplyContentAuthentication(profile, request);
 
         var stopwatch = Stopwatch.StartNew();
-        using var response = await client.SendAsync(
+        using var response = await SendAsyncWithSafeRedirectsAsync(
+            client,
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+            cancellationToken,
+            profile.FollowRedirects,
+            HasContentAuthentication(profile));
         var timeToHeaders = stopwatch.Elapsed;
         var bytesRead = await ReadUpToAsync(
             await response.Content.ReadAsStreamAsync(cancellationToken),
@@ -68,20 +72,22 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnProbeResult> ProbeHeadAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken)
     {
         ValidateUrl(url);
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Head, url);
-        ApplyCredential(profile, request, credential);
+        ApplyContentAuthentication(profile, request);
 
         var stopwatch = Stopwatch.StartNew();
-        using var response = await client.SendAsync(
+        using var response = await SendAsyncWithSafeRedirectsAsync(
+            client,
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+            cancellationToken,
+            profile.FollowRedirects,
+            HasContentAuthentication(profile));
         var timeToHeaders = stopwatch.Elapsed;
         stopwatch.Stop();
         var headers = CollectHeaders(response);
@@ -101,7 +107,6 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnDownloadResult> DownloadAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         Stream destination,
         CancellationToken cancellationToken)
@@ -113,11 +118,14 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
         using var client = CreateClient(profile);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        ApplyCredential(profile, request, credential);
-        using var response = await client.SendAsync(
+        ApplyContentAuthentication(profile, request);
+        using var response = await SendAsyncWithSafeRedirectsAsync(
+            client,
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+            cancellationToken,
+            profile.FollowRedirects,
+            HasContentAuthentication(profile));
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
@@ -148,7 +156,6 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken)
     {
@@ -161,13 +168,16 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             url);
         if (profile.WarmupMode == CdnWarmupMode.RangeGet)
             request.Headers.Range = new RangeHeaderValue(0, profile.WarmupRangeBytes - 1);
-        ApplyCredential(profile, request, credential);
+        ApplyContentAuthentication(profile, request);
 
         var stopwatch = Stopwatch.StartNew();
-        using var response = await client.SendAsync(
+        using var response = await SendAsyncWithSafeRedirectsAsync(
+            client,
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+            cancellationToken,
+            profile.FollowRedirects,
+            HasContentAuthentication(profile));
         long bytesRead = 0;
         if (profile.WarmupMode != CdnWarmupMode.Head)
         {
@@ -191,7 +201,7 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
 
     public async Task<CdnOperationResult> PurgeAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
+        CredentialProfile? controlCredential,
         Uri url,
         CancellationToken cancellationToken)
     {
@@ -218,13 +228,16 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
                     ? "application/json"
                     : profile.PurgeContentType);
         }
-        ApplyCredential(profile, request, credential);
+        ApplyControlCredential(profile, request, controlCredential);
 
         var stopwatch = Stopwatch.StartNew();
-        using var response = await client.SendAsync(
+        using var response = await SendAsyncWithSafeRedirectsAsync(
+            client,
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+            cancellationToken,
+            profile.FollowRedirects,
+            UsesControlAuthentication(profile, controlCredential));
         var snippet = await ReadSnippetAsync(response.Content, cancellationToken);
         stopwatch.Stop();
         var success = (int)response.StatusCode is >= 200 and < 300;
@@ -245,7 +258,121 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             Timeout = TimeSpan.FromSeconds(Math.Clamp(profile.TimeoutSeconds, 1, 3600))
         };
 
-    private static void ApplyCredential(
+    private static bool HasContentAuthentication(CdnProfile profile) =>
+        profile.ContentAuthentication is { AuthenticationType: not CdnAuthenticationType.None }
+        && !string.IsNullOrEmpty(profile.ContentAuthentication.Secret);
+
+    private static bool UsesControlAuthentication(
+        CdnProfile profile,
+        CredentialProfile? credential) =>
+        string.Equals(
+            profile.ProviderId,
+            CdnProfile.GenericHttpProviderId,
+            StringComparison.OrdinalIgnoreCase)
+        && credential is not null;
+
+    private static async Task<HttpResponseMessage> SendAsyncWithSafeRedirectsAsync(
+        HttpClient client,
+        HttpRequestMessage request,
+        HttpCompletionOption completionOption,
+        CancellationToken cancellationToken,
+        bool followRedirects,
+        bool hasCredentials)
+    {
+        if (!request.RequestUri!.IsAbsoluteUri)
+            throw new InvalidOperationException("CDN 请求必须使用绝对地址。");
+
+        var body = request.Content is null
+            ? null
+            : await request.Content.ReadAsByteArrayAsync(cancellationToken);
+        var current = request;
+        var origin = request.RequestUri;
+        for (var redirectCount = 0; ; redirectCount++)
+        {
+            var response = await client.SendAsync(
+                current,
+                completionOption,
+                cancellationToken);
+            if (!followRedirects ||
+                !IsRedirect(response.StatusCode) ||
+                response.Headers.Location is not { } location)
+                return response;
+
+            if (redirectCount >= 10)
+            {
+                response.Dispose();
+                throw new HttpRequestException("CDN 请求重定向次数超过限制。");
+            }
+
+            var target = location.IsAbsoluteUri
+                ? location
+                : new Uri(origin, location);
+            if (!IsHttpUrl(target))
+            {
+                response.Dispose();
+                throw new HttpRequestException("CDN 请求重定向到了无效的地址。");
+            }
+
+            if (hasCredentials && !SameOrigin(origin, target))
+            {
+                response.Dispose();
+                throw new InvalidOperationException(
+                    "CDN 请求携带认证信息，已拒绝跨源重定向以避免泄露凭据。");
+            }
+
+            var nextMethod = RedirectMethod(response.StatusCode, current.Method);
+            var next = new HttpRequestMessage(nextMethod, target);
+            foreach (var header in current.Headers)
+                next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            if (body is not null && nextMethod != HttpMethod.Get && nextMethod != HttpMethod.Head)
+            {
+                next.Content = new ByteArrayContent(body);
+                if (current.Content is not null)
+                    foreach (var header in current.Content.Headers)
+                        next.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            response.Dispose();
+            if (!ReferenceEquals(current, request))
+                current.Dispose();
+            current = next;
+            origin = target;
+        }
+    }
+
+    private static bool IsRedirect(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.Moved or
+            HttpStatusCode.Redirect or
+            HttpStatusCode.RedirectMethod or
+            HttpStatusCode.TemporaryRedirect or
+            HttpStatusCode.PermanentRedirect;
+
+    private static HttpMethod RedirectMethod(HttpStatusCode statusCode, HttpMethod method) =>
+        statusCode == HttpStatusCode.RedirectMethod ||
+        ((statusCode == HttpStatusCode.Moved || statusCode == HttpStatusCode.Redirect) &&
+         method == HttpMethod.Post)
+            ? HttpMethod.Get
+            : method;
+
+    private static bool SameOrigin(Uri left, Uri right) =>
+        string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+        left.Port == right.Port;
+
+    private static bool IsHttpUrl(Uri uri) =>
+        (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
+        string.IsNullOrEmpty(uri.UserInfo) &&
+        string.IsNullOrEmpty(uri.Fragment);
+
+    private static void ApplyContentAuthentication(
+        CdnProfile profile,
+        HttpRequestMessage request)
+    {
+        ApplyHttpAuthentication(profile.ContentAuthentication, request, "CDN 内容认证");
+    }
+
+    private static void ApplyControlCredential(
         CdnProfile profile,
         HttpRequestMessage request,
         CredentialProfile? credential)
@@ -257,27 +384,56 @@ public sealed class GenericHttpCdnDeliveryService : ICdnDeliveryService
             credential is null)
             return;
         if (credential.Provider != CredentialProviderKind.GenericHttp)
-            throw new InvalidOperationException("通用 HTTP CDN 只能使用 GenericHttp 凭据。");
-        if (string.IsNullOrEmpty(credential.Secret))
-            throw new InvalidOperationException("CDN 凭据缺少秘密值。");
-        if (credential.Secret.IndexOfAny(['\r', '\n']) >= 0)
-            throw new InvalidOperationException("CDN 凭据秘密值不能包含换行符。");
+            throw new InvalidOperationException("通用 HTTP CDN 控制面只能使用 GenericHttp 凭据。");
 
-        if (credential.Kind == CredentialKind.BearerToken)
+        ApplyHttpAuthentication(
+            credential.Kind switch
+            {
+                CredentialKind.BearerToken => new CdnHttpAuthentication
+                {
+                    AuthenticationType = CdnAuthenticationType.BearerToken,
+                    Secret = credential.Secret
+                },
+                CredentialKind.CustomHeader => new CdnHttpAuthentication
+                {
+                    AuthenticationType = CdnAuthenticationType.CustomHeader,
+                    HeaderName = credential.HeaderName,
+                    Secret = credential.Secret
+                },
+                _ => throw new InvalidOperationException("通用 HTTP CDN 控制面凭据必须是 BearerToken 或 CustomHeader。")
+            },
+            request,
+            "CDN 控制面凭据");
+    }
+
+    private static void ApplyHttpAuthentication(
+        CdnHttpAuthentication? authentication,
+        HttpRequestMessage request,
+        string description)
+    {
+        authentication ??= CdnHttpAuthentication.Anonymous;
+        if (authentication.AuthenticationType == CdnAuthenticationType.None)
+            return;
+        if (string.IsNullOrEmpty(authentication.Secret))
+            throw new InvalidOperationException($"{description}缺少秘密值。");
+        if (authentication.Secret.IndexOfAny(['\r', '\n']) >= 0)
+            throw new InvalidOperationException($"{description}秘密值不能包含换行符。");
+
+        if (authentication.AuthenticationType == CdnAuthenticationType.BearerToken)
         {
             request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", credential.Secret);
+                new AuthenticationHeaderValue("Bearer", authentication.Secret);
             return;
         }
 
-        if (credential.Kind != CredentialKind.CustomHeader ||
-            !CdnConfigurationValidator.IsValidHttpHeaderName(credential.HeaderName))
-            throw new InvalidOperationException("自定义 Header 凭据缺少有效的 HTTP Header 名称。");
+        if (authentication.AuthenticationType != CdnAuthenticationType.CustomHeader ||
+            !CdnConfigurationValidator.IsValidHttpHeaderName(authentication.HeaderName))
+            throw new InvalidOperationException($"{description}缺少有效的 HTTP Header 名称。");
         if (!request.Headers.TryAddWithoutValidation(
-                credential.HeaderName,
-                credential.Secret))
+                authentication.HeaderName,
+                authentication.Secret))
             throw new InvalidOperationException(
-                $"无法添加 CDN 凭据 Header：{credential.HeaderName}");
+                $"无法添加{description} Header：{authentication.HeaderName}");
     }
 
     private static Uri ExpandEndpointTemplate(string template, Uri url)

@@ -136,7 +136,7 @@ public sealed class ConnectionArchiveServiceTests
         var text = Encoding.UTF8.GetString(archive);
         var imported = Assert.Single(_service.Import(archive).Profiles);
 
-        Assert.Contains("\"version\": 4", text, StringComparison.Ordinal);
+        Assert.Contains("\"version\": 5", text, StringComparison.Ordinal);
         Assert.Contains("audit", text, StringComparison.Ordinal);
         Assert.DoesNotContain("stale-", text, StringComparison.Ordinal);
         Assert.Equal(CredentialSourceKind.AwsSharedProfile, imported.CredentialSource);
@@ -267,6 +267,102 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal("https://storage.example.test", imported.Endpoint);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void UnprotectedArchiveRejectsStorageSecretsAndReferencesBeforeMigration(int version)
+    {
+        var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
+        document["version"] = version;
+        if (version < 3)
+        {
+            document.Remove("cdnProfileCount");
+            document.Remove("cdnCredentialCount");
+            document.Remove("credentialCount");
+            document.Remove("cdnProfiles");
+            document.Remove("cdnBindings");
+            document.Remove("credentialProfiles");
+        }
+
+        var profile = Assert.IsType<JsonArray>(document["profiles"])[0]!.AsObject();
+        profile["accessKey"] = "plaintext-access";
+        profile["credentialId"] = Guid.NewGuid();
+
+        Assert.Throws<InvalidDataException>(() =>
+            _service.Import(Encoding.UTF8.GetBytes(document.ToJsonString())));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void UnprotectedArchiveRejectsCredentialEntriesBeforeMigration(int version)
+    {
+        var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
+        document["version"] = version;
+        if (version < 3)
+        {
+            document.Remove("cdnProfileCount");
+            document.Remove("cdnCredentialCount");
+            document.Remove("credentialCount");
+            document.Remove("cdnProfiles");
+            document.Remove("cdnBindings");
+        }
+
+        document["credentialCount"] = version >= 4 ? 1 : 0;
+        document["cdnCredentialCount"] = version < 4 ? 1 : 0;
+        document["credentialProfiles"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["id"] = Guid.NewGuid(),
+                ["name"] = "injected",
+                ["provider"] = "genericHttp",
+                ["kind"] = "bearerToken",
+                ["secret"] = "plaintext-secret"
+            }
+        };
+
+        Assert.Throws<InvalidDataException>(() =>
+            _service.Import(Encoding.UTF8.GetBytes(document.ToJsonString())));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void UnprotectedArchiveRejectsCdnSecretsAndReferencesBeforeMigration(int version)
+    {
+        var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
+        document["version"] = version;
+        document["cdnProfileCount"] = 1;
+        document["cdnProfiles"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["id"] = Guid.NewGuid(),
+                ["name"] = "injected-cdn",
+                ["providerId"] = "generic-http",
+                ["baseUrl"] = "https://cdn.example.test",
+                ["contentAuthentication"] = new JsonObject
+                {
+                    ["authenticationType"] = "bearerToken",
+                    ["secret"] = "plaintext-cdn-secret"
+                },
+                ["controlCredentialId"] = Guid.NewGuid()
+            }
+        };
+        document["cdnBindings"] = new JsonArray();
+
+        Assert.Throws<InvalidDataException>(() =>
+            _service.Import(Encoding.UTF8.GetBytes(document.ToJsonString())));
+    }
+
     [Fact]
     public void ImportRepairsLegacyAmazonTypeWithoutReplacingCompatibleEndpoint()
     {
@@ -291,7 +387,14 @@ public sealed class ConnectionArchiveServiceTests
     {
         var storage = CreateProfile();
         var credential = CreateCdnCredential();
-        var cdnProfile = CreateCdnProfile(credential.Id);
+        var cdnProfile = CreateCdnProfile(credential.Id) with
+        {
+            ContentAuthentication = new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Secret = "content-secret-value"
+            }
+        };
         var configuration = new CdnConfiguration(
             [cdnProfile],
             [CreateCdnBinding(storage.Id, cdnProfile.Id)]);
@@ -307,9 +410,12 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Contains("https://cdn.example.test", json, StringComparison.Ordinal);
         Assert.Contains("production delivery", json, StringComparison.Ordinal);
         Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("content-secret-value", json, StringComparison.Ordinal);
         Assert.Equal(1, inspection.CdnProfileCount);
         Assert.Equal(0, inspection.CredentialCount);
-        Assert.Null(Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+        var importedProfile = Assert.Single(package.ImportedCdnConfiguration.Profiles);
+        Assert.Null(importedProfile.ControlCredentialId);
+        Assert.Equal(CdnAuthenticationType.None, importedProfile.ContentAuthentication.AuthenticationType);
         Assert.Equal("production delivery", Assert.Single(package.ImportedCdnConfiguration.Profiles).Notes);
         Assert.Single(package.ImportedCdnConfiguration.Bindings);
         Assert.Empty(package.ImportedCredentials);
@@ -320,7 +426,15 @@ public sealed class ConnectionArchiveServiceTests
     {
         var storage = CreateProfile();
         var credential = CreateCdnCredential();
-        var cdnProfile = CreateCdnProfile(credential.Id);
+        var cdnProfile = CreateCdnProfile(credential.Id) with
+        {
+            ContentAuthentication = new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.CustomHeader,
+                HeaderName = "X-CDN-Token",
+                Secret = "content-secret-value"
+            }
+        };
         var configuration = new CdnConfiguration(
             [cdnProfile],
             [CreateCdnBinding(storage.Id, cdnProfile.Id)]);
@@ -336,13 +450,15 @@ public sealed class ConnectionArchiveServiceTests
         var package = _service.Import(archive, "portable-password");
 
         Assert.DoesNotContain("cdn-secret-value", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("content-secret-value", json, StringComparison.Ordinal);
         Assert.DoesNotContain("cdn-auth", json, StringComparison.Ordinal);
         Assert.True(inspection.ContainsCredentials);
         Assert.Equal(1, inspection.CredentialCount);
         Assert.Equal("cdn-secret-value", Assert.Single(package.ImportedCredentials).Secret);
+        Assert.Equal("content-secret-value", Assert.Single(package.ImportedCdnConfiguration.Profiles).ContentAuthentication.Secret);
         Assert.Equal(
             Assert.Single(package.ImportedCredentials).Id,
-            Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+            Assert.Single(package.ImportedCdnConfiguration.Profiles).ControlCredentialId);
     }
 
     [Fact]
@@ -374,7 +490,7 @@ public sealed class ConnectionArchiveServiceTests
         Assert.NotEqual(storage.Id, importedStorage.Id);
         Assert.NotEqual(credential.Id, importedCredential.Id);
         Assert.NotEqual(cdnProfile.Id, importedCdn.Id);
-        Assert.Equal(importedCredential.Id, importedCdn.CredentialId);
+        Assert.Equal(importedCredential.Id, importedCdn.ControlCredentialId);
         Assert.Equal(importedStorage.Id, importedBinding.StorageProfileId);
         Assert.Equal(importedCdn.Id, importedBinding.CdnProfileId);
         CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.Credentials);
@@ -403,7 +519,7 @@ public sealed class ConnectionArchiveServiceTests
             ConnectionImportConflictStrategy.Rename);
 
         Assert.Empty(merged.Credentials);
-        Assert.Null(Assert.Single(merged.CdnConfiguration.Profiles).CredentialId);
+        Assert.Null(Assert.Single(merged.CdnConfiguration.Profiles).ControlCredentialId);
         CdnConfigurationValidator.EnsureValid(merged.CdnConfiguration, merged.Credentials);
     }
 
@@ -455,7 +571,7 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal("cdn-secret-value", mergedCredential.Secret);
         Assert.Equal(existingCdn.Id, mergedCdn.Id);
         Assert.Equal("https://cdn.example.test", mergedCdn.BaseUrl);
-        Assert.Equal(existingCredential.Id, mergedCdn.CredentialId);
+        Assert.Equal(existingCredential.Id, mergedCdn.ControlCredentialId);
         Assert.Equal(existingBinding.Id, mergedBinding.Id);
         Assert.Equal(existingStorage.Id, mergedBinding.StorageProfileId);
         Assert.Equal(existingCdn.Id, mergedBinding.CdnProfileId);
@@ -553,7 +669,7 @@ public sealed class ConnectionArchiveServiceTests
     {
         var localStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "local-storage" };
         var archivedStorage = CreateProfile() with { Id = Guid.NewGuid(), Name = "archived-storage" };
-        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { ControlCredentialId = null };
         var package = new ConnectionArchivePackage(
             [archivedStorage],
             ContainsCredentials: false,
@@ -587,7 +703,7 @@ public sealed class ConnectionArchiveServiceTests
             Name = "unrelated-local",
             Endpoint = "https://different.example.test"
         };
-        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { ControlCredentialId = null };
         var package = new ConnectionArchivePackage(
             [archivedStorage],
             ContainsCredentials: false,
@@ -639,7 +755,7 @@ public sealed class ConnectionArchiveServiceTests
     public void StorageOnlySelectionDoesNotImplicitlyImportCdn()
     {
         var storage = CreateProfile();
-        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { ControlCredentialId = null };
         var package = new ConnectionArchivePackage(
             [storage],
             ContainsCredentials: false,
@@ -723,7 +839,7 @@ public sealed class ConnectionArchiveServiceTests
             Id = Guid.NewGuid(),
             Name = "local-cdn-renamed",
             Notes = "local note",
-            CredentialId = localCredential.Id,
+            ControlCredentialId = localCredential.Id,
             LastCertificateCheck = CreateCertificateCheck(archivedCdn.BaseUrl)
         };
         var archivedBinding = CreateCdnBinding(archivedStorage.Id, archivedCdn.Id);
@@ -798,7 +914,7 @@ public sealed class ConnectionArchiveServiceTests
             Id = Guid.NewGuid(),
             Name = "local-selected-cdn",
             Notes = "local selected note",
-            CredentialId = localCredential.Id
+            ControlCredentialId = localCredential.Id
         };
         var archive = _service.Export(
             [archivedHangzhou, archivedShanghai],
@@ -849,7 +965,7 @@ public sealed class ConnectionArchiveServiceTests
     public void ExportRejectsCdnBindingWhoseStorageConnectionIsOutsideArchive()
     {
         var storage = CreateProfile();
-        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { ControlCredentialId = null };
         var orphan = CreateCdnBinding(Guid.NewGuid(), cdn.Id);
 
         var exception = Assert.Throws<InvalidDataException>(() => _service.Export(
@@ -863,7 +979,7 @@ public sealed class ConnectionArchiveServiceTests
     public void ImportRejectsTamperedCdnBindingWhoseStorageConnectionIsMissing()
     {
         var storage = CreateProfile();
-        var cdn = CreateCdnProfile(Guid.NewGuid()) with { CredentialId = null };
+        var cdn = CreateCdnProfile(Guid.NewGuid()) with { ControlCredentialId = null };
         var archive = _service.Export(
             [storage],
             cdnConfiguration: new CdnConfiguration(
@@ -916,7 +1032,7 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Single(package.ImportedCredentials);
         Assert.Equal(sharedCredential.Id, Assert.Single(package.ImportedCredentials).Id);
         Assert.Equal(sharedCredential.Id, Assert.Single(package.Profiles).CredentialId);
-        Assert.Equal(sharedCredential.Id, Assert.Single(package.ImportedCdnConfiguration.Profiles).CredentialId);
+        Assert.Equal(sharedCredential.Id, Assert.Single(package.ImportedCdnConfiguration.Profiles).ControlCredentialId);
 
         var merged = _service.MergePackage(
             [],
@@ -933,7 +1049,7 @@ public sealed class ConnectionArchiveServiceTests
 
         Assert.Single(merged.Credentials);
         Assert.Equal(mergedCredential.Id, mergedStorage.CredentialId);
-        Assert.Equal(mergedCredential.Id, mergedCdn.CredentialId);
+        Assert.Equal(mergedCredential.Id, mergedCdn.ControlCredentialId);
     }
 
     private static ConnectionProfile CreateProfile() => new()
@@ -978,7 +1094,7 @@ public sealed class ConnectionArchiveServiceTests
         Name = "cdn-profile",
         BaseUrl = "https://cdn.example.test",
         Notes = "production delivery",
-        CredentialId = credentialId
+        ControlCredentialId = credentialId
     };
 
     private static CdnBinding CreateCdnBinding(Guid storageId, Guid cdnProfileId) => new()

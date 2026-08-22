@@ -38,7 +38,7 @@ public sealed class AliyunCdnProviderTests
     {
         var provider = new AliyunCdnProvider(new FakeFactory(new FakeClient()));
         var bad = Credential() with { Provider = CredentialProviderKind.AmazonWebServices };
-        var result = await provider.SubmitAsync(Request(CdnJobAction.PurgeUrl, [new Uri("https://cdn.example.com/a")]) with { Credential = bad }, TestContext.Current.CancellationToken);
+        var result = await provider.SubmitAsync(Request(CdnJobAction.PurgeUrl, [new Uri("https://cdn.example.com/a")]) with { ControlCredential = bad }, TestContext.Current.CancellationToken);
         Assert.Equal(CdnProviderOperationState.Failed, result.State);
         Assert.Contains("Alibaba", result.Message, StringComparison.OrdinalIgnoreCase);
         result = await provider.SubmitAsync(Request(CdnJobAction.PurgeThenWarmup, [new Uri("https://cdn.example.com/a")]), TestContext.Current.CancellationToken);

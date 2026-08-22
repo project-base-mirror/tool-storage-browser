@@ -28,7 +28,7 @@ public sealed class GenericHttpCdnProvider(ICdnDeliveryService deliveryService) 
             foreach (var url in request.Urls)
             {
                 var result = await deliveryService.PurgeAsync(
-                    request.Profile, request.Credential, url, cancellationToken).ConfigureAwait(false);
+                    request.Profile, request.ControlCredential, url, cancellationToken).ConfigureAwait(false);
                 bytesRead += result.BytesRead;
                 statusCode = result.StatusCode ?? statusCode;
                 messages.Add(result.Message);
@@ -48,7 +48,7 @@ public sealed class GenericHttpCdnProvider(ICdnDeliveryService deliveryService) 
             foreach (var url in request.Urls)
             {
                 var result = await deliveryService.WarmupAsync(
-                    request.Profile, request.Credential, url, cancellationToken).ConfigureAwait(false);
+                    request.Profile, url, cancellationToken).ConfigureAwait(false);
                 bytesRead += result.BytesRead;
                 statusCode = result.StatusCode ?? statusCode;
                 messages.Add(result.Message);
@@ -126,7 +126,7 @@ public sealed class StoreBackedCdnJobExecutor : ICdnJobExecutor
             return Failed($"没有注册 CDN Provider：{profile.ProviderId}");
 
         CredentialProfile? credential = null;
-        if (profile.CredentialId is Guid credentialId)
+        if (profile.ControlCredentialId is Guid credentialId)
         {
             credential = configuration.CredentialVault.FirstOrDefault(value => value.Id == credentialId);
             if (credential is null)

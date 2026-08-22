@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using S3Explorer.Core;
+using S3Explorer.Infrastructure.Cdn;
 
 namespace S3Explorer.App;
 
@@ -265,7 +266,8 @@ internal sealed partial class MainForm
             _cdnDeliveryService,
             PersistCdnCertificateResultAsync,
             _profileGroups,
-            _bucketDiscoveryCache);
+            _bucketDiscoveryCache,
+            CheckCdnProfileAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -308,6 +310,92 @@ internal sealed partial class MainForm
         _logger.Info($"CDN certificate result saved immediately. Profile={profile!.Name}; CheckedAt={result.CheckedAt:O}");
     }
 
+    private async Task<CdnProfileCheckOutcome> CheckCdnProfileAsync(
+        CdnProfile profile,
+        IReadOnlyList<CdnBinding> bindings,
+        CancellationToken cancellationToken)
+    {
+        var summaries = new List<string>();
+        var resolvedStorageProfiles = new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(_profiles, _profileGroups),
+                _cdnConfiguration,
+                _credentials)
+            .ResolveCredentialReferences()
+            .Storage.Profiles;
+        CdnBindingInspectionResult? contentInspection = null;
+        foreach (var binding in bindings)
+        {
+            var storageProfile = resolvedStorageProfiles.FirstOrDefault(value => value.Id == binding.StorageProfileId);
+            if (storageProfile is null)
+                continue;
+            contentInspection = await CdnBindingInspector.InspectAsync(
+                profile,
+                binding,
+                (prefix, continuationToken, token) => _storage.ListObjectsAsync(
+                    storageProfile,
+                    binding.Bucket,
+                    prefix,
+                    continuationToken,
+                    100,
+                    token),
+                (url, token) => _cdnDeliveryService.ProbeHeadAsync(profile, url, token),
+                cancellationToken).ConfigureAwait(true);
+            if (contentInspection is not null)
+                break;
+        }
+
+        summaries.Add(contentInspection is null
+            ? bindings.Count == 0
+                ? "内容：没有 Bucket/Prefix 关联，未发送请求"
+                : "内容：关联源前缀中没有可检查对象"
+            : $"内容：HTTP {contentInspection.Probe.StatusCode}");
+
+        var controlCredential = profile.ControlCredentialId is Guid credentialId
+            ? _credentials.FirstOrDefault(value => value.Id == credentialId)
+            : null;
+        var controlPassed = true;
+        if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+        {
+            if (controlCredential is null)
+            {
+                summaries.Add("控制面：未关联 Alibaba Cloud AccessKey");
+                controlPassed = false;
+            }
+            else
+            {
+                var result = await new AliyunCdnProvider()
+                    .CheckDomainPermissionAsync(profile, controlCredential, cancellationToken)
+                    .ConfigureAwait(true);
+                summaries.Add($"控制面：{PermissionStateText(result.State)}");
+                controlPassed = result.State == PermissionCheckState.Passed;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate))
+        {
+            summaries.Add("控制面：未配置刷新端点");
+        }
+        else
+        {
+            summaries.Add(controlCredential is null
+                ? "控制面：刷新端点无需凭据或尚未关联；未提交真实刷新"
+                : "控制面：已关联凭据；未提交真实刷新");
+            controlPassed = false;
+        }
+
+        return new CdnProfileCheckOutcome(
+            contentInspection?.Probe.Success == true && controlPassed,
+            string.Join(" · ", summaries));
+    }
+
+    private static string PermissionStateText(PermissionCheckState state) => state switch
+    {
+        PermissionCheckState.Passed => "域名查询通过",
+        PermissionCheckState.Denied => "域名查询被拒绝",
+        PermissionCheckState.Unsupported => "Provider 不支持检查",
+        PermissionCheckState.Skipped => "已跳过",
+        _ => "域名查询无法确定"
+    };
+
     private void ShowCdnJobs()
     {
         using var dialog = new CdnJobsDialog(_cdnJobQueue, _cdnConfiguration.Profiles);
@@ -333,11 +421,9 @@ internal sealed partial class MainForm
 
     private bool TryResolveSelectedCdnTarget(
         out CdnResolvedTarget? target,
-        out CredentialProfile? credential,
         bool showMessage)
     {
         target = null;
-        credential = null;
         var targets = ResolveSelectedCdnTargets();
         if (targets.Count == 0)
         {
@@ -354,7 +440,7 @@ internal sealed partial class MainForm
         }
 
         target = targets[0];
-        return TryResolveCdnCredential(target, out credential, showMessage);
+        return true;
     }
 
     private IReadOnlyList<CdnResolvedTarget> ResolveSelectedCdnTargets()
@@ -369,14 +455,29 @@ internal sealed partial class MainForm
             selected[0].Key);
     }
 
-    private bool TryResolveCdnCredential(
+    private bool TryResolveCdnControlCredential(
         CdnResolvedTarget target,
         out CredentialProfile? credential,
         bool showMessage)
     {
         credential = null;
-        if (target.Profile.CredentialId is not Guid credentialId)
+        if (target.Profile.ControlCredentialId is not Guid credentialId)
+        {
+            if (showMessage && string.Equals(
+                    target.Profile.ProviderId,
+                    CdnProfile.AlibabaCloudProviderId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(
+                    this,
+                    $"CDN 配置“{target.Profile.Name}”没有关联阿里云控制面凭据。请先在 CDN 配置中选择 Alibaba Cloud AccessKey。",
+                    "CDN 控制面凭据缺失",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return false;
+            }
             return true;
+        }
         credential = _credentials.FirstOrDefault(value => value.Id == credentialId);
         if (credential is not null)
             return true;
@@ -384,8 +485,8 @@ internal sealed partial class MainForm
         {
             MessageBox.Show(
                 this,
-                $"CDN 配置“{target.Profile.Name}”引用的独立凭据不存在。请修复配置后重试。",
-                "CDN 凭据缺失",
+                $"CDN 配置“{target.Profile.Name}”引用的控制面凭据不存在。请修复配置后重试。",
+                "CDN 控制面凭据缺失",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
@@ -394,7 +495,7 @@ internal sealed partial class MainForm
 
     private void CopySelectedCdnUrl()
     {
-        if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
+        if (!TryResolveSelectedCdnTarget(out var target, showMessage: true) || target is null)
             return;
 
         CopyCdnUrl(target);
@@ -408,7 +509,7 @@ internal sealed partial class MainForm
 
     private void OpenSelectedCdnUrl()
     {
-        if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
+        if (!TryResolveSelectedCdnTarget(out var target, showMessage: true) || target is null)
             return;
 
         OpenCdnUrl(target);
@@ -418,25 +519,17 @@ internal sealed partial class MainForm
 
     private void ShowSelectedCdnDownloadTest()
     {
-        if (!TryResolveSelectedCdnTarget(out var target, out var credential, showMessage: true) || target is null)
+        if (!TryResolveSelectedCdnTarget(out var target, showMessage: true) || target is null)
             return;
 
-        ShowCdnDownloadTest(target, credential);
+        ShowCdnDownloadTest(target);
     }
 
     private void ShowCdnDownloadTest(CdnResolvedTarget target)
     {
-        if (!TryResolveCdnCredential(target, out var credential, showMessage: true))
-            return;
-        ShowCdnDownloadTest(target, credential);
-    }
-
-    private void ShowCdnDownloadTest(CdnResolvedTarget target, CredentialProfile? credential)
-    {
         using var dialog = new CdnDownloadTestDialog(
             _cdnDeliveryService,
             target.Profile,
-            credential,
             target.Url);
         dialog.ShowDialog(this);
     }
@@ -445,9 +538,6 @@ internal sealed partial class MainForm
         S3ObjectEntry entry,
         CdnResolvedTarget target)
     {
-        if (!TryResolveCdnCredential(target, out var credential, showMessage: true))
-            return;
-
         using var save = new SaveFileDialog
         {
             FileName = entry.Name,
@@ -474,7 +564,6 @@ internal sealed partial class MainForm
             {
                 result = await _cdnDeliveryService.DownloadAsync(
                     target.Profile,
-                    credential,
                     target.Url,
                     output,
                     CancellationToken.None);
@@ -524,7 +613,7 @@ internal sealed partial class MainForm
 
     private async Task EnqueueSelectedCdnOperationAsync(CdnJobAction action)
     {
-        if (!TryResolveSelectedCdnTarget(out var target, out _, showMessage: true) || target is null)
+        if (!TryResolveSelectedCdnTarget(out var target, showMessage: true) || target is null)
             return;
 
         await EnqueueCdnOperationAsync(action, target);
@@ -532,10 +621,14 @@ internal sealed partial class MainForm
 
     private async Task EnqueueCdnOperationAsync(CdnJobAction action, CdnResolvedTarget target)
     {
-        if (!TryResolveCdnCredential(target, out _, showMessage: true))
-            return;
-
         var purge = action is CdnJobAction.PurgeUrl or CdnJobAction.PurgeThenWarmup;
+        var requiresControlCredential = purge || string.Equals(
+            target.Profile.ProviderId,
+            CdnProfile.AlibabaCloudProviderId,
+            StringComparison.OrdinalIgnoreCase);
+        if (requiresControlCredential &&
+            !TryResolveCdnControlCredential(target, out _, showMessage: true))
+            return;
         if (purge && !target.Profile.Capabilities.HasFlag(CdnCapabilities.Purge))
         {
             MessageBox.Show(
@@ -592,7 +685,7 @@ internal sealed partial class MainForm
     {
         CdnResolvedTarget? target = null;
         var resolved = oneFile &&
-            TryResolveSelectedCdnTarget(out target, out _, showMessage: false) &&
+            TryResolveSelectedCdnTarget(out target, showMessage: false) &&
             target is not null;
         var purge = resolved && target!.Profile.Capabilities.HasFlag(CdnCapabilities.Purge);
 
@@ -607,7 +700,7 @@ internal sealed partial class MainForm
 
     private void UpdateCdnContextCommandStates()
     {
-        var resolved = TryResolveSelectedCdnTarget(out var target, out _, showMessage: false) &&
+        var resolved = TryResolveSelectedCdnTarget(out var target, showMessage: false) &&
             target is not null;
         var purge = resolved && target!.Profile.Capabilities.HasFlag(CdnCapabilities.Purge);
 

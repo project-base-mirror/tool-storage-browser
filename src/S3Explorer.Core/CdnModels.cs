@@ -17,6 +17,16 @@ public enum CdnAuthenticationType
     CustomHeader
 }
 
+/// <summary>CDN 内容交付请求使用的内联 HTTP 认证，不进入统一 Credential Vault。</summary>
+public sealed record CdnHttpAuthentication
+{
+    public CdnAuthenticationType AuthenticationType { get; init; }
+    public string HeaderName { get; init; } = string.Empty;
+    public string Secret { get; init; } = string.Empty;
+
+    public static CdnHttpAuthentication Anonymous { get; } = new();
+}
+
 public enum CdnWarmupMode
 {
     Head,
@@ -35,7 +45,10 @@ public sealed record CdnProfile
     public string Notes { get; init; } = string.Empty;
     public string ProviderId { get; init; } = GenericHttpProviderId;
     public string BaseUrl { get; init; } = string.Empty;
-    public Guid? CredentialId { get; init; }
+    /// <summary>内容交付认证。内容 Token 与控制面凭据分离保存。</summary>
+    public CdnHttpAuthentication ContentAuthentication { get; init; } = CdnHttpAuthentication.Anonymous;
+    /// <summary>用于 CDN 控制面查询、刷新或预热的统一凭据引用。</summary>
+    public Guid? ControlCredentialId { get; init; }
     public CdnWarmupMode WarmupMode { get; init; } = CdnWarmupMode.RangeGet;
     public long WarmupRangeBytes { get; init; } = 1024 * 1024;
     public string PurgeEndpointTemplate { get; init; } = string.Empty;
@@ -188,21 +201,18 @@ public interface ICdnDeliveryService
 {
     Task<CdnProbeResult> ProbeAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         long sampleBytes,
         CancellationToken cancellationToken);
 
     Task<CdnProbeResult> ProbeHeadAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken) =>
-        ProbeAsync(profile, credential, url, 1, cancellationToken);
+        ProbeAsync(profile, url, 1, cancellationToken);
 
     Task<CdnDownloadResult> DownloadAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         Stream destination,
         CancellationToken cancellationToken) =>
@@ -210,13 +220,12 @@ public interface ICdnDeliveryService
 
     Task<CdnOperationResult> WarmupAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url,
         CancellationToken cancellationToken);
 
     Task<CdnOperationResult> PurgeAsync(
         CdnProfile profile,
-        CredentialProfile? credential,
+        CredentialProfile? controlCredential,
         Uri url,
         CancellationToken cancellationToken);
 }
@@ -249,12 +258,18 @@ public static class CdnConfigurationValidator
         }
         foreach (var profile in configuration.Profiles)
         {
-            if (profile.CredentialId is not Guid credentialId) continue;
+            if (profile.ControlCredentialId is not Guid credentialId)
+                continue;
             var credential = credentials.FirstOrDefault(value => value.Id == credentialId);
             if (!ids.Contains(credentialId) || credential is null)
-                errors.Add($"CDN 配置“{profile.Name}”引用了不存在的凭据。");
-            else if (!credential.IsCompatibleWith(profile.ProviderId))
-                errors.Add($"CDN 配置“{profile.Name}”引用的凭据与 Provider 不兼容。");
+                errors.Add($"CDN 配置“{profile.Name}”引用了不存在的控制凭据。");
+            else if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
+                     (credential.Provider != CredentialProviderKind.AlibabaCloud || credential.Kind != CredentialKind.AccessKeyPair))
+                errors.Add($"凭据“{credential.Name}”不是可用于阿里云 CDN 控制面的 Alibaba Cloud AccessKey。");
+            else if (string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase) &&
+                     (credential.Provider != CredentialProviderKind.GenericHttp ||
+                      credential.Kind is not (CredentialKind.BearerToken or CredentialKind.CustomHeader)))
+                errors.Add($"凭据“{credential.Name}”不是可用于通用 HTTP CDN 控制面的 HTTP 凭据。");
         }
         return errors;
     }
@@ -317,10 +332,11 @@ public static class CdnConfigurationValidator
                     !string.IsNullOrEmpty(endpoint.Fragment))
                     errors.Add($"CDN 配置“{profile.Name}”的刷新端点模板必须生成 HTTP/HTTPS 绝对地址。");
             }
-            if (profile.CredentialId is Guid credentialId &&
+            ValidateContentAuthentication(profile, errors);
+            if (profile.ControlCredentialId is Guid credentialId &&
                 credentialIds is not null &&
                 !credentialIds.Contains(credentialId))
-                errors.Add($"CDN 配置“{profile.Name}”引用了不存在的凭据。");
+                errors.Add($"CDN 配置“{profile.Name}”引用了不存在的控制凭据。");
         }
 
         if (credentials is not null)
@@ -386,6 +402,27 @@ public static class CdnConfigurationValidator
             errors.Add($"同一 Bucket/前缀只能有一个默认 CDN：{duplicate.Key.Bucket}/{duplicate.Key.Prefix}");
 
         return errors;
+    }
+
+    private static void ValidateContentAuthentication(CdnProfile profile, ICollection<string> errors)
+    {
+        var authentication = profile.ContentAuthentication ?? CdnHttpAuthentication.Anonymous;
+        if (!Enum.IsDefined(authentication.AuthenticationType))
+        {
+            errors.Add($"CDN 配置“{profile.Name}”的内容认证类型无效。");
+            return;
+        }
+        if (authentication.AuthenticationType == CdnAuthenticationType.CustomHeader &&
+            !IsValidHttpHeaderName(authentication.HeaderName))
+            errors.Add($"CDN 配置“{profile.Name}”的内容认证必须指定有效的 HTTP Header 名称。");
+        if (authentication.AuthenticationType != CdnAuthenticationType.CustomHeader &&
+            !string.IsNullOrWhiteSpace(authentication.HeaderName))
+            errors.Add($"CDN 配置“{profile.Name}”的内容认证 HeaderName 仅适用于 CustomHeader。");
+        if (authentication.AuthenticationType != CdnAuthenticationType.None &&
+            string.IsNullOrWhiteSpace(authentication.Secret))
+            errors.Add($"CDN 配置“{profile.Name}”的内容认证缺少秘密值。");
+        if (authentication.Secret?.IndexOfAny(['\r', '\n']) >= 0)
+            errors.Add($"CDN 配置“{profile.Name}”的内容认证秘密值不能包含换行符。");
     }
 
     public static void EnsureLegacyValid(

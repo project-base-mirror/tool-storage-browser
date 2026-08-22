@@ -6,7 +6,6 @@ internal sealed class CdnDownloadTestDialog : Form
 {
     private readonly ICdnDeliveryService _deliveryService;
     private readonly CdnProfile _profile;
-    private readonly CredentialProfile? _credential;
     private readonly Uri _url;
     private readonly TextBox _urlBox = new()
     {
@@ -82,12 +81,10 @@ internal sealed class CdnDownloadTestDialog : Form
     public CdnDownloadTestDialog(
         ICdnDeliveryService deliveryService,
         CdnProfile profile,
-        CredentialProfile? credential,
         Uri url)
     {
         _deliveryService = deliveryService;
         _profile = profile;
-        _credential = credential;
         _url = url;
 
         Name = "CdnDownloadTestDialog";
@@ -315,7 +312,6 @@ internal sealed class CdnDownloadTestDialog : Form
             var sampleBytes = decimal.ToInt64(_sampleMiB.Value) * 1024L * 1024L;
             var result = await _deliveryService.ProbeAsync(
                 _profile with { TimeoutSeconds = timeoutSeconds },
-                _credential,
                 _url,
                 sampleBytes,
                 requestCancellation.Token);

@@ -95,7 +95,7 @@ internal static class Program
                     verb, parsed, profiles, credentials, json, operationCancellation.Token),
                 "connection" => await RunConnectionAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
                 "permission" => await RunPermissionAsync(
-                    verb, parsed, configurationStore, storage, cdnDelivery, json, operationCancellation.Token),
+                    verb, parsed, configurationStore, storage, json, operationCancellation.Token),
                 "bucket" or "buckets" => await RunBucketAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
                 "object" or "objects" => await RunObjectAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
                 "sync" => await RunSyncAsync(verb, parsed, profiles, syncJobs, storage, json, operationCancellation.Token),
@@ -306,7 +306,7 @@ internal static class Program
                             .Where(value => value.CredentialId == deleted.Id || value.AwsExternalIdCredentialId == deleted.Id)
                             .Select(value => "对象存储：" + value.Name)
                             .Concat(current.Cdn.Profiles
-                                .Where(value => value.CredentialId == deleted.Id)
+                                .Where(value => value.ControlCredentialId == deleted.Id)
                                 .Select(value => "CDN：" + value.Name))
                             .ToArray();
                         if (references.Length > 0)
@@ -506,7 +506,6 @@ internal static class Program
         CliArguments args,
         IExplorerConfigurationStore configurationStore,
         IS3StorageService storage,
-        ICdnDeliveryService cdnDelivery,
         bool json,
         CancellationToken cancellationToken)
     {
@@ -534,8 +533,10 @@ internal static class Program
         else if (args.Optional("cdn-profile") is { Length: > 0 } cdnProfileName)
         {
             var profile = ResolveCdnProfile(configuration.Cdn.Profiles, cdnProfileName);
-            var credential = configuration.FindCredential(profile.CredentialId);
-            result = await CheckCdnPermissionAsync(profile, credential, cdnDelivery, cancellationToken);
+            var credential = profile.ControlCredentialId is Guid controlCredentialId
+                ? configuration.FindCredential(controlCredentialId)
+                : null;
+            result = await CheckCdnPermissionAsync(profile, credential, cancellationToken);
         }
         else
         {
@@ -556,7 +557,6 @@ internal static class Program
     internal static async Task<PermissionCheckResult> CheckCdnPermissionAsync(
         CdnProfile profile,
         CredentialProfile? credential,
-        ICdnDeliveryService delivery,
         CancellationToken cancellationToken)
     {
         var checks = new List<PermissionCheck>();
@@ -566,14 +566,14 @@ internal static class Program
                 profile,
                 credential,
                 cancellationToken);
-            checks.Add(new PermissionCheck("cdn", "DescribeUserDomains", check.State, check.Message)
+            checks.Add(new PermissionCheck("cdn-control", "DescribeUserDomains", check.State, check.Message)
             {
                 StatusCode = check.StatusCode,
                 ProviderCode = check.Code,
                 RequestId = check.RequestId
             });
             checks.Add(new PermissionCheck(
-                "cdn",
+                "cdn-control",
                 "RefreshObjectCaches/PushObjectCache",
                 PermissionCheckState.Indeterminate,
                 "只读域名检测不会提交刷新或预热任务，因此不能证明控制面写权限。")
@@ -583,56 +583,32 @@ internal static class Program
         }
         else
         {
-            try
+            cancellationToken.ThrowIfCancellationRequested();
+            var endpointConfigured = !string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate);
+            checks.Add(new PermissionCheck(
+                "cdn-control",
+                "ControlEndpoint",
+                PermissionCheckState.Indeterminate,
+                endpointConfigured
+                    ? "通用 HTTP 控制端点已配置；不提交真实刷新请求时无法证明认证是否被接受。"
+                    : "该 CDN 配置没有可执行的控制面检查；内容 URL 不用于推断 CDN 管理权限。")
             {
-                var probe = await delivery.ProbeHeadAsync(
-                    profile,
-                    credential,
-                    new Uri(profile.BaseUrl, UriKind.Absolute),
-                    cancellationToken);
-                var authenticationState = probe.StatusCode is 401 or 403
-                    ? PermissionCheckState.Denied
-                    : PermissionCheckState.Indeterminate;
-                checks.Add(new PermissionCheck(
-                    "cdn",
-                    "DeliveryEndpoint",
-                    probe.StatusCode >= 500 ? PermissionCheckState.Indeterminate : PermissionCheckState.Passed,
-                    $"CDN 交付端点返回 HTTP {probe.StatusCode}。")
-                {
-                    StatusCode = probe.StatusCode,
-                    Required = false
-                });
-                checks.Add(new PermissionCheck(
-                    "cdn",
-                    "Authentication",
-                    authenticationState,
-                    authenticationState == PermissionCheckState.Denied
-                        ? "CDN 明确拒绝了当前认证。"
-                        : "通用 HTTP 响应不能证明凭据被实际校验。")
-                {
-                    StatusCode = probe.StatusCode
-                });
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+                // An indeterminate control-plane check must not make the
+                // permission command report success. A real purge request is
+                // intentionally a separate, explicit operation.
+                Required = true
+            });
+            checks.Add(new PermissionCheck(
+                "cdn-control",
+                "Purge",
+                PermissionCheckState.Indeterminate,
+                "刷新会产生真实控制面操作，普通权限检查不会自动提交。")
             {
-                checks.Add(new PermissionCheck(
-                    "cdn",
-                    "Authentication",
-                    PermissionCheckState.Indeterminate,
-                    SensitiveDataRedactor.Redact(exception.Message)));
-            }
-            if (profile.Capabilities.HasFlag(CdnCapabilities.Purge))
-                checks.Add(new PermissionCheck(
-                    "cdn",
-                    "Purge",
-                    PermissionCheckState.Indeterminate,
-                    "通用 HTTP Provider 没有无副作用的刷新权限枚举接口。")
-                {
-                    Required = false
-                });
+                Required = false
+            });
         }
 
-        return new PermissionCheckResult(profile.CredentialId ?? Guid.Empty, checks)
+        return new PermissionCheckResult(profile.ControlCredentialId ?? Guid.Empty, checks)
         {
             TargetScope = profile.BaseUrl,
             CheckedAtUtc = DateTimeOffset.UtcNow

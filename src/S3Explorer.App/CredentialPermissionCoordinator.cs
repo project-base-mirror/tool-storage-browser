@@ -10,7 +10,6 @@ namespace S3Explorer.App;
 /// </summary>
 internal sealed class CredentialPermissionCoordinator(
     IS3StorageService storage,
-    ICdnDeliveryService deliveryService,
     AliyunCdnProvider? aliyunCdnProvider = null)
 {
     private readonly S3PermissionChecker _storageChecker = new(storage);
@@ -73,7 +72,7 @@ internal sealed class CredentialPermissionCoordinator(
             }));
         }
 
-        foreach (var profile in cdnConfiguration.Profiles.Where(value => value.CredentialId == credential.Id))
+        foreach (var profile in cdnConfiguration.Profiles.Where(value => value.ControlCredentialId == credential.Id))
             results.Add(await CheckCdnAsync(profile, credential, cancellationToken).ConfigureAwait(false));
 
         if (results.Count == 0)
@@ -104,14 +103,14 @@ internal sealed class CredentialPermissionCoordinator(
                 cancellationToken).ConfigureAwait(false);
             return new PermissionCheckResult(credential.Id,
             [
-                new PermissionCheck("cdn", "DescribeUserDomains", result.State, result.Message)
+                new PermissionCheck("cdn-control", "DescribeUserDomains", result.State, result.Message)
                 {
                     StatusCode = result.StatusCode,
                     ProviderCode = result.Code,
                     RequestId = result.RequestId
                 },
                 new PermissionCheck(
-                    "cdn",
+                    "cdn-control",
                     "RefreshObjectCaches/PushObjectCache",
                     PermissionCheckState.Indeterminate,
                     "只读检测不提交刷新或预热任务，无法无副作用证明控制面写权限。")
@@ -125,51 +124,35 @@ internal sealed class CredentialPermissionCoordinator(
             };
         }
 
-        try
-        {
-            var probe = await deliveryService.ProbeHeadAsync(
-                profile,
-                credential,
-                new Uri(profile.BaseUrl, UriKind.Absolute),
-                cancellationToken).ConfigureAwait(false);
-            var authenticationState = probe.StatusCode is 401 or 403
-                ? PermissionCheckState.Denied
-                : PermissionCheckState.Indeterminate;
-            return new PermissionCheckResult(credential.Id,
-            [
-                new PermissionCheck(
-                    "cdn",
-                    "DeliveryEndpoint",
-                    probe.StatusCode >= 500 ? PermissionCheckState.Indeterminate : PermissionCheckState.Passed,
-                    $"CDN 交付端点返回 HTTP {probe.StatusCode}。")
-                {
-                    StatusCode = probe.StatusCode,
-                    Required = false
-                },
-                new PermissionCheck(
-                    "cdn",
-                    "Authentication",
-                    authenticationState,
-                    authenticationState == PermissionCheckState.Denied
-                        ? "CDN 明确拒绝了当前认证。"
-                        : "通用 HTTP 响应不能证明凭据被实际校验。")
-                {
-                    StatusCode = probe.StatusCode
-                }
-            ])
+        cancellationToken.ThrowIfCancellationRequested();
+        var endpointConfigured = !string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate);
+        return new PermissionCheckResult(credential.Id,
+        [
+            new PermissionCheck(
+                "cdn-control",
+                "ControlEndpoint",
+                endpointConfigured ? PermissionCheckState.Indeterminate : PermissionCheckState.Skipped,
+                endpointConfigured
+                    ? "通用 HTTP 控制端点已配置；不提交真实刷新请求时无法证明认证是否被接受。"
+                    : "该 CDN 配置没有通用 HTTP 控制端点。")
             {
-                TargetScope = profile.BaseUrl,
-                CheckedAtUtc = DateTimeOffset.UtcNow
-            };
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            return Result(credential.Id, profile.BaseUrl, new PermissionCheck(
-                "cdn",
-                "Authentication",
+                Required = endpointConfigured
+            },
+            new PermissionCheck(
+                "cdn-control",
+                "Purge",
                 PermissionCheckState.Indeterminate,
-                SensitiveDataRedactor.Redact(exception.Message)));
-        }
+                "刷新会产生真实控制面操作，普通检查不会自动提交。")
+            {
+                Required = false
+            }
+        ])
+        {
+            TargetScope = string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate)
+                ? profile.BaseUrl
+                : profile.PurgeEndpointTemplate,
+            CheckedAtUtc = DateTimeOffset.UtcNow
+        };
     }
 
     private static PermissionCheckResult Result(Guid credentialId, string scope, params PermissionCheck[] checks) =>

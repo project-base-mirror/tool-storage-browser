@@ -13,7 +13,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
     private readonly Button _check = new()
     {
         Name = "CheckSelectedCredentialPermissionsButton",
-        Text = "立即检查 OSS/CDN",
+        Text = "立即检查 OSS/CDN 控制面",
         AutoSize = true,
         MinimumSize = new Size(148, 34)
     };
@@ -104,7 +104,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         var safety = new Label
         {
             AutoSize = true,
-            Text = "“立即检查 OSS/CDN”会同时检查所选凭据关联的对象存储和 CDN：阿里云 CDN 查询控制面域名权限，通用 CDN 执行认证 HEAD。CDN 刷新/预热不会自动提交真实任务。",
+            Text = "凭据中心只检查对象存储与 CDN 控制面权限。CDN 内容认证属于各 CDN 配置，由“CDN 配置中心 → 检查选中 CDN”验证。刷新/预热不会自动提交真实任务。",
             ForeColor = Color.DarkOrange,
             Margin = new Padding(0, 8, 0, 0)
         };
@@ -153,10 +153,11 @@ internal sealed class CredentialPermissionMatrixDialog : Form
                 row.Credential.Name,
                 row.ListBucket.DisplaySymbol(),
                 row.HeadObject.DisplaySymbol(),
+                row.GetObject.DisplaySymbol(),
                 row.PutObject.DisplaySymbol(),
                 row.DeleteObject.DisplaySymbol(),
                 row.PutObjectAcl.DisplaySymbol(),
-                row.CdnQueryOrAuthentication.DisplaySymbol(),
+                row.CdnControlQuery.DisplaySymbol(),
                 row.RefreshOrPush.DisplaySymbol(),
                 row.LastCheckedAtUtc == DateTimeOffset.MinValue
                     ? "从未检查"
@@ -165,11 +166,12 @@ internal sealed class CredentialPermissionMatrixDialog : Form
             gridRow.Tag = row.Credential;
             ApplyCellStyle(gridRow.Cells[1], row.ListBucket);
             ApplyCellStyle(gridRow.Cells[2], row.HeadObject);
-            ApplyCellStyle(gridRow.Cells[3], row.PutObject);
-            ApplyCellStyle(gridRow.Cells[4], row.DeleteObject);
-            ApplyCellStyle(gridRow.Cells[5], row.PutObjectAcl);
-            ApplyCellStyle(gridRow.Cells[6], row.CdnQueryOrAuthentication);
-            ApplyCellStyle(gridRow.Cells[7], row.RefreshOrPush);
+            ApplyCellStyle(gridRow.Cells[3], row.GetObject);
+            ApplyCellStyle(gridRow.Cells[4], row.PutObject);
+            ApplyCellStyle(gridRow.Cells[5], row.DeleteObject);
+            ApplyCellStyle(gridRow.Cells[6], row.PutObjectAcl);
+            ApplyCellStyle(gridRow.Cells[7], row.CdnControlQuery);
+            ApplyCellStyle(gridRow.Cells[8], row.RefreshOrPush);
             if (selectedId == row.Credential.Id)
                 gridRow.Selected = true;
         }
@@ -197,15 +199,16 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         _grid.BackgroundColor = SystemColors.Window;
         _grid.Columns.Add(TextColumn("Credential", "凭据", 190));
         _grid.Columns.Add(StateColumn("ListBucket", "列举"));
-        _grid.Columns.Add(StateColumn("HeadObject", "读取"));
+        _grid.Columns.Add(StateColumn("HeadObject", "属性"));
+        _grid.Columns.Add(StateColumn("GetObject", "下载"));
         _grid.Columns.Add(StateColumn("PutObject", "上传"));
         _grid.Columns.Add(StateColumn("DeleteObject", "删除"));
         _grid.Columns.Add(StateColumn("PutObjectAcl", "ACL"));
-        _grid.Columns.Add(StateColumn("CdnQueryOrAuthentication", "CDN 查询/认证", 105));
-        _grid.Columns.Add(StateColumn("RefreshOrPush", "CDN 刷新/预热", 118));
-        if (_grid.Columns["CdnQueryOrAuthentication"] is { } cdnQueryColumn)
+        _grid.Columns.Add(StateColumn("CdnControlQuery", "CDN 控制面查询", 118));
+        _grid.Columns.Add(StateColumn("RefreshOrPush", "CDN 刷新/预热*", 118));
+        if (_grid.Columns["CdnControlQuery"] is { } cdnQueryColumn)
             cdnQueryColumn.HeaderCell.ToolTipText =
-                "随“立即检查 OSS/CDN”执行：阿里云检查域名查询权限，通用 HTTP CDN 检查认证响应。";
+                "阿里云执行 DescribeUserDomains；通用 HTTP 仅确认控制端点配置，不提交真实刷新请求。";
         if (_grid.Columns["RefreshOrPush"] is { } refreshColumn)
             refreshColumn.HeaderCell.ToolTipText =
                 "刷新/预热会产生真实控制面任务，当前无副作用检查不会自动提交，因此通常显示 ?。";
@@ -268,7 +271,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         var selected = SelectedCredential is not null;
         _grid.Enabled = !busy;
         _check.Enabled = busy || selected;
-        _check.Text = busy ? "取消检查" : "立即检查 OSS/CDN";
+        _check.Text = busy ? "取消检查" : "立即检查 OSS/CDN 控制面";
         _probe.Enabled = !busy && selected;
     }
 

@@ -28,7 +28,7 @@ public sealed class AliyunCdnProvider : ICdnProvider
             return Failed("provider_mismatch", null, null, "Provider 不匹配。", false);
         if (request.Action == CdnJobAction.PurgeThenWarmup)
             return Failed("unsupported", null, null, "阿里云 CDN 的清理后预热需要两阶段任务状态，当前接口不支持安全表达。", false);
-        if (!TryGetCredential(request.Credential, out var credentialError, out var credential))
+        if (!TryGetCredential(request.ControlCredential, out var credentialError, out var credential))
             return Failed("invalid_credential", null, null, credentialError, false);
         if (request.Urls.Count == 0) return Failed("invalid_request", null, null, "至少需要一个 URL。", false);
 
@@ -58,7 +58,7 @@ public sealed class AliyunCdnProvider : ICdnProvider
     public async Task<CdnProviderResult> QueryAsync(CdnProviderRequest request, CancellationToken cancellationToken)
     {
         if (request is null) return Failed("invalid_request", null, null, "请求不能为空。", false);
-        if (!TryGetCredential(request.Credential, out var credentialError, out var credential))
+        if (!TryGetCredential(request.ControlCredential, out var credentialError, out var credential))
             return Failed("invalid_credential", null, null, credentialError, false);
         var ids = request.ProviderTaskId.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Distinct(StringComparer.Ordinal).ToArray();

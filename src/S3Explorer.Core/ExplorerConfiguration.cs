@@ -14,7 +14,7 @@ public sealed record ExplorerConfiguration(
     CdnConfiguration Cdn,
     IReadOnlyList<CredentialProfile> CredentialVault)
 {
-    public const int CurrentSchema = 1;
+    public const int CurrentSchema = 2;
     public static ExplorerConfiguration Empty { get; } = new(
         ConnectionProfileConfiguration.Empty,
         CdnConfiguration.Empty,
@@ -30,7 +30,7 @@ public sealed record ExplorerConfiguration(
         foreach (var profile in Storage.Profiles)
             ValidateStorageProfile(profile, credentials);
 
-        CdnConfigurationValidator.EnsureValid(Cdn);
+        CdnConfigurationValidator.EnsureValid(Cdn, CredentialVault);
         foreach (var profile in Cdn.Profiles)
             ValidateCdnProfile(profile, credentials);
 
@@ -123,13 +123,17 @@ public sealed record ExplorerConfiguration(
 
     private static void ValidateCdnProfile(CdnProfile profile, CredentialVault credentials)
     {
-        if (profile.CredentialId is not Guid credentialId)
+        if (profile.ControlCredentialId is not Guid credentialId)
             return;
 
         var credential = credentials.FindById(credentialId)
-            ?? throw new InvalidDataException($"CDN 配置“{profile.Name}”引用了不存在的凭据：{credentialId}");
-        if (!credential.IsCompatibleWith(profile.ProviderId))
-            throw new InvalidDataException($"凭据“{credential.Name}”与 CDN Provider“{profile.ProviderId}”不兼容。");
+            ?? throw new InvalidDataException($"CDN 配置“{profile.Name}”引用了不存在的控制凭据：{credentialId}");
+        var compatible = string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase)
+            ? credential.Provider == CredentialProviderKind.AlibabaCloud && credential.Kind == CredentialKind.AccessKeyPair
+            : credential.Provider == CredentialProviderKind.GenericHttp &&
+              credential.Kind is CredentialKind.BearerToken or CredentialKind.CustomHeader;
+        if (!compatible)
+            throw new InvalidDataException($"凭据“{credential.Name}”与 CDN 控制面 Provider“{profile.ProviderId}”不兼容。");
     }
 
     private static ConnectionProfile ResolveStorageProfile(

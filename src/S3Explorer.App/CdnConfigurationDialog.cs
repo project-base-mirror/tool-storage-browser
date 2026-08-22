@@ -2,6 +2,8 @@ using S3Explorer.Core;
 
 namespace S3Explorer.App;
 
+internal sealed record CdnProfileCheckOutcome(bool Passed, string Message);
+
 internal sealed class CdnConfigurationDialog : Form
 {
     private sealed record Choice<T>(T Value, string Text)
@@ -14,6 +16,7 @@ internal sealed class CdnConfigurationDialog : Form
     private readonly IS3StorageService? _storage;
     private readonly BucketDiscoveryCache _bucketDiscoveryCache;
     private readonly ICdnDeliveryService? _deliveryService;
+    private readonly Func<CdnProfile, IReadOnlyList<CdnBinding>, CancellationToken, Task<CdnProfileCheckOutcome>>? _profileChecker;
     private readonly Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? _persistCertificateResult;
     private readonly List<CdnProfile> _profiles;
     private readonly List<CredentialProfile> _credentials;
@@ -23,6 +26,7 @@ internal sealed class CdnConfigurationDialog : Form
     private readonly DataGridView _bindingGrid;
     private readonly Dictionary<Guid, string> _certificateStatuses = [];
     private readonly Dictionary<Guid, string> _bindingStatuses = [];
+    private readonly Dictionary<Guid, string> _profileCheckStatuses = [];
     private readonly Button _checkCertificate = new()
     {
         Name = "CheckCdnCertificateButton",
@@ -44,6 +48,13 @@ internal sealed class CdnConfigurationDialog : Form
         AutoSize = true,
         MinimumSize = new Size(108, 34)
     };
+    private readonly Button _checkSelectedProfile = new()
+    {
+        Name = "CheckSelectedCdnButton",
+        Text = "检查选中 CDN",
+        AutoSize = true,
+        MinimumSize = new Size(126, 34)
+    };
     private readonly Button _copyBinding = new()
     {
         Name = "CopyCdnBindingButton",
@@ -53,6 +64,7 @@ internal sealed class CdnConfigurationDialog : Form
     };
     private CancellationTokenSource? _certificateCancellation;
     private CancellationTokenSource? _bindingCancellation;
+    private CancellationTokenSource? _profileCheckCancellation;
     private readonly Button _save = new()
     {
         Name = "SaveCdnConfigurationButton",
@@ -93,13 +105,15 @@ internal sealed class CdnConfigurationDialog : Form
         ICdnDeliveryService? deliveryService = null,
         Func<Guid, CdnCertificateCheckResult, CancellationToken, Task>? persistCertificateResult = null,
         IReadOnlyList<ConnectionGroup>? connectionGroups = null,
-        BucketDiscoveryCache? bucketDiscoveryCache = null)
+        BucketDiscoveryCache? bucketDiscoveryCache = null,
+        Func<CdnProfile, IReadOnlyList<CdnBinding>, CancellationToken, Task<CdnProfileCheckOutcome>>? profileChecker = null)
     {
         _storageProfiles = storageProfiles;
         _certificateInspector = certificateInspector;
         _storage = storage;
         _bucketDiscoveryCache = bucketDiscoveryCache ?? new BucketDiscoveryCache();
         _deliveryService = deliveryService;
+        _profileChecker = profileChecker;
         _persistCertificateResult = persistCertificateResult;
         _profiles = [.. configuration.Profiles];
         _credentials = [.. credentials];
@@ -135,6 +149,7 @@ internal sealed class CdnConfigurationDialog : Form
         profileTab.Buttons.Controls.Add(_copyProfile);
         profileTab.Buttons.Controls.SetChildIndex(_copyProfile, 2);
         profileTab.Buttons.Controls.Add(_checkCertificate);
+        profileTab.Buttons.Controls.Add(_checkSelectedProfile);
         tabs.TabPages.Add(profileTab.Page);
 
         var bindingTab = CreateTab(
@@ -217,6 +232,15 @@ internal sealed class CdnConfigurationDialog : Form
                 return;
             }
             await CheckSelectedBindingsAsync();
+        };
+        _checkSelectedProfile.Click += async (_, _) =>
+        {
+            if (_profileCheckCancellation is not null)
+            {
+                _profileCheckCancellation.Cancel();
+                return;
+            }
+            await CheckSelectedProfilesAsync();
         };
         _profileGrid.SelectionChanged += (_, _) =>
         {
@@ -323,12 +347,14 @@ internal sealed class CdnConfigurationDialog : Form
         _profileGrid.Columns.Add("base", "基础 URL");
         _profileGrid.Columns.Add("certificate", "HTTPS 证书");
         _profileGrid.Columns.Add("notes", "备注");
+        _profileGrid.Columns.Add("contentAuth", "内容认证");
         _profileGrid.Columns.Add("warmup", "预热");
         _profileGrid.Columns.Add("purge", "刷新");
-        _profileGrid.Columns.Add("credential", "凭据");
+        _profileGrid.Columns.Add("credential", "控制面凭据");
+        _profileGrid.Columns.Add("check", "CDN 检查");
         foreach (var profile in _profiles.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var credentialName = profile.CredentialId is Guid credentialId
+            var credentialName = profile.ControlCredentialId is Guid credentialId
                 ? _credentials.FirstOrDefault(value => value.Id == credentialId)?.Name ?? "缺失"
                 : "无";
             var index = _profileGrid.Rows.Add(
@@ -336,9 +362,11 @@ internal sealed class CdnConfigurationDialog : Form
                 profile.BaseUrl,
                 CertificateStatus(profile),
                 NotesPreview(profile.Notes),
+                AuthenticationText(profile.ContentAuthentication.AuthenticationType),
                 WarmupText(profile),
                 profile.Capabilities.HasFlag(CdnCapabilities.Purge) ? profile.PurgeHttpMethod : "未配置",
-                credentialName);
+                credentialName,
+                _profileCheckStatuses.GetValueOrDefault(profile.Id, "尚未检查"));
             _profileGrid.Rows[index].Tag = profile.Id;
             if (!string.IsNullOrWhiteSpace(profile.Notes))
                 _profileGrid.Rows[index].Cells["notes"].ToolTipText = profile.Notes;
@@ -407,6 +435,7 @@ internal sealed class CdnConfigurationDialog : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _profiles[_profiles.IndexOf(profile)] = dialog.Profile;
         _certificateStatuses.Remove(profile.Id);
+        _profileCheckStatuses.Remove(profile.Id);
         MarkDirty();
         RefreshAll(selectedProfiles: [dialog.Profile.Id]);
     }
@@ -445,7 +474,11 @@ internal sealed class CdnConfigurationDialog : Form
                 MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
         _profiles.RemoveAll(item => profileIds.Contains(item.Id));
-        foreach (var profileId in profileIds) _certificateStatuses.Remove(profileId);
+        foreach (var profileId in profileIds)
+        {
+            _certificateStatuses.Remove(profileId);
+            _profileCheckStatuses.Remove(profileId);
+        }
         var removedBindings = _bindings.Where(value => profileIds.Contains(value.CdnProfileId)).Select(value => value.Id).ToArray();
         _bindings.RemoveAll(value => profileIds.Contains(value.CdnProfileId));
         foreach (var bindingId in removedBindings) _bindingStatuses.Remove(bindingId);
@@ -603,7 +636,8 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void UpdateDirtyState()
     {
-        _save.Enabled = _isDirty && _certificateCancellation is null && _bindingCancellation is null;
+        if (IsDisposed || Disposing) return;
+        _save.Enabled = _isDirty && _certificateCancellation is null && _bindingCancellation is null && _profileCheckCancellation is null;
         _dirtyStatus.Text = _isDirty
             ? "有未保存的更改：新增、编辑、复制和删除将在此统一写入磁盘。"
             : "没有未保存的更改";
@@ -614,6 +648,15 @@ internal sealed class CdnConfigurationDialog : Form
     {
         _certificateCancellation?.Cancel();
         _bindingCancellation?.Cancel();
+        _profileCheckCancellation?.Cancel();
+        if (_certificateCancellation is not null || _bindingCancellation is not null || _profileCheckCancellation is not null)
+        {
+            // Let the current operation unwind before the form is destroyed. Every
+            // continuation checks the lifetime again, but preventing disposal here
+            // also avoids losing the cancellation/status transition in the UI.
+            args.Cancel = true;
+            return;
+        }
         if (_accepting || !_isDirty) return;
         using var confirmation = new DiscardCdnChangesDialog();
         if (confirmation.ShowDialog(this) != DialogResult.Yes)
@@ -646,7 +689,9 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void UpdateOperationButtons()
     {
-        var busy = _certificateCancellation is not null || _bindingCancellation is not null;
+        if (IsDisposed || Disposing) return;
+        var busy = _certificateCancellation is not null || _bindingCancellation is not null || _profileCheckCancellation is not null;
+        _cancel.Enabled = !busy;
         SetButtonEnabled("AddCdnProfileButton", !busy);
         SetButtonEnabled("EditCdnProfileButton", !busy && SelectedId(_profileGrid) is not null);
         SetButtonEnabled("DeleteCdnProfileButton", !busy && SelectedIds(_profileGrid).Length > 0);
@@ -682,7 +727,30 @@ internal sealed class CdnConfigurationDialog : Form
         }
         _copyProfile.Enabled = _certificateCancellation is null && _bindingCancellation is null && SelectedId(_profileGrid) is not null;
         _copyBinding.Enabled = _certificateCancellation is null && _bindingCancellation is null && SelectedId(_bindingGrid) is not null;
+        if (_profileCheckCancellation is not null)
+        {
+            _checkSelectedProfile.Text = "取消 CDN 检查";
+            _checkSelectedProfile.Enabled = true;
+        }
+        else
+        {
+            _checkSelectedProfile.Text = "检查选中 CDN";
+            _checkSelectedProfile.Enabled = _profileChecker is not null &&
+                !busy &&
+                _profiles.Any(profile => SelectedIds(_profileGrid).Contains(profile.Id));
+        }
         UpdateDirtyState();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _certificateCancellation?.Cancel();
+            _bindingCancellation?.Cancel();
+            _profileCheckCancellation?.Cancel();
+        }
+        base.Dispose(disposing);
     }
 
     private void SetButtonEnabled(string name, bool enabled)
@@ -693,6 +761,7 @@ internal sealed class CdnConfigurationDialog : Form
 
     private void SetCertificateStatus(Guid profileId, string status)
     {
+        if (IsDisposed || Disposing) return;
         _certificateStatuses[profileId] = status;
         foreach (DataGridViewRow row in _profileGrid.Rows)
         {
@@ -736,10 +805,13 @@ internal sealed class CdnConfigurationDialog : Form
                 {
                     var result = await _certificateInspector.InspectAsync(profile, linkedCancellation.Token);
                     if (IsDisposed || Disposing) return;
+                    manualCancellation.Token.ThrowIfCancellationRequested();
                     var profileIndex = _profiles.FindIndex(item => item.Id == profile.Id);
                     if (profileIndex < 0) continue;
                     if (_persistCertificateResult is not null)
                         await _persistCertificateResult(profile.Id, result, manualCancellation.Token);
+                    if (IsDisposed || Disposing) return;
+                    manualCancellation.Token.ThrowIfCancellationRequested();
                     _profiles[profileIndex] = _profiles[profileIndex] with { LastCertificateCheck = result };
                     _certificateStatuses.Remove(profile.Id);
                     SetCertificateStatus(profile.Id, CertificateStatus(_profiles[profileIndex]));
@@ -810,11 +882,6 @@ internal sealed class CdnConfigurationDialog : Form
                         ?? throw new InvalidOperationException("对象存储连接不存在");
                     var cdnProfile = _profiles.FirstOrDefault(item => item.Id == binding.CdnProfileId)
                         ?? throw new InvalidOperationException("CDN 配置不存在");
-                    var credential = cdnProfile.CredentialId is Guid credentialId
-                        ? _credentials.FirstOrDefault(item => item.Id == credentialId)
-                        : null;
-                    if (cdnProfile.CredentialId is not null && credential is null)
-                        throw new InvalidOperationException("CDN 凭据不存在");
                     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Clamp(cdnProfile.TimeoutSeconds, 1, 3600)));
                     using var linked = CancellationTokenSource.CreateLinkedTokenSource(manualCancellation.Token, timeout.Token);
                     var inspection = await CdnBindingInspector.InspectAsync(
@@ -822,8 +889,10 @@ internal sealed class CdnConfigurationDialog : Form
                         binding,
                         (prefix, continuationToken, token) => _storage.ListObjectsAsync(
                             storageProfile, binding.Bucket, prefix, continuationToken, 100, token),
-                        (url, token) => _deliveryService.ProbeHeadAsync(cdnProfile, credential, url, token),
+                        (url, token) => _deliveryService.ProbeHeadAsync(cdnProfile, url, token),
                         linked.Token);
+                    if (IsDisposed || Disposing) return;
+                    manualCancellation.Token.ThrowIfCancellationRequested();
                     if (inspection is null)
                     {
                         SetBindingStatus(binding.Id, "源前缀没有可检测文件");
@@ -869,8 +938,79 @@ internal sealed class CdnConfigurationDialog : Form
         }
     }
 
+    private async Task CheckSelectedProfilesAsync()
+    {
+        if (_profileChecker is null) return;
+        var selected = _profiles.Where(profile => SelectedIds(_profileGrid).Contains(profile.Id)).ToArray();
+        if (selected.Length == 0) return;
+        using var cancellation = new CancellationTokenSource();
+        _profileCheckCancellation = cancellation;
+        UpdateOperationButtons();
+        var succeeded = 0;
+        var failed = 0;
+        try
+        {
+            for (var index = 0; index < selected.Length; index++)
+            {
+                var profile = selected[index];
+                SetProfileCheckStatus(profile.Id, $"检查中 {index + 1}/{selected.Length}...");
+                try
+                {
+                    var profileBindings = _bindings
+                        .Where(binding => binding.Enabled && binding.CdnProfileId == profile.Id)
+                        .ToArray();
+                    var result = await _profileChecker(profile, profileBindings, cancellation.Token);
+                    if (IsDisposed || Disposing) return;
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    SetProfileCheckStatus(profile.Id, string.IsNullOrWhiteSpace(result.Message) ? "检查完成" : result.Message);
+                    if (result.Passed) succeeded++; else failed++;
+                }
+                catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+                {
+                    SetProfileCheckStatus(profile.Id, "检查超时");
+                    failed++;
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    var message = SensitiveDataRedactor.Redact(exception.Message);
+                    SetProfileCheckStatus(profile.Id, "检查失败：" + message);
+                    failed++;
+                }
+            }
+            if (!IsDisposed && !Disposing)
+                MessageBox.Show(this, $"CDN 检查完成：成功 {succeeded:N0}，失败 {failed:N0}。", "CDN 检查完成", MessageBoxButtons.OK,
+                    failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var profile in selected.Where(item => _profileCheckStatuses.GetValueOrDefault(item.Id)?.StartsWith("检查中", StringComparison.Ordinal) == true))
+                SetProfileCheckStatus(profile.Id, "检查已取消");
+        }
+        finally
+        {
+            if (ReferenceEquals(_profileCheckCancellation, cancellation)) _profileCheckCancellation = null;
+            if (!IsDisposed && !Disposing) UpdateOperationButtons();
+        }
+    }
+
+    private void SetProfileCheckStatus(Guid profileId, string status)
+    {
+        if (IsDisposed || Disposing) return;
+        _profileCheckStatuses[profileId] = status;
+        foreach (DataGridViewRow row in _profileGrid.Rows)
+        {
+            if (row.Tag is Guid id && id == profileId)
+            {
+                row.Cells["check"].Value = status;
+                row.Cells["check"].ToolTipText = status;
+                break;
+            }
+        }
+    }
+
     private void SetBindingStatus(Guid bindingId, string status, string? details = null)
     {
+        if (IsDisposed || Disposing) return;
         _bindingStatuses[bindingId] = status;
         foreach (DataGridViewRow row in _bindingGrid.Rows)
         {

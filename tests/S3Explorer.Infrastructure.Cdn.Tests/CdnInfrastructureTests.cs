@@ -197,7 +197,6 @@ public sealed class CdnInfrastructureTests
 
         var result = await service.ProbeAsync(
             Profile(),
-            null,
             new Uri("https://cdn.example/file.bin"),
             1024,
             CancellationToken.None);
@@ -210,7 +209,7 @@ public sealed class CdnInfrastructureTests
     }
 
     [Fact]
-    public async Task DownloadStreamsWholeResponseAndAppliesCredential()
+    public async Task DownloadStreamsWholeResponseAndAppliesInlineContentAuthentication()
     {
         CapturedRequest? captured = null;
         var payload = Encoding.UTF8.GetBytes("payload from CDN");
@@ -224,18 +223,25 @@ public sealed class CdnInfrastructureTests
                     RequestMessage = request
                 };
             }));
-        var credential = new CredentialProfile
+        var profile = Profile() with
         {
-            Name = "download token",
+            ContentAuthentication = new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Secret = "secret"
+            }
+        };
+        var controlCredential = new CredentialProfile
+        {
+            Name = "control token",
             Provider = CredentialProviderKind.GenericHttp,
             Kind = CredentialKind.BearerToken,
-            Secret = "secret"
+            Secret = "must-not-be-sent"
         };
         await using var destination = new MemoryStream();
 
         var result = await service.DownloadAsync(
-            Profile(),
-            credential,
+            profile,
             new Uri("https://cdn.example/assets/file.txt"),
             destination,
             CancellationToken.None);
@@ -246,6 +252,78 @@ public sealed class CdnInfrastructureTests
         Assert.Equal(HttpMethod.Get, captured?.Method);
         Assert.Null(captured?.Range);
         Assert.Equal("Bearer secret", captured?.Authorization);
+    }
+
+    [Fact]
+    public async Task ContentCredentialRejectsCrossOriginRedirectWithoutSendingSecondRequest()
+    {
+        var requests = new List<CapturedRequest>();
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                requests.Add(CapturedRequest.From(request));
+                return new HttpResponseMessage(HttpStatusCode.Redirect)
+                {
+                    Headers = { Location = new Uri("https://other.example/file.bin") },
+                    RequestMessage = request
+                };
+            }));
+        var profile = Profile() with
+        {
+            ContentAuthentication = new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.CustomHeader,
+                HeaderName = "X-CDN-Token",
+                Secret = "secret"
+            }
+        };
+        await using var destination = new MemoryStream();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.DownloadAsync(
+                profile,
+                new Uri("https://cdn.example/file.bin"),
+                destination,
+                CancellationToken.None));
+
+        Assert.Contains("跨源重定向", exception.Message, StringComparison.Ordinal);
+        Assert.Single(requests);
+        Assert.Equal("secret", requests[0].Headers["X-CDN-Token"]);
+        Assert.Equal(0, destination.Length);
+    }
+
+    [Fact]
+    public async Task AnonymousContentFollowsCrossOriginRedirect()
+    {
+        var requests = new List<CapturedRequest>();
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                requests.Add(CapturedRequest.From(request));
+                if (requests.Count == 1)
+                    return new HttpResponseMessage(HttpStatusCode.Redirect)
+                    {
+                        Headers = { Location = new Uri("https://other.example/file.bin") },
+                        RequestMessage = request
+                    };
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes("payload")),
+                    RequestMessage = request
+                };
+            }));
+        await using var destination = new MemoryStream();
+
+        var result = await service.DownloadAsync(
+            Profile(),
+            new Uri("https://cdn.example/file.bin"),
+            destination,
+            CancellationToken.None);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal("payload", Encoding.UTF8.GetString(destination.ToArray()));
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(new Uri("https://other.example/file.bin"), requests[1].Uri);
     }
 
     [Fact]
@@ -275,7 +353,6 @@ public sealed class CdnInfrastructureTests
 
         var result = await service.DownloadAsync(
             profile,
-            credential,
             new Uri("https://cdn.example/assets/file.txt"),
             destination,
             CancellationToken.None);
@@ -298,7 +375,6 @@ public sealed class CdnInfrastructureTests
         var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
             service.DownloadAsync(
                 Profile(),
-                null,
                 new Uri("https://cdn.example/missing.txt"),
                 destination,
                 CancellationToken.None));
@@ -328,8 +404,8 @@ public sealed class CdnInfrastructureTests
         var profile = Profile();
         var url = new Uri("https://cdn.example/file.bin");
 
-        var first = await service.ProbeHeadAsync(profile, null, url, CancellationToken.None);
-        var second = await service.ProbeHeadAsync(profile, null, url, CancellationToken.None);
+        var first = await service.ProbeHeadAsync(profile, url, CancellationToken.None);
+        var second = await service.ProbeHeadAsync(profile, url, CancellationToken.None);
 
         Assert.All(methods, method => Assert.Equal(HttpMethod.Head, method));
         Assert.Equal(0, first.BytesRead);
@@ -425,7 +501,6 @@ public sealed class CdnInfrastructureTests
 
         var result = await new GenericHttpCdnDeliveryService().ProbeAsync(
             Profile() with { BaseUrl = $"http://127.0.0.1:{port}" },
-            null,
             url,
             1024,
             timeout.Token);
@@ -459,7 +534,6 @@ public sealed class CdnInfrastructureTests
 
         var result = await service.WarmupAsync(
             profile,
-            null,
             new Uri("https://cdn.example/file.bin"),
             CancellationToken.None);
 
@@ -513,6 +587,45 @@ public sealed class CdnInfrastructureTests
             "/assets/a%20b.js",
             captured?.Body,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ControlCredentialRejectsCrossOriginPurgeRedirect()
+    {
+        var requests = new List<CapturedRequest>();
+        var service = new GenericHttpCdnDeliveryService(
+            _ => new StubHandler(request =>
+            {
+                requests.Add(CapturedRequest.From(request));
+                return new HttpResponseMessage(HttpStatusCode.Redirect)
+                {
+                    Headers = { Location = new Uri("https://other.example/purge") },
+                    RequestMessage = request
+                };
+            }));
+        var profile = Profile() with
+        {
+            PurgeEndpointTemplate = "https://api.example/purge?target={url}"
+        };
+        var credential = new CredentialProfile
+        {
+            Name = "control token",
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.CustomHeader,
+            HeaderName = "X-Control-Token",
+            Secret = "control-secret"
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.PurgeAsync(
+                profile,
+                credential,
+                new Uri("https://cdn.example/file.bin"),
+                CancellationToken.None));
+
+        Assert.Contains("跨源重定向", exception.Message, StringComparison.Ordinal);
+        Assert.Single(requests);
+        Assert.Equal("control-secret", requests[0].Headers["X-Control-Token"]);
     }
 
     [Fact]
@@ -702,7 +815,8 @@ public sealed class CdnInfrastructureTests
         Uri Uri,
         string? Range,
         string? Authorization,
-        string Body)
+        string Body,
+        IReadOnlyDictionary<string, string> Headers)
     {
         public static CapturedRequest From(HttpRequestMessage request) => new(
             request.Method,
@@ -710,6 +824,15 @@ public sealed class CdnInfrastructureTests
             request.Headers.Range?.ToString(),
             request.Headers.Authorization?.ToString(),
             request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()
-                ?? string.Empty);
+                ?? string.Empty,
+            request.Headers
+                .Concat(
+                    request.Content?.Headers ??
+                    Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>())
+                .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => string.Join(", ", group.SelectMany(header => header.Value)),
+                    StringComparer.OrdinalIgnoreCase));
     }
 }

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Runtime.Versioning;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
@@ -101,8 +102,15 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
         var envelope = await _file.LoadAsync(static () => new Envelope(ExplorerConfiguration.CurrentSchema, ""), Options, ValidateEnvelope, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (_file.LastRecovery is { } recovery)
             _lastRecovery = recovery;
-        if (envelope.Schema != ExplorerConfiguration.CurrentSchema) throw new InvalidDataException($"不支持的统一配置 Schema：{envelope.Schema}");
         var json = _protector.Unprotect(envelope.EncryptedPayload);
+        if (envelope.Schema == 1)
+        {
+            var migrated = MigrateSchema1(json);
+            migrated.Validate();
+            await SaveCoreAsync(migrated, cancellationToken).ConfigureAwait(false);
+            return migrated.ResolveCredentialReferences();
+        }
+        if (envelope.Schema != ExplorerConfiguration.CurrentSchema) throw new InvalidDataException($"不支持的统一配置 Schema：{envelope.Schema}");
         var configuration = JsonSerializer.Deserialize<ExplorerConfiguration>(json, Options)
             ?? throw new InvalidDataException("统一配置载荷为空。");
         return configuration.ResolveCredentialReferences();
@@ -152,8 +160,108 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
 
     private static void ValidateEnvelope(Envelope envelope)
     {
-        if (envelope.Schema != ExplorerConfiguration.CurrentSchema) throw new InvalidDataException($"不支持的统一配置 Schema：{envelope.Schema}");
+        if (envelope.Schema is not (1 or ExplorerConfiguration.CurrentSchema)) throw new InvalidDataException($"不支持的统一配置 Schema：{envelope.Schema}");
         if (string.IsNullOrWhiteSpace(envelope.EncryptedPayload)) throw new InvalidDataException("统一配置缺少加密载荷。");
+    }
+
+    private ExplorerConfiguration MigrateSchema1(string json)
+    {
+        var root = JsonNode.Parse(json)?.AsObject()
+            ?? throw new InvalidDataException("旧统一配置载荷为空。");
+        var credentials = root["credentialVault"]?.AsArray();
+        var profiles = root["cdn"]?["profiles"]?.AsArray();
+        if (credentials is null || profiles is null)
+            throw new InvalidDataException("旧统一配置缺少 CDN 配置或凭据目录。");
+
+        var credentialNodes = credentials
+            .OfType<JsonObject>()
+            .Select(node => (Node: node, Id: ReadGuid(node["id"])))
+            .Where(value => value.Id is not null)
+            .ToDictionary(value => value.Id!.Value, value => value.Node);
+        var retainedControlIds = new HashSet<Guid>();
+        var legacyGenericIds = new HashSet<Guid>();
+
+        foreach (var node in profiles.OfType<JsonObject>())
+        {
+            var legacyId = ReadGuid(node["credentialId"]);
+            var provider = ReadString(node["providerId"]);
+            var isAliyun = string.Equals(provider, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase);
+            var purgeConfigured = !string.IsNullOrWhiteSpace(ReadString(node["purgeEndpointTemplate"]));
+            var content = isAliyun
+                ? CdnHttpAuthentication.Anonymous
+                : ContentFromCredential(legacyId is Guid id && credentialNodes.TryGetValue(id, out var credential) ? credential : null);
+
+            node["contentAuthentication"] = JsonSerializer.SerializeToNode(content, Options);
+            node.Remove("credentialId");
+            node.Remove("controlCredentialId");
+            if (legacyId is Guid controlId && (isAliyun || purgeConfigured))
+            {
+                node["controlCredentialId"] = controlId.ToString("D");
+                retainedControlIds.Add(controlId);
+            }
+            if (!isAliyun && legacyId is Guid genericId)
+                legacyGenericIds.Add(genericId);
+        }
+
+        for (var index = credentials.Count - 1; index >= 0; index--)
+        {
+            if (credentials[index] is not JsonObject credential ||
+                ReadEnum<CredentialProviderKind>(credential["provider"]) != CredentialProviderKind.GenericHttp)
+                continue;
+            var id = ReadGuid(credential["id"]);
+            if (id is Guid genericId && legacyGenericIds.Contains(genericId) && !retainedControlIds.Contains(genericId))
+                credentials.RemoveAt(index);
+        }
+
+        var migrated = JsonSerializer.Deserialize<ExplorerConfiguration>(
+            root.ToJsonString(Options), Options)
+            ?? throw new InvalidDataException("Schema 1 配置迁移后载荷为空。");
+        return migrated;
+    }
+
+    private static CdnHttpAuthentication ContentFromCredential(JsonObject? credential)
+    {
+        if (credential is null || ReadEnum<CredentialProviderKind>(credential["provider"]) != CredentialProviderKind.GenericHttp)
+            return CdnHttpAuthentication.Anonymous;
+        var kind = ReadEnum<CredentialKind>(credential["kind"]);
+        return kind switch
+        {
+            CredentialKind.BearerToken => new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.BearerToken,
+                Secret = ReadString(credential["secret"])
+            },
+            CredentialKind.CustomHeader => new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.CustomHeader,
+                HeaderName = ReadString(credential["headerName"]),
+                Secret = ReadString(credential["secret"])
+            },
+            _ => CdnHttpAuthentication.Anonymous
+        };
+    }
+
+    private static string ReadString(JsonNode? node)
+    {
+        try { return node?.GetValue<string>() ?? string.Empty; }
+        catch (InvalidOperationException) { return string.Empty; }
+    }
+
+    private static Guid? ReadGuid(JsonNode? node) =>
+        Guid.TryParse(ReadString(node), out var value) ? value : null;
+
+    private static T ReadEnum<T>(JsonNode? node) where T : struct, Enum
+    {
+        var text = ReadString(node);
+        if (Enum.TryParse<T>(text, ignoreCase: true, out var value)) return value;
+        try
+        {
+            var number = node?.GetValue<int>();
+            return number is int integer && Enum.IsDefined(typeof(T), integer)
+                ? (T)Enum.ToObject(typeof(T), integer)
+                : default;
+        }
+        catch (InvalidOperationException) { return default; }
     }
 
     private async Task<ExplorerConfiguration> LoadLegacyAsync(CancellationToken cancellationToken)
@@ -162,8 +270,8 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
         var cdnPath = System.IO.Path.Combine(_dataRoot, "cdn-config.json");
         var credentialPath = System.IO.Path.Combine(_dataRoot, "cdn-credentials.json");
         var profiles = await new JsonProfileStore(new DpapiCredentialProtector(), profilePath).LoadConfigurationAsync(cancellationToken).ConfigureAwait(false);
-        var cdn = await new JsonCdnConfigurationStore(cdnPath).LoadAsync(cancellationToken).ConfigureAwait(false);
         var cdnCredentials = await new JsonCdnCredentialStore(new DpapiCdnCredentialProtector(), credentialPath).LoadAsync(cancellationToken).ConfigureAwait(false);
+        var cdn = await LoadLegacyCdnConfigurationAsync(cdnPath, cdnCredentials, cancellationToken).ConfigureAwait(false);
         var vault = new List<CredentialProfile>();
         var migratedProfiles = profiles.Profiles.Select(profile =>
         {
@@ -200,15 +308,11 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
                 AwsExternalId = string.Empty
             };
         }
-        var cdnCredentialIdMap = new Dictionary<Guid, Guid?>();
-        foreach (var credential in cdnCredentials)
+        var controlCredentialIdMap = new Dictionary<Guid, Guid>();
+        foreach (var credential in cdnCredentials.Where(value => cdn.Profiles.Any(profile => profile.ControlCredentialId == value.Id)))
         {
-            if (credential.AuthenticationType == CdnAuthenticationType.None)
-            {
-                cdnCredentialIdMap[credential.Id] = null;
-                continue;
-            }
-            cdnCredentialIdMap[credential.Id] = AddMigratedCredential(vault, new CredentialProfile
+            if (credential.AuthenticationType == CdnAuthenticationType.None) continue;
+            var migratedId = AddMigratedCredential(vault, new CredentialProfile
             {
                 Id = credential.Id,
                 Name = credential.Name,
@@ -218,14 +322,15 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
                     : CredentialKind.BearerToken,
                 HeaderName = credential.HeaderName,
                 Secret = credential.Secret
-            }, "cdn");
+            }, "cdn-control");
+            controlCredentialIdMap[credential.Id] = migratedId;
         }
         var migratedCdn = cdn with
         {
-            Profiles = cdn.Profiles.Select(profile => profile.CredentialId is Guid legacyCredentialId &&
-                    cdnCredentialIdMap.TryGetValue(legacyCredentialId, out var migratedCredentialId)
-                ? profile with { CredentialId = migratedCredentialId }
-                : profile).ToArray()
+            Profiles = cdn.Profiles.Select(profile =>
+                profile.ControlCredentialId is Guid id && controlCredentialIdMap.TryGetValue(id, out var migratedId)
+                    ? profile with { ControlCredentialId = migratedId }
+                    : profile).ToArray()
         };
         var result = new ExplorerConfiguration(
             new ConnectionProfileConfiguration(migratedProfiles, profiles.Groups),
@@ -233,6 +338,48 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
             vault);
         result.Validate();
         return result;
+    }
+
+    private static async Task<CdnConfiguration> LoadLegacyCdnConfigurationAsync(
+        string path,
+        IReadOnlyList<CdnCredential> credentials,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await new JsonCdnConfigurationStore(path)
+            .LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (!File.Exists(path) || configuration.Profiles.Count == 0)
+            return configuration;
+
+        var raw = JsonNode.Parse(await File.ReadAllTextAsync(path, cancellationToken))?.AsObject();
+        var rawProfiles = raw?["profiles"]?.AsArray();
+        if (rawProfiles is null) return configuration;
+        var legacyCredentials = credentials.ToDictionary(value => value.Id);
+        var transformed = configuration.Profiles.Select(profile =>
+        {
+            var rawProfile = rawProfiles
+                .OfType<JsonObject>()
+                .FirstOrDefault(node => ReadGuid(node["id"]) == profile.Id);
+            var legacyId = ReadGuid(rawProfile?["credentialId"]);
+            var legacy = legacyId is Guid id && legacyCredentials.TryGetValue(id, out var value) ? value : null;
+            var needsControl = legacyId is not null &&
+                (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) ||
+                 !string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate));
+            return profile with
+            {
+                ContentAuthentication = legacy is null
+                    ? CdnHttpAuthentication.Anonymous
+                    : new CdnHttpAuthentication
+                    {
+                        AuthenticationType = legacy.AuthenticationType,
+                        HeaderName = legacy.HeaderName,
+                        Secret = legacy.Secret
+                    },
+                ControlCredentialId = needsControl && legacy?.AuthenticationType != CdnAuthenticationType.None
+                    ? legacyId
+                    : null
+            };
+        }).ToArray();
+        return new CdnConfiguration(transformed, configuration.Bindings);
     }
 
     private void ArchiveLegacyFiles()

@@ -77,7 +77,7 @@ public sealed class CdnJobInfrastructureTests
         {
             Name = "site",
             BaseUrl = "https://cdn.example",
-            CredentialId = credentialId
+            ControlCredentialId = credentialId
         };
         var credential = new CredentialProfile
         {
@@ -103,7 +103,7 @@ public sealed class CdnJobInfrastructureTests
 
         Assert.Equal(CdnProviderOperationState.Completed, result.State);
         Assert.NotNull(provider.Request);
-        Assert.Equal(credential.Id, provider.Request!.Credential?.Id);
+        Assert.Equal(credential.Id, provider.Request!.ControlCredential?.Id);
     }
 
     private static string TemporaryFile()
@@ -127,7 +127,6 @@ public sealed class CdnJobInfrastructureTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) =>
@@ -135,7 +134,6 @@ public sealed class CdnJobInfrastructureTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken)
         {
@@ -146,7 +144,7 @@ public sealed class CdnJobInfrastructureTests
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
+            CredentialProfile? controlCredential,
             Uri url,
             CancellationToken cancellationToken)
         {

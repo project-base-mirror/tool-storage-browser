@@ -117,7 +117,7 @@ public interface ICdnJobStore
 public sealed record CdnProviderRequest(
     CdnJobAction Action,
     CdnProfile Profile,
-    CredentialProfile? Credential,
+    CredentialProfile? ControlCredential,
     IReadOnlyList<Uri> Urls,
     string ProviderTaskId = "");
 

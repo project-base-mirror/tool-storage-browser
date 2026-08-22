@@ -1678,8 +1678,8 @@ internal sealed partial class MainForm : Form
             .Where(value => value.HasValue)
             .Select(value => value!.Value)
             .Concat(cdnProfiles
-            .Where(profile => profile.CredentialId.HasValue)
-            .Select(profile => profile.CredentialId!.Value))
+            .Where(profile => profile.ControlCredentialId.HasValue)
+            .Select(profile => profile.ControlCredentialId!.Value))
             .ToHashSet();
         var credentials = _credentials
             .Where(credential => credentialIds.Contains(credential.Id))

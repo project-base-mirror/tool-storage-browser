@@ -201,10 +201,21 @@ internal sealed class CdnProfileEditorDialog : Form
         MaxLength = CdnProfile.MaximumNotesLength,
         MinimumSize = new Size(0, 72)
     };
-    private readonly ComboBox _credential = new()
+    private readonly ComboBox _controlCredential = new()
     {
-        Name = "CdnProfileCredential",
+        Name = "CdnProfileControlCredential",
         DropDownStyle = ComboBoxStyle.DropDownList
+    };
+    private readonly ComboBox _contentAuthentication = new()
+    {
+        Name = "CdnContentAuthentication",
+        DropDownStyle = ComboBoxStyle.DropDownList
+    };
+    private readonly TextBox _contentHeader = new() { Name = "CdnContentHeader" };
+    private readonly TextBox _contentSecret = new()
+    {
+        Name = "CdnContentSecret",
+        UseSystemPasswordChar = true
     };
     private readonly ComboBox _warmupMode = new()
     {
@@ -291,7 +302,24 @@ internal sealed class CdnProfileEditorDialog : Form
         EditorLayout.AddField(fields, "Provider：", _provider);
         EditorLayout.AddField(fields, "CDN 基础 URL：", _baseUrl);
         EditorLayout.AddField(fields, "备注：", _notes);
-        EditorLayout.AddField(fields, "关联凭据：", _credential);
+        EditorLayout.AddSection(fields, "CDN 内容认证（仅用于 CDN 内容 URL）");
+        _contentAuthentication.Items.AddRange([
+            new Choice<CdnAuthenticationType>(CdnAuthenticationType.None, "无需认证"),
+            new Choice<CdnAuthenticationType>(CdnAuthenticationType.BearerToken, "Bearer Token"),
+            new Choice<CdnAuthenticationType>(CdnAuthenticationType.CustomHeader, "自定义 Header")
+        ]);
+        EditorLayout.AddField(fields, "认证方式：", _contentAuthentication);
+        EditorLayout.AddField(fields, "Header 名称：", _contentHeader);
+        EditorLayout.AddField(fields, "秘密值：", _contentSecret);
+        EditorLayout.AddSection(fields, "CDN 控制面凭据（查询、刷新、原生预热）");
+        EditorLayout.AddField(fields, "控制面凭据：", _controlCredential);
+        EditorLayout.AddWide(fields, new Label
+        {
+            Text = "控制面凭据只发送到 Provider 的管理 API；不会发送到 CDN 内容域名。通用 HTTP 只有配置刷新端点时才需要控制面凭据。",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            MaximumSize = new Size(600, 0)
+        });
         EditorLayout.AddField(fields, "预热模式：", _warmupMode);
         EditorLayout.AddField(fields, "Range 大小 (MiB)：", _rangeMiB);
         EditorLayout.AddField(fields, "请求超时 (秒)：", _timeout);
@@ -321,9 +349,11 @@ internal sealed class CdnProfileEditorDialog : Form
         _save.Click += (_, _) => Save();
         _provider.SelectedIndexChanged += (_, _) =>
         {
-            PopulateCredentials(Selected(_provider, CdnProfile.GenericHttpProviderId), null);
+            PopulateControlCredentials(Selected(_provider, CdnProfile.GenericHttpProviderId), null);
             UpdateProviderFields();
         };
+        _contentAuthentication.SelectedIndexChanged += (_, _) => UpdateContentAuthenticationFields();
+        _purgeEndpoint.TextChanged += (_, _) => UpdateProviderFields();
         _warmupMode.SelectedIndexChanged += (_, _) =>
             _rangeMiB.Enabled = Selected(_warmupMode, CdnWarmupMode.RangeGet) == CdnWarmupMode.RangeGet;
         AcceptButton = _save;
@@ -335,7 +365,11 @@ internal sealed class CdnProfileEditorDialog : Form
     {
         _name.Text = profile.Name;
         SelectValue(_provider, profile.ProviderId);
-        PopulateCredentials(profile.ProviderId, profile.CredentialId);
+        var contentAuthentication = profile.ContentAuthentication ?? CdnHttpAuthentication.Anonymous;
+        SelectValue(_contentAuthentication, contentAuthentication.AuthenticationType);
+        _contentHeader.Text = contentAuthentication.HeaderName;
+        _contentSecret.Text = contentAuthentication.Secret;
+        PopulateControlCredentials(profile.ProviderId, profile.ControlCredentialId);
         _baseUrl.Text = profile.BaseUrl;
         _notes.Text = profile.Notes;
         SelectValue(_warmupMode, profile.WarmupMode);
@@ -368,7 +402,8 @@ internal sealed class CdnProfileEditorDialog : Form
             Notes = _notes.Text.Trim(),
             ProviderId = providerId,
             BaseUrl = _baseUrl.Text.Trim(),
-            CredentialId = Selected(_credential, (Guid?)null),
+            ContentAuthentication = BuildContentAuthentication(),
+            ControlCredentialId = Selected(_controlCredential, (Guid?)null),
             WarmupMode = Selected(_warmupMode, CdnWarmupMode.RangeGet),
             WarmupRangeBytes = decimal.ToInt64(_rangeMiB.Value) * 1024L * 1024L,
             PurgeEndpointTemplate = genericHttpProvider ? _purgeEndpoint.Text.Trim() : string.Empty,
@@ -388,12 +423,12 @@ internal sealed class CdnProfileEditorDialog : Form
                 : null
         };
         var errors = CdnConfigurationValidator.Validate(new CdnConfiguration([candidate], []), _credentials);
-        var selectedCredential = candidate.CredentialId is Guid credentialId
+        var selectedCredential = candidate.ControlCredentialId is Guid credentialId
             ? _credentials.FirstOrDefault(value => value.Id == credentialId)
             : null;
         if (string.Equals(candidate.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
             selectedCredential is null)
-            errors = errors.Append("阿里云 CDN 必须选择 Alibaba Cloud AccessKey 凭据。").ToArray();
+            errors = errors.Append("阿里云 CDN 必须选择 Alibaba Cloud AccessKey 控制面凭据。").ToArray();
         else if (selectedCredential is not null && !selectedCredential.IsCompatibleWith(candidate.ProviderId))
             errors = errors.Append("所选凭据与 CDN Provider 不兼容。").ToArray();
         if (errors.Count > 0)
@@ -422,16 +457,36 @@ internal sealed class CdnProfileEditorDialog : Form
         combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
     }
 
-    private void PopulateCredentials(string providerId, Guid? selectedId)
+    private CdnHttpAuthentication BuildContentAuthentication()
     {
-        _credential.Items.Clear();
-        if (string.Equals(providerId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase))
-            _credential.Items.Add(new Choice<Guid?>(null, "(无需认证)"));
+        var type = Selected(_contentAuthentication, CdnAuthenticationType.None);
+        if (type == CdnAuthenticationType.None)
+            return CdnHttpAuthentication.Anonymous;
+        var header = type == CdnAuthenticationType.CustomHeader ? _contentHeader.Text.Trim() : string.Empty;
+        var secret = _contentSecret.Text;
+        return new CdnHttpAuthentication
+        {
+            AuthenticationType = type,
+            HeaderName = header,
+            Secret = secret
+        };
+    }
+
+    private void PopulateControlCredentials(string providerId, Guid? selectedId)
+    {
+        _controlCredential.Items.Clear();
+        _controlCredential.Items.Add(new Choice<Guid?>(null, "(不使用控制面凭据)"));
+        var providerKind = string.Equals(providerId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase)
+            ? CredentialProviderKind.AlibabaCloud
+            : CredentialProviderKind.GenericHttp;
         foreach (var item in _credentials
-                     .Where(value => value.IsCompatibleWith(providerId))
+                     .Where(value => value.Provider == providerKind &&
+                         (providerKind == CredentialProviderKind.AlibabaCloud
+                             ? value.Kind == CredentialKind.AccessKeyPair
+                             : value.Kind is CredentialKind.BearerToken or CredentialKind.CustomHeader))
                      .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
-            _credential.Items.Add(new Choice<Guid?>(item.Id, $"{item.Name} · {item.Fingerprint}"));
-        SelectValue(_credential, selectedId);
+            _controlCredential.Items.Add(new Choice<Guid?>(item.Id, $"{item.Name} · {item.Fingerprint}"));
+        SelectValue(_controlCredential, selectedId);
     }
 
     private void UpdateProviderFields()
@@ -444,6 +499,26 @@ internal sealed class CdnProfileEditorDialog : Form
         _purgeMethod.Enabled = generic;
         _purgeBody.Enabled = generic;
         _purgeContentType.Enabled = generic;
+        _controlCredential.Enabled = !generic || !string.IsNullOrWhiteSpace(_purgeEndpoint.Text);
+        if (generic && string.IsNullOrWhiteSpace(_purgeEndpoint.Text))
+            SelectValue(_controlCredential, (Guid?)null);
+        _contentAuthentication.Enabled = true;
+        UpdateContentAuthenticationFields();
+    }
+
+    private void UpdateContentAuthenticationFields()
+    {
+        var type = Selected(_contentAuthentication, CdnAuthenticationType.None);
+        var custom = type == CdnAuthenticationType.CustomHeader;
+        _contentHeader.Enabled = custom;
+        _contentSecret.Enabled = type != CdnAuthenticationType.None;
+        if (type == CdnAuthenticationType.BearerToken)
+            _contentHeader.Text = string.Empty;
+        if (type == CdnAuthenticationType.None)
+        {
+            _contentHeader.Text = string.Empty;
+            _contentSecret.Text = string.Empty;
+        }
     }
 }
 

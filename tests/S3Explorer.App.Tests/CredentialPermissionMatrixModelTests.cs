@@ -13,10 +13,9 @@ public sealed class CredentialPermissionMatrixModelTests
         var later = DateTimeOffset.Parse("2026-08-21T10:00:00Z");
         var entries = new[]
         {
-            Entry(credential, [Passed("ListBucket"), Passed("HeadObject")], earlier, "bucket/a"),
-            Entry(credential, [Passed("PutObject"), Passed("DeleteObject"), Passed("DescribeUserDomains", "cdn")], later, "bucket/b"),
-            Entry(credential, [Passed("PutObjectAcl"), Passed("RefreshObjectCaches/PushObjectCache", "cdn")], earlier, "bucket/c"),
-            Entry(credential, [Passed("Authentication")], later, "cdn")
+            Entry(credential, [Passed("ListBucket"), Passed("HeadObject"), Passed("GetObject")], earlier, "bucket/a"),
+            Entry(credential, [Passed("PutObject"), Passed("DeleteObject"), Passed("DescribeUserDomains", "cdn-control")], later, "bucket/b"),
+            Entry(credential, [Passed("PutObjectAcl"), Passed("RefreshObjectCaches/PushObjectCache", "cdn-control")], earlier, "bucket/c")
         };
 
         var rows = CredentialPermissionMatrixBuilder.Build(
@@ -26,10 +25,11 @@ public sealed class CredentialPermissionMatrixModelTests
         var row = Assert.Single(rows);
         Assert.Equal(PermissionMatrixCellState.Passed, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.Passed, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.Passed, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.Passed, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.Passed, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.Passed, row.PutObjectAcl);
-        Assert.Equal(PermissionMatrixCellState.Passed, row.CdnQueryOrAuthentication);
+        Assert.Equal(PermissionMatrixCellState.Passed, row.CdnControlQuery);
         Assert.Equal(PermissionMatrixCellState.Passed, row.RefreshOrPush);
         Assert.Equal(later, row.LastCheckedAtUtc);
     }
@@ -47,10 +47,11 @@ public sealed class CredentialPermissionMatrixModelTests
 
         Assert.Equal(PermissionMatrixCellState.Passed, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.Denied, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObjectAcl);
-        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnQueryOrAuthentication);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnControlQuery);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.RefreshOrPush);
     }
 
@@ -68,28 +69,30 @@ public sealed class CredentialPermissionMatrixModelTests
 
         Assert.Equal(PermissionMatrixCellState.Indeterminate, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.Indeterminate, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.Indeterminate, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.Passed, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObjectAcl);
     }
 
     [Fact]
-    public void Build_GenericCdnAuthenticationMapsToCdnReadPermission()
+    public void Build_GenericCdnControlEndpointMapsToControlQueryPermission()
     {
         var credential = Credential();
         var entries = new[]
         {
-            Entry(credential, [Passed("Authentication", "cdn"), Passed("DeliveryEndpoint", "cdn")], DateTimeOffset.Parse("2026-08-22T12:00:00Z"), "cdn")
+            Entry(credential, [Indeterminate("ControlEndpoint", "cdn-control")], DateTimeOffset.Parse("2026-08-22T12:00:00Z"), "cdn-control")
         };
 
         var row = Assert.Single(CredentialPermissionMatrixBuilder.Build([credential], entries));
 
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObjectAcl);
-        Assert.Equal(PermissionMatrixCellState.Passed, row.CdnQueryOrAuthentication);
+        Assert.Equal(PermissionMatrixCellState.Indeterminate, row.CdnControlQuery);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.RefreshOrPush);
         Assert.Equal(DateTimeOffset.Parse("2026-08-22T12:00:00Z"), row.LastCheckedAtUtc);
     }
@@ -99,17 +102,18 @@ public sealed class CredentialPermissionMatrixModelTests
     {
         var credential = Credential();
         var scopeA = Entry(credential, [Passed("ListBucket"), Denied("HeadObject")], DateTimeOffset.Parse("2026-08-20T10:00:00Z"), "bucket/scope-a");
-        var scopeB = Entry(credential, [Passed("PutObject"), Indeterminate("RefreshObjectCaches/PushObjectCache", "cdn")], DateTimeOffset.Parse("2026-08-22T10:00:00Z"), "bucket/scope-b");
+        var scopeB = Entry(credential, [Passed("PutObject"), Indeterminate("RefreshObjectCaches/PushObjectCache", "cdn-control")], DateTimeOffset.Parse("2026-08-22T10:00:00Z"), "bucket/scope-b");
         var entries = new[] { scopeA, scopeB };
 
         var row = Assert.Single(CredentialPermissionMatrixBuilder.Build([credential], entries));
 
         Assert.Equal(PermissionMatrixCellState.Passed, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.Denied, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.Passed, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObjectAcl);
-        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnQueryOrAuthentication);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnControlQuery);
         Assert.Equal(PermissionMatrixCellState.Indeterminate, row.RefreshOrPush);
         Assert.Equal(DateTimeOffset.Parse("2026-08-22T10:00:00Z"), row.LastCheckedAtUtc);
     }
@@ -123,10 +127,11 @@ public sealed class CredentialPermissionMatrixModelTests
 
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.ListBucket);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.HeadObject);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.GetObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.DeleteObject);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.PutObjectAcl);
-        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnQueryOrAuthentication);
+        Assert.Equal(PermissionMatrixCellState.NotApplicable, row.CdnControlQuery);
         Assert.Equal(PermissionMatrixCellState.NotApplicable, row.RefreshOrPush);
         Assert.Equal(DateTimeOffset.MinValue, row.LastCheckedAtUtc);
     }

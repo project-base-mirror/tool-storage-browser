@@ -582,9 +582,9 @@ internal static class AutomationCommands
                     {
                         var probe = verb == "cache-test"
                             ? await deliveryService.ProbeHeadAsync(
-                                profile, credential, url, cancellationToken)
+                                profile, url, cancellationToken)
                             : await deliveryService.ProbeAsync(
-                                profile, credential, url, profile.WarmupRangeBytes, cancellationToken);
+                                profile, url, profile.WarmupRangeBytes, cancellationToken);
                         items.Add(new CdnItemResult
                         {
                             Path = path,
@@ -604,7 +604,7 @@ internal static class AutomationCommands
                 else
                 {
                     var warmup = await deliveryService.WarmupAsync(
-                        profile, credential, url, cancellationToken);
+                        profile, url, cancellationToken);
                     items.Add(new CdnItemResult
                     {
                         Path = path,
@@ -655,7 +655,7 @@ internal static class AutomationCommands
                 string.Equals(value.Name, nameOrId, StringComparison.OrdinalIgnoreCase));
         if (profile is null) throw new CliNotFoundException($"找不到 CDN 配置：{nameOrId}");
         if (!profile.Enabled) throw new CliUsageException($"CDN 配置已禁用：{profile.Name}");
-        var credential = profile.CredentialId is Guid credentialId
+        var credential = profile.ControlCredentialId is Guid credentialId
             ? credentials.FirstOrDefault(value => value.Id == credentialId)
               ?? throw new CliNotFoundException($"CDN 配置“{profile.Name}”引用的凭据不存在。")
             : null;

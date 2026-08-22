@@ -95,11 +95,11 @@ public sealed class CdnModelTests
     }
 
     [Fact]
-    public void ValidatorRejectsMissingCredentialReference()
+    public void ValidatorRejectsMissingControlCredentialReference()
     {
         var profile = Profile("cdn", "https://cdn.example") with
         {
-            CredentialId = Guid.NewGuid()
+            ControlCredentialId = Guid.NewGuid()
         };
 
         var errors = CdnConfigurationValidator.Validate(
@@ -108,7 +108,37 @@ public sealed class CdnModelTests
 
         Assert.Contains(
             errors,
-            value => value.Contains("不存在的凭据", StringComparison.Ordinal));
+            value => value.Contains("不存在的控制凭据", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GenericContentAuthenticationIsInlineAndControlCredentialIsIndependent()
+    {
+        var control = new CredentialProfile
+        {
+            Name = "purge-control",
+            Provider = CredentialProviderKind.GenericHttp,
+            Kind = CredentialKind.BearerToken,
+            Secret = "control-token"
+        };
+        var profile = Profile("cdn", "https://cdn.example") with
+        {
+            ContentAuthentication = new CdnHttpAuthentication
+            {
+                AuthenticationType = CdnAuthenticationType.CustomHeader,
+                HeaderName = "X-CDN-Token",
+                Secret = "delivery-token"
+            },
+            ControlCredentialId = control.Id,
+            PurgeEndpointTemplate = "https://api.example/purge?url={url}"
+        };
+
+        var errors = CdnConfigurationValidator.Validate(
+            new CdnConfiguration([profile], []), [control]);
+
+        Assert.Empty(errors);
+        Assert.Equal("delivery-token", profile.ContentAuthentication.Secret);
+        Assert.Equal(control.Id, profile.ControlCredentialId);
     }
 
     [Theory]

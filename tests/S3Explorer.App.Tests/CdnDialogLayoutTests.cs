@@ -101,7 +101,7 @@ public sealed class CdnDialogLayoutTests
             {
                 Name = "site-cdn",
                 BaseUrl = "https://cdn.example.com",
-                CredentialId = credential.Id,
+                ControlCredentialId = credential.Id,
                 PurgeEndpointTemplate = "https://api.example.com/purge?url={url}"
             };
             var binding = new CdnBinding
@@ -409,14 +409,117 @@ public sealed class CdnDialogLayoutTests
             SelectByText(Assert.IsType<ComboBox>(Assert.Single(
                 editor.Controls.Find("CdnProfileProvider", searchAllChildren: true))), "阿里云 CDN");
             SelectByTextContains(Assert.IsType<ComboBox>(Assert.Single(
-                editor.Controls.Find("CdnProfileCredential", searchAllChildren: true))), credential.Name);
+                editor.Controls.Find("CdnProfileControlCredential", searchAllChildren: true))), credential.Name);
             FindButton(editor, "SaveCdnProfileButton").PerformClick();
 
             Assert.Equal(DialogResult.OK, editor.DialogResult);
             Assert.Equal(CdnProfile.AlibabaCloudProviderId, editor.Profile.ProviderId);
-            Assert.Equal(credential.Id, editor.Profile.CredentialId);
+            Assert.Equal(credential.Id, editor.Profile.ControlCredentialId);
             Assert.Empty(editor.Profile.PurgeEndpointTemplate);
             Assert.Empty(editor.Profile.PurgeBodyTemplate);
+        });
+    }
+
+    [Fact]
+    public void GenericProfileStoresContentAuthenticationInlineAndDoesNotUseControlCredential()
+    {
+        RunSta(() =>
+        {
+            var control = new CredentialProfile
+            {
+                Name = "purge-control",
+                Provider = CredentialProviderKind.GenericHttp,
+                Kind = CredentialKind.BearerToken,
+                Secret = "control-secret"
+            };
+            using var editor = new CdnProfileEditorDialog(new CdnProfile
+            {
+                Name = "private-cdn",
+                BaseUrl = "https://cdn.example.com/"
+            }, [control]);
+            editor.Show();
+            SelectByText(Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnContentAuthentication", searchAllChildren: true))), "Bearer Token");
+            var secret = Assert.IsType<TextBox>(Assert.Single(editor.Controls.Find("CdnContentSecret", searchAllChildren: true)));
+            secret.Text = "content-secret";
+            FindButton(editor, "SaveCdnProfileButton").PerformClick();
+
+            Assert.Equal(CdnAuthenticationType.BearerToken, editor.Profile.ContentAuthentication.AuthenticationType);
+            Assert.Empty(editor.Profile.ContentAuthentication.HeaderName);
+            Assert.Equal("content-secret", editor.Profile.ContentAuthentication.Secret);
+            Assert.Null(editor.Profile.ControlCredentialId);
+        });
+    }
+
+    [Fact]
+    public void SelectedCdnCheckIsOnlyEnabledWhenRealCheckerIsConnected()
+    {
+        RunSta(() =>
+        {
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com/"
+            };
+            using (var disconnected = new CdnConfigurationDialog(
+                       [],
+                       new CdnConfiguration([profile], []),
+                       []))
+            {
+                disconnected.Show();
+                Assert.False(FindButton(disconnected, "CheckSelectedCdnButton").Enabled);
+            }
+
+            using var connected = new CdnConfigurationDialog(
+                [],
+                new CdnConfiguration([profile], []),
+                [],
+                profileChecker: static (_, _, _) => Task.FromResult(
+                    new CdnProfileCheckOutcome(true, "内容：HTTP 200")));
+            connected.Show();
+            Assert.True(FindButton(connected, "CheckSelectedCdnButton").Enabled);
+        });
+    }
+
+    [Fact]
+    public void ProfileCheckDisablesSaveAndCloseUntilCancellationUnwinds()
+    {
+        RunSta(() =>
+        {
+            var started = new ManualResetEventSlim();
+            var profile = new CdnProfile
+            {
+                Name = "site-cdn",
+                BaseUrl = "https://cdn.example.com/"
+            };
+            using var dialog = new CdnConfigurationDialog(
+                [],
+                new CdnConfiguration([profile], []),
+                [],
+                profileChecker: async (_, _, cancellationToken) =>
+                {
+                    started.Set();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return new CdnProfileCheckOutcome(true, "不可达");
+                });
+            dialog.Show();
+
+            var check = FindButton(dialog, "CheckSelectedCdnButton");
+            var save = FindButton(dialog, "SaveCdnConfigurationButton");
+            var cancel = FindButton(dialog, "CancelCdnConfigurationButton");
+            typeof(CdnConfigurationDialog)
+                .GetMethod("MarkDirty", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(dialog, null);
+            Assert.True(save.Enabled);
+            check.PerformClick();
+            WaitUntil(() => started.IsSet && check.Text == "取消 CDN 检查");
+            Assert.False(save.Enabled);
+            Assert.False(cancel.Enabled);
+
+            dialog.Close();
+            Assert.False(dialog.IsDisposed);
+            WaitUntil(() => check.Text == "检查选中 CDN");
+            dialog.Dispose();
         });
     }
 
@@ -574,7 +677,6 @@ public sealed class CdnDialogLayoutTests
             using var dialog = new CdnDownloadTestDialog(
                 new StubDeliveryService(),
                 profile,
-                null,
                 new Uri("https://cdn.example.com/assets/app.js"));
             dialog.Font = largerFont;
             dialog.Size = dialog.MinimumSize;
@@ -610,7 +712,6 @@ public sealed class CdnDialogLayoutTests
             using var dialog = new CdnDownloadTestDialog(
                 service,
                 profile,
-                null,
                 new Uri("https://cdn.example.com/assets/app.js"));
             dialog.Show();
 
@@ -640,7 +741,6 @@ public sealed class CdnDialogLayoutTests
             using var dialog = new CdnDownloadTestDialog(
                 service,
                 profile,
-                null,
                 new Uri("https://cdn.example.com/assets/app.js"));
             dialog.Show();
 
@@ -765,7 +865,6 @@ public sealed class CdnDialogLayoutTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) =>
@@ -784,7 +883,6 @@ public sealed class CdnDialogLayoutTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             Task.FromResult(new CdnOperationResult(true, 200, TimeSpan.Zero, 0, "ok"));
@@ -803,7 +901,6 @@ public sealed class CdnDialogLayoutTests
 
         public async Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken)
@@ -815,7 +912,6 @@ public sealed class CdnDialogLayoutTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();

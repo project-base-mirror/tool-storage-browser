@@ -125,12 +125,12 @@ public sealed class PermissionCheckUiTests
 
             var grid = Assert.IsType<DataGridView>(dialog.Controls.Find("CredentialPermissionMatrixGrid", true).Single());
             Assert.Equal(
-                ["Credential", "ListBucket", "HeadObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnQueryOrAuthentication", "RefreshOrPush", "LastChecked"],
+                ["Credential", "ListBucket", "HeadObject", "GetObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnControlQuery", "RefreshOrPush", "LastChecked"],
                 grid.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
             var row = Assert.Single(grid.Rows.Cast<DataGridViewRow>());
             Assert.Equal("release", row.Cells["Credential"].Value);
             Assert.All(
-                new[] { "ListBucket", "HeadObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnQueryOrAuthentication", "RefreshOrPush" },
+                new[] { "ListBucket", "HeadObject", "GetObject", "PutObject", "DeleteObject", "PutObjectAcl", "CdnControlQuery", "RefreshOrPush" },
                 name => Assert.Equal("—", row.Cells[name].Value));
             Assert.Equal("从未检查", row.Cells["LastChecked"].Value);
             Assert.NotNull(dialog.Controls.Find("CheckSelectedCredentialPermissionsButton", true).SingleOrDefault());

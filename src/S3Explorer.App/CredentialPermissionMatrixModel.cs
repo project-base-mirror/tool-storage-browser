@@ -26,10 +26,11 @@ internal sealed record PermissionMatrixRow(
     CredentialProfile Credential,
     PermissionMatrixCellState ListBucket,
     PermissionMatrixCellState HeadObject,
+    PermissionMatrixCellState GetObject,
     PermissionMatrixCellState PutObject,
     PermissionMatrixCellState DeleteObject,
     PermissionMatrixCellState PutObjectAcl,
-    PermissionMatrixCellState CdnQueryOrAuthentication,
+    PermissionMatrixCellState CdnControlQuery,
     PermissionMatrixCellState RefreshOrPush,
     DateTimeOffset LastCheckedAtUtc);
 
@@ -61,14 +62,18 @@ internal static class CredentialPermissionMatrixBuilder
             credential,
             AggregateCell(allChecks, "storage", "ListBucket"),
             AggregateCell(allChecks, "storage", "HeadObject"),
+            AggregateCell(allChecks, "storage", "GetObject"),
             AggregateCell(allChecks, "storage", "PutObject"),
             AggregateCell(allChecks, "storage", "DeleteObject"),
             AggregateCell(allChecks, "storage", "PutObjectAcl"),
             AggregateCell(
                 allChecks,
-                ("cdn", "DescribeUserDomains"),
-                ("cdn", "Authentication")),
-            AggregateCell(allChecks, "cdn", "RefreshObjectCaches/PushObjectCache"),
+                ("cdn-control", "DescribeUserDomains"),
+                ("cdn-control", "ControlEndpoint")),
+            AggregateCell(
+                allChecks,
+                ("cdn-control", "RefreshObjectCaches/PushObjectCache"),
+                ("cdn-control", "Purge")),
             LastChecked(entries));
     }
 

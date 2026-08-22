@@ -285,20 +285,18 @@ public sealed class AutomationCommandsPublishTests
     {
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
+            CredentialProfile? controlCredential,
             Uri url,
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }

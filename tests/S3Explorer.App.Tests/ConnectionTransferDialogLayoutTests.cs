@@ -128,7 +128,7 @@ public sealed class ConnectionTransferDialogLayoutTests
             {
                 Name = "site-cdn",
                 BaseUrl = "https://cdn.example.com",
-                CredentialId = credential.Id
+                ControlCredentialId = credential.Id
             };
             var package = new ConnectionArchivePackage(
                 [storage],

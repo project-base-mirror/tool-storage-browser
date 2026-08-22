@@ -28,7 +28,6 @@ internal sealed partial class MainForm
             _credentials,
             _cdnConfiguration,
             _storage,
-            _cdnDeliveryService,
             PersistNonDestructivePermissionReportAsync,
             _profileGroups);
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -93,7 +92,7 @@ internal sealed partial class MainForm
         try
         {
             UseWaitCursor = true;
-            var report = await new CredentialPermissionCoordinator(_storage, _cdnDeliveryService)
+            var report = await new CredentialPermissionCoordinator(_storage)
                 .CheckAsync(
                     credential,
                     resolvedProfiles,

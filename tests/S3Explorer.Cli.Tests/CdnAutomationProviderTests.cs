@@ -22,7 +22,7 @@ public sealed class CdnAutomationProviderTests
             Name = "release-cdn",
             ProviderId = CdnProfile.AlibabaCloudProviderId,
             BaseUrl = "https://cdn.example.com/",
-            CredentialId = credential.Id
+            ControlCredentialId = credential.Id
         };
         var provider = new RecordingProvider();
         var delivery = new RejectingDeliveryService();
@@ -45,7 +45,7 @@ public sealed class CdnAutomationProviderTests
         Assert.Equal(0, result.ExitCode);
         var request = Assert.IsType<CdnProviderRequest>(provider.Request);
         Assert.Equal(CdnJobAction.Warmup, request.Action);
-        Assert.Equal(credential.Id, request.Credential?.Id);
+        Assert.Equal(credential.Id, request.ControlCredential?.Id);
         Assert.Equal("https://cdn.example.com/assets/a.js", Assert.Single(request.Urls).AbsoluteUri);
         Assert.False(delivery.Called);
         var batch = Assert.IsType<CdnBatchResult>(result.Data);
@@ -102,7 +102,6 @@ public sealed class CdnAutomationProviderTests
 
         public Task<CdnProbeResult> ProbeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             long sampleBytes,
             CancellationToken cancellationToken)
@@ -113,7 +112,6 @@ public sealed class CdnAutomationProviderTests
 
         public Task<CdnOperationResult> WarmupAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
             Uri url,
             CancellationToken cancellationToken)
         {
@@ -123,7 +121,7 @@ public sealed class CdnAutomationProviderTests
 
         public Task<CdnOperationResult> PurgeAsync(
             CdnProfile profile,
-            CredentialProfile? credential,
+            CredentialProfile? controlCredential,
             Uri url,
             CancellationToken cancellationToken)
         {

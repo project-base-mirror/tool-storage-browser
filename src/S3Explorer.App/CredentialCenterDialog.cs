@@ -8,7 +8,6 @@ internal sealed class CredentialCenterDialog : Form
     private readonly CdnConfiguration _cdnConfiguration;
     private readonly IReadOnlyList<ConnectionGroup> _connectionGroups;
     private readonly IS3StorageService? _storage;
-    private readonly ICdnDeliveryService? _deliveryService;
     private readonly Func<CredentialProfile, PermissionCheckReport, CancellationToken, Task>? _persistCheck;
     private readonly List<CredentialProfile> _credentials;
     private readonly DataGridView _grid;
@@ -48,7 +47,6 @@ internal sealed class CredentialCenterDialog : Form
         IReadOnlyList<CredentialProfile> credentials,
         CdnConfiguration cdnConfiguration,
         IS3StorageService? storage = null,
-        ICdnDeliveryService? deliveryService = null,
         Func<CredentialProfile, PermissionCheckReport, CancellationToken, Task>? persistCheck = null,
         IReadOnlyList<ConnectionGroup>? connectionGroups = null)
     {
@@ -56,7 +54,6 @@ internal sealed class CredentialCenterDialog : Form
         _cdnConfiguration = cdnConfiguration;
         _connectionGroups = connectionGroups ?? [];
         _storage = storage;
-        _deliveryService = deliveryService;
         _persistCheck = persistCheck;
         _credentials = [.. credentials];
         Credentials = credentials;
@@ -139,7 +136,7 @@ internal sealed class CredentialCenterDialog : Form
             if (Controls.Find(name, true).FirstOrDefault() is Button button)
                 button.Enabled = !busy && (name == "AddCredentialButton" || SelectedId is not null);
         _check.Text = busy ? "取消权限检查" : "检查关联权限";
-        _check.Enabled = busy || (_storage is not null && _deliveryService is not null && SelectedId is not null);
+        _check.Enabled = busy || (_storage is not null && SelectedId is not null);
         UpdateDirtyState();
     }
 
@@ -167,7 +164,7 @@ internal sealed class CredentialCenterDialog : Form
     {
         var credential = SelectedId is Guid id ? _credentials.FirstOrDefault(x => x.Id == id) : null;
         if (credential is null) return;
-        var usedBy = _cdnConfiguration.Profiles.Where(x => x.CredentialId == credential.Id).Select(x => "CDN：" + x.Name)
+        var usedBy = _cdnConfiguration.Profiles.Where(x => x.ControlCredentialId == credential.Id).Select(x => "CDN 控制面：" + x.Name)
             .Concat(_storageProfiles.Where(x => x.CredentialId == credential.Id || x.AwsExternalIdCredentialId == credential.Id).Select(x => "对象存储：" + x.Name)).ToArray();
         if (usedBy.Length > 0) { MessageBox.Show(this, $"凭据“{credential.Name}”仍被以下配置引用：{string.Join("、", usedBy)}。请先修改这些配置。", "无法删除凭据", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         if (MessageBox.Show(this, $"确定删除凭据“{credential.Name}”吗？", "删除凭据", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
@@ -178,7 +175,7 @@ internal sealed class CredentialCenterDialog : Form
 
     private async Task CheckSelectedPermissionsAsync()
     {
-        if (_storage is null || _deliveryService is null || SelectedId is not Guid id) return;
+        if (_storage is null || SelectedId is not Guid id) return;
         var credential = _credentials.FirstOrDefault(x => x.Id == id); if (credential is null) return;
         using var cancellation = new CancellationTokenSource(); _checkCancellation = cancellation; UpdateButtons();
         try
@@ -189,7 +186,7 @@ internal sealed class CredentialCenterDialog : Form
                     _credentials)
                 .ResolveCredentialReferences()
                 .Storage.Profiles;
-            var report = await new CredentialPermissionCoordinator(_storage, _deliveryService).CheckAsync(
+            var report = await new CredentialPermissionCoordinator(_storage).CheckAsync(
                 credential,
                 resolvedProfiles,
                 _cdnConfiguration,
