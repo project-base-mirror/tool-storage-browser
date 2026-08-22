@@ -11,7 +11,7 @@
 - 使用真实 HTTP GET + Range 请求测试 CDN 下载状态、响应头耗时、吞吐和缓存 Header。
 - 通过 HEAD、Range GET 或完整 GET 执行通用 HTTP 预热。
 - 通过用户配置的 HTTP 端点、方法和 Body 模板手动提交缓存刷新。
-- CDN 与对象存储通过统一 Credential Vault 按 Provider/类型引用凭据；兼容的 Alibaba Cloud AccessKey 可以共享，其他协议保持隔离。
+- CDN 控制面与对象存储通过统一 Credential Vault 按 Provider/类型引用凭据；兼容的 Alibaba Cloud AccessKey 可以共享。CDN 内容 HTTP 认证内联在 CDN Profile 中，与控制面凭据严格隔离。
 - 通过 Provider 扩展点接入原生控制面；当前已实现 Alibaba Cloud CDN，CloudFront、Cloudflare 与腾讯云仍属后续范围。
 - 不改变现有 S3 下载、预签名 URL、上传队列和对象管理语义。
 
@@ -97,7 +97,8 @@ CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途�
 - `Id`、`Name`、`Enabled`
 - `ProviderId`：`generic-http` 或 `aliyun-cdn`
 - `BaseUrl`：对象交付基础地址
-- `CredentialId`：可选统一凭据引用
+- `ContentAuthentication`：内容 URL 使用的无认证、Bearer Token 或自定义 Header
+- `ControlCredentialId`：可选统一控制面凭据引用
 - `WarmupMode`：HEAD、Range GET、完整 GET
 - `WarmupRangeBytes`
 - `TimeoutSeconds`、`FollowRedirects`
@@ -108,14 +109,12 @@ CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途�
 
 ### 5.2 CredentialProfile
 
-认证方式由统一 `CredentialProfile` 的类型决定：
+CDN 认证分为两条独立通道：
 
-- 无认证
-- `Authorization: Bearer <token>`
-- 自定义 Header
-- Alibaba Cloud AccessKeyPair
+- **内容认证**：保存在 CDN Profile 中，可选无认证、`Authorization: Bearer <token>` 或自定义 Header，只发送到映射后的 CDN 内容 URL。
+- **控制面认证**：引用统一 `CredentialProfile`。Alibaba CDN 使用 Alibaba Cloud AccessKeyPair 调用 `cdn.aliyuncs.com`；通用 HTTP 刷新端点使用 Generic HTTP Bearer Token 或自定义 Header。
 
-通用 HTTP 使用 Bearer Token 或自定义 Header；Alibaba CDN 控制面使用 Alibaba Cloud AccessKeyPair，同一个凭据可以被 Alibaba OSS 连接和 Alibaba CDN Profile 共享引用。该 AccessKey 不会发送到 CDN 交付域名；其他 S3 Access Key 也不会自动复用为 CDN Token。
+同一个 Alibaba Cloud AccessKey 可以被 Alibaba OSS 连接和 Alibaba CDN 控制面共享引用。该 AccessKey 不会发送到 CDN 交付域名；其他 S3 Access Key 也不会自动复用为 CDN 内容 Token。
 
 ### 5.3 CdnBinding
 
@@ -173,6 +172,8 @@ ObjectKey:     assets/js/app 1.js
 - 配置与凭据 JSON 只读取当前明确支持的文档版本，未知版本会停止加载而不是静默误读。
 - 超时、Range 大小和 HTTP 方法在本地校验。
 - 删除仍被 CDN Profile 或对象存储连接引用的凭据会被阻止。
+- 内容认证和控制面凭据走不同请求参数；控制面 AccessKey/Token 不会进入内容下载、HEAD 或本地 HTTP 预热请求。
+- 携带任一类 HTTP 认证时只允许同源重定向（scheme、host、port 全部相同）；跨源重定向会在发送下一跳前失败。匿名请求仍遵循 `FollowRedirects` 配置。
 - 同一连接、Bucket、源前缀只能有一个默认 CDN。
 
 ## 8. 桌面工作流
@@ -184,7 +185,9 @@ CDN 配置中心包含以下区域：
 1. **CDN 配置**：域名、预热行为、刷新端点、凭据引用和超时。
 2. **Bucket / 前缀关联**：源连接、Bucket、源前缀、CDN、目标路径前缀和默认项。
 
-凭据通过独立的顶级“凭据”菜单管理。保存 CDN 配置时仍会对凭据引用运行统一模型校验；失败时不覆盖磁盘配置。
+凭据通过独立的顶级“凭据”菜单管理。保存 CDN 配置时仍会对控制面凭据引用运行统一模型校验；失败时不覆盖磁盘配置。
+
+CDN 配置列表分别显示“内容认证”和“控制面凭据”。“检查选中 CDN”优先从当前 Bucket/Prefix 关联中找到一个真实对象并检查映射后的内容 URL，不再用 Base URL 根路径的 401/403 推断认证；阿里云控制面同时执行只读域名查询，通用 HTTP 刷新不会在普通检查中真实提交。
 
 ### 8.2 主菜单
 
@@ -346,13 +349,13 @@ QueryJobStatus
 
 ## 15. 配置版本与迁移
 
-CDN 配置仍有独立的模型版本校验；新增字段必须提供兼容默认值，破坏性变化需要显式迁移。运行时由统一 `configuration.json` 原子保存，迁移连接包时不得把 DPAPI 密文当作跨机器可移植凭据。
+统一配置 Schema 2 正式拆分 `ContentAuthentication` 与 `ControlCredentialId`。Schema 1 只通过一次性迁移读取，迁移成功后原子重写；生产运行不保留旧字段双路径。运行时由统一 `configuration.json` 原子保存，迁移连接包时不得把 DPAPI 密文当作跨机器可移植凭据。
 
-连接包格式 4 使用统一凭据模型，并继续兼容导入 v1-v3：
+连接包格式 5 保存独立的内容认证和控制面凭据引用，并继续兼容导入 v1-v4：
 
 - 单连接导出只携带该连接相关的 Profile/Binding；全部导出还携带未关联 Profile。
-- 默认只导出 Profile/Binding 非敏感字段，并移除凭据引用。
-- 统一凭据必须由用户显式选择，并使用迁移密码重新加密。
+- 默认只导出 Profile/Binding 非敏感字段，并移除控制面引用和内联内容秘密。
+- 统一凭据与内联内容秘密必须由用户显式选择，并使用迁移密码重新加密。
 - 导入时重新生成并映射 S3、CDN Profile、Credential 和 Binding ID；覆盖模式保留本机 ID。
 - 不导出本机 DPAPI 密文，导入后写入目标用户的统一 DPAPI Vault。
 
@@ -389,7 +392,7 @@ Infrastructure：
 
 App：
 
-- 配置中心三页签存在
+- CDN 配置中心的“CDN 配置”和“Bucket / 前缀关联”两页存在，凭据中心保持独立
 - 主要新增/保存按钮在 12pt 字体和最小尺寸下可见、可读
 - 下载测试开始/关闭按钮布局
 - HTTPS 证书检测按钮与结果窗口在大字体和最小尺寸下保持可读

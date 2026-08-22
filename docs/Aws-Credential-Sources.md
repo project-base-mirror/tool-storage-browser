@@ -61,7 +61,7 @@ S3 Explorer 为每个 Amazon S3 连接保存明确的凭据来源。桌面端、
 ## 持久化与连接包
 
 - `configuration.json` 保存连接分组和高级身份配置；Secret Key、Session Token 与 External ID 由统一 Vault 保护。
-- `.s3connections` 格式 4 保留 SSO/AssumeRole/Web Identity 的非敏感引用；账户分组是目标设备的本地组织方式，不随连接包导出。
+- `.s3connections` 格式 5 保留 SSO/AssumeRole/Web Identity 的非敏感引用；账户分组是目标设备的本地组织方式，不随连接包导出。
 - 默认无凭据连接包省略 External ID。明确勾选凭据并设置迁移密码后，External ID 与已保存 S3/CDN 凭据一起进入整体 AES-GCM 加密载荷。
 - SSO token、短期角色会话和 Web Identity token 内容在任何情况下都不会进入连接包。
 - 导入到另一台机器后，目标环境必须自行配置同名 Profile、SSO 登录环境或 token 文件；导入预览可把新增/覆盖连接放入指定本地分组。

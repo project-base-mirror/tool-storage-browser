@@ -1,6 +1,6 @@
 # 连接导入导出
 
-S3 Explorer 0.5.2 起使用 `.s3connections` 连接包在不同 Windows 设备或用户之间迁移连接。格式 4 使用统一 Credential Vault，可携带相关 CDN Profile、Bucket/前缀关联和显式选择的共享凭据。连接包不包含传输队列、同步任务、应用设置、运行状态或对象数据。
+S3 Explorer 0.5.2 起使用 `.s3connections` 连接包在不同 Windows 设备或用户之间迁移连接。当前格式 5 可携带相关 CDN Profile、Bucket/前缀关联、内联内容认证和显式选择的统一控制面凭据。连接包不包含传输队列、同步任务、应用设置、运行状态或对象数据。
 
 ## 导出
 
@@ -12,13 +12,13 @@ S3 Explorer 0.5.2 起使用 `.s3connections` 连接包在不同 Windows 设备�
 - Secret Key
 - Session Token
 - AssumeRole External ID
-- CDN Bearer Token 或自定义 Header Secret
+- CDN 内容 Bearer Token/自定义 Header Secret，以及 CDN 控制面凭据引用
 
-无凭据包仍保留 CDN 基础 URL、预热/刷新参数和 Bucket/前缀关联，但会移除 CDN `CredentialId`，避免在目标设备形成指向不存在凭据的引用。
+无凭据包仍保留 CDN 基础 URL、预热/刷新参数和 Bucket/前缀关联，但会清除 `ControlCredentialId` 以及内联内容认证，避免泄露秘密或在目标设备形成悬空引用。
 
 这种连接包适合提交到内部配置仓库、发给同事作为 Endpoint 模板，或在不可信传输渠道中移动。已保存密钥来源在导入后必须补充凭据；AWS 外部来源会保留来源类型和非敏感 Profile 名称，只要目标环境具备对应 Profile、环境变量或角色即可直接解析。
 
-勾选“包含凭据”时，必须设置至少 8 个字符的迁移密码。S3 已保存密钥、AssumeRole External ID、CDN Token/Header Secret、普通配置和关联会作为一个整体加密，目标设备输入同一密码后才能预览。建议通过与连接包不同的安全渠道传递密码；迁移完成后删除不再需要的含凭据连接包。SSO token、短期角色会话和 Web Identity token 内容始终不导出。
+勾选“包含凭据”时，必须设置至少 8 个字符的迁移密码。S3 已保存密钥、AssumeRole External ID、CDN 内联内容秘密、CDN 控制面凭据、普通配置和关联会作为一个整体加密，目标设备输入同一密码后才能预览。建议通过与连接包不同的安全渠道传递密码；迁移完成后删除不再需要的含凭据连接包。SSO token、短期角色会话和 Web Identity token 内容始终不导出。
 
 ## 导入与预览
 
@@ -57,10 +57,10 @@ S3 Explorer 0.5.2 起使用 `.s3connections` 连接包在不同 Windows 设备�
 
 ## 格式与限制
 
-- 当前格式标识为 `s3explorer-connections`，格式版本为 `4`；导入器仍兼容格式版本 `1`、`2` 和 `3`，并将旧版本凭据迁移到统一 Vault。旧版客户端不能读取格式 4。
+- 当前格式标识为 `s3explorer-connections`，格式版本为 `5`；导入器仍兼容格式版本 `1`–`4`，并把旧 Generic HTTP 内容凭据迁入 CDN Profile、把旧 Aliyun 引用迁为控制面凭据。旧版客户端不能读取格式 5。
 - 单个连接包最多包含 1,000 个连接，文件最大 16 MiB。
 - 导入器严格拒绝未知格式版本和不支持的加密参数，不会猜测或降级解密。
 - 健康状态、最近成功时间等本机运行数据不导出；导入后的连接从“未检查”开始。
 - AWS shared/SSO profile、环境变量、容器角色、实例角色、默认链、AssumeRole 和 Web Identity 已进入连接包格式；External ID 仅在含密码凭据包中迁移，其余只携带非敏感来源引用。
-- CDN 普通配置与统一凭据在载荷中保持逻辑分离；无凭据包不包含任何 Secret，含凭据包则加密整个载荷。
+- CDN 普通配置、内联内容认证与统一控制面凭据在载荷中保持逻辑分离；无凭据包不包含任何 Secret，导入器也会按 v1-v5 的实际载荷拒绝伪装成无凭据包的秘密或凭据引用；含凭据包则加密整个载荷。
 - 账户分组不随连接包导出；目标分组由导入预览选择，删除分组不会删除连接。
