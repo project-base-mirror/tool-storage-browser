@@ -1,16 +1,16 @@
 {
   "schemaVersion": 3,
-  "tagName": "v0.8.1",
-  "version": "0.8.1",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.1",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/S3Explorer-v0.8.1-win-x64.zip",
+  "tagName": "v0.8.2",
+  "version": "0.8.2",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.2",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/S3Explorer-v0.8.1-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/S3Explorer-v0.8.1-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/S3Explorer-v0.8.1-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/S3Explorer-v0.8.1-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-setup.msi"
   },
-  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.1/SHA256SUMS.txt",
-  "notes": "对象存储连接窗口可直接创建兼容凭据并立即选中；Windows 安装包快捷方式改为使用 S3Explorer.exe 内嵌图标，避免升级后任务栏固定项依赖失效的 MSI 图标缓存。",
-  "publishedAt": "2026-08-22T00:26:41+08:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/SHA256SUMS.txt",
+  "notes": "新增独立凭据权限矩阵、统一 Bucket 选择器以及腾讯云 CDN 与 Cloudflare 原生控制面；CDN 内容认证和云厂商控制凭据正式分离。",
+  "publishedAt": "2026-08-24T01:47:06+08:00"
 }
