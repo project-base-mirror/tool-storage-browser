@@ -35,7 +35,7 @@ internal static class AutomationCommands
         IReadOnlyCollection<ICdnProvider>? cdnProviders = null)
     {
         var providers = (cdnProviders ??
-                [new GenericHttpCdnProvider(cdnDeliveryService), new AliyunCdnProvider()])
+                CdnProviderRuntime.CreateProviders(cdnDeliveryService))
             .ToDictionary(provider => provider.ProviderId, StringComparer.OrdinalIgnoreCase);
         return command switch
         {

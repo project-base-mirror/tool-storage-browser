@@ -12,7 +12,7 @@
 - 通过 HEAD、Range GET 或完整 GET 执行通用 HTTP 预热。
 - 通过用户配置的 HTTP 端点、方法和 Body 模板手动提交缓存刷新。
 - CDN 控制面与对象存储通过统一 Credential Vault 按 Provider/类型引用凭据；兼容的 Alibaba Cloud AccessKey 可以共享。CDN 内容 HTTP 认证内联在 CDN Profile 中，与控制面凭据严格隔离。
-- 通过 Provider 扩展点接入原生控制面；当前已实现 Alibaba Cloud CDN，CloudFront、Cloudflare 与腾讯云仍属后续范围。
+- 通过 Provider 扩展点接入原生控制面；当前已实现 Alibaba Cloud CDN、腾讯云 CDN 与 Cloudflare，CloudFront 仍属后续范围。
 - 不改变现有 S3 下载、预签名 URL、上传队列和对象管理语义。
 
 ### 1.2 非目标
@@ -112,9 +112,9 @@ CDN 配置可填写最多 2000 个字符的非敏感备注，用于记录用途�
 CDN 认证分为两条独立通道：
 
 - **内容认证**：保存在 CDN Profile 中，可选无认证、`Authorization: Bearer <token>` 或自定义 Header，只发送到映射后的 CDN 内容 URL。
-- **控制面认证**：引用统一 `CredentialProfile`。Alibaba CDN 使用 Alibaba Cloud AccessKeyPair 调用 `cdn.aliyuncs.com`；通用 HTTP 刷新端点使用 Generic HTTP Bearer Token 或自定义 Header。
+- **控制面认证**：引用统一 `CredentialProfile`。Alibaba CDN 使用 Alibaba Cloud AccessKeyPair，腾讯云 CDN 使用 Tencent Cloud SecretId/SecretKey，Cloudflare 使用 Bearer API Token 并在 CDN Profile 中单独保存非秘密 Zone ID；通用 HTTP 刷新端点使用 Generic HTTP Bearer Token 或自定义 Header。
 
-同一个 Alibaba Cloud AccessKey 可以被 Alibaba OSS 连接和 Alibaba CDN 控制面共享引用。该 AccessKey 不会发送到 CDN 交付域名；其他 S3 Access Key 也不会自动复用为 CDN 内容 Token。
+同一个 Alibaba Cloud AccessKey 可以被 Alibaba OSS 连接和 Alibaba CDN 控制面共享引用，腾讯云 SecretId/SecretKey 也可由 COS 与腾讯云 CDN 共享。Cloudflare CDN API Token 不等同于 R2 的 S3 AccessKeyPair。所有控制面凭据都不会发送到 CDN 交付域名，也不会自动复用为 CDN 内容 Token。
 
 ### 5.3 CdnBinding
 
@@ -187,7 +187,7 @@ CDN 配置中心包含以下区域：
 
 凭据通过独立的顶级“凭据”菜单管理。保存 CDN 配置时仍会对控制面凭据引用运行统一模型校验；失败时不覆盖磁盘配置。
 
-CDN 配置列表分别显示“内容认证”和“控制面凭据”。“检查选中 CDN”优先从当前 Bucket/Prefix 关联中找到一个真实对象并检查映射后的内容 URL，不再用 Base URL 根路径的 401/403 推断认证；阿里云控制面同时执行只读域名查询，通用 HTTP 刷新不会在普通检查中真实提交。
+CDN 配置列表分别显示“内容认证”和“控制面凭据”。“检查选中 CDN”优先从当前 Bucket/Prefix 关联中找到一个真实对象并检查映射后的内容 URL，不再用 Base URL 根路径的 401/403 推断认证；阿里云、腾讯云和 Cloudflare 控制面同时执行各自的只读域名/Zone 查询，通用 HTTP 刷新不会在普通检查中真实提交。
 
 ### 8.2 主菜单
 
@@ -249,7 +249,7 @@ CDN 配置列表对 HTTPS 基础 URL 提供“检测 HTTPS 证书”。检测直
 - **Range GET**：默认模式，读取有限字节，适合作为通用第一阶段能力。
 - **完整 GET**：确保拉取完整对象，但可能产生较高源站和 CDN 流量。
 
-通用 HTTP 预热成功只表示请求完成且状态码为 2xx/3xx，不保证所有边缘节点已经缓存。Alibaba CDN 使用 `PushObjectCache` 提交原生预热，按最多 100 个 URL 分批并返回任务 ID；持久队列会通过 `DescribeRefreshTaskById` 查询状态。
+通用 HTTP 预热成功只表示请求完成且状态码为 2xx/3xx，不保证所有边缘节点已经缓存。Alibaba CDN 使用 `PushObjectCache` 提交原生预热，腾讯云使用 `PushUrlsCache`；两者返回的任务 ID 由持久队列继续查询。Cloudflare 没有原生预热接口，因此明确复用内容 URL GET，不伪造控制面预热任务。
 
 ## 11. 通用 HTTP 刷新
 
@@ -322,9 +322,9 @@ Bucket/前缀关联默认不启用自动操作。用户可分别配置：新对�
 ### 第二阶段优先级
 
 1. AWS CloudFront：Invalidation；预热仍可复用 HTTP GET。
-2. Cloudflare：Zone/R2 自定义域名、按 URL Purge；预热复用 GET。
+2. Cloudflare：Zone 查询、按 URL Purge；预热复用 GET（已实现）。
 3. Alibaba Cloud CDN：URL 刷新和原生预热（已实现）。
-4. 腾讯云 CDN：URL/目录刷新和原生预热。
+4. 腾讯云 CDN：URL 刷新和原生预热（已实现）。
 
 ### 后续
 
@@ -351,7 +351,7 @@ QueryJobStatus
 
 统一配置 Schema 2 正式拆分 `ContentAuthentication` 与 `ControlCredentialId`。Schema 1 只通过一次性迁移读取，迁移成功后原子重写；生产运行不保留旧字段双路径。运行时由统一 `configuration.json` 原子保存，迁移连接包时不得把 DPAPI 密文当作跨机器可移植凭据。
 
-连接包格式 5 保存独立的内容认证和控制面凭据引用，并继续兼容导入 v1-v4：
+连接包格式 6 保存独立的内容认证、控制面凭据引用和非秘密控制资源 ID，并继续兼容导入 v1-v5：
 
 - 单连接导出只携带该连接相关的 Profile/Binding；全部导出还携带未关联 Profile。
 - 默认只导出 Profile/Binding 非敏感字段，并移除控制面引用和内联内容秘密。
@@ -407,7 +407,7 @@ App：
 
 ## 18. 已知限制
 
-- Alibaba CDN 权限检查只验证 `DescribeUserDomains` 的精确域名查询，不能无副作用证明刷新/预热写权限。
+- 原生控制面普通权限检查只执行只读操作：Alibaba `DescribeUserDomains`、腾讯云 `DescribeDomains`、Cloudflare Zone Read。刷新、预热或 Purge 写权限不会用真实副作用操作自动探测。
 - 下载测试的响应头耗时是 `SendAsync(ResponseHeadersRead)` 的客户端观测值，不是浏览器 Navigation Timing。
 - 单次本地预热无法证明全球边缘节点已缓存。
 - CLI 已支持 `cdn test`、`cdn cache-test`、`cdn warmup` 与 `permission check --cdn-profile`；尚未暴露独立 purge 命令。

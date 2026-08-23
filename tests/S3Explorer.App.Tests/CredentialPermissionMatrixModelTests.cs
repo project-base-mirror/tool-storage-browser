@@ -98,6 +98,29 @@ public sealed class CredentialPermissionMatrixModelTests
     }
 
     [Fact]
+    public void Build_TencentAndCloudflareChecksMapToSharedCdnColumns()
+    {
+        var credential = Credential();
+        var entries = new[]
+        {
+            Entry(credential,
+                [Passed("DescribeDomains", "cdn-control"), Indeterminate("PurgeUrlsCache", "cdn-control")],
+                DateTimeOffset.Parse("2026-08-22T12:00:00Z"),
+                "tencent-cdn"),
+            Entry(credential,
+                [Passed("ZoneRead", "cdn-control"), Indeterminate("CachePurge", "cdn-control")],
+                DateTimeOffset.Parse("2026-08-22T13:00:00Z"),
+                "cloudflare-cdn")
+        };
+
+        var row = Assert.Single(CredentialPermissionMatrixBuilder.Build([credential], entries));
+
+        Assert.Equal(PermissionMatrixCellState.Passed, row.CdnControlQuery);
+        Assert.Equal(PermissionMatrixCellState.Indeterminate, row.RefreshOrPush);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-22T13:00:00Z"), row.LastCheckedAtUtc);
+    }
+
+    [Fact]
     public void Build_MultipleProfilesPerCredentialKeepLatestCheckTimeAndMergePermissionStates()
     {
         var credential = Credential();

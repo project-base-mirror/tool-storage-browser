@@ -38,6 +38,8 @@ public sealed record CdnProfile
 {
     public const string GenericHttpProviderId = "generic-http";
     public const string AlibabaCloudProviderId = "aliyun-cdn";
+    public const string TencentCloudProviderId = "tencent-cdn";
+    public const string CloudflareProviderId = "cloudflare-cdn";
     public const int MaximumNotesLength = 2000;
 
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -49,6 +51,8 @@ public sealed record CdnProfile
     public CdnHttpAuthentication ContentAuthentication { get; init; } = CdnHttpAuthentication.Anonymous;
     /// <summary>用于 CDN 控制面查询、刷新或预热的统一凭据引用。</summary>
     public Guid? ControlCredentialId { get; init; }
+    /// <summary>控制面资源标识，例如 Cloudflare Zone ID；不是秘密。</summary>
+    public string ControlResourceId { get; init; } = string.Empty;
     public CdnWarmupMode WarmupMode { get; init; } = CdnWarmupMode.RangeGet;
     public long WarmupRangeBytes { get; init; } = 1024 * 1024;
     public string PurgeEndpointTemplate { get; init; } = string.Empty;
@@ -64,10 +68,10 @@ public sealed record CdnProfile
         CdnCapabilities.BuildUrl |
         CdnCapabilities.DownloadProbe |
         CdnCapabilities.Warmup |
-        (string.Equals(ProviderId, AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) ||
-         !string.IsNullOrWhiteSpace(PurgeEndpointTemplate)
-            ? CdnCapabilities.Purge
-            : CdnCapabilities.None);
+        (CdnProviderCatalog.TryGet(ProviderId, out var descriptor)
+            ? descriptor.NativeCapabilities
+            : CdnCapabilities.None) |
+        (!string.IsNullOrWhiteSpace(PurgeEndpointTemplate) ? CdnCapabilities.Purge : CdnCapabilities.None);
 }
 
 public sealed record CdnCredential
@@ -263,13 +267,8 @@ public static class CdnConfigurationValidator
             var credential = credentials.FirstOrDefault(value => value.Id == credentialId);
             if (!ids.Contains(credentialId) || credential is null)
                 errors.Add($"CDN 配置“{profile.Name}”引用了不存在的控制凭据。");
-            else if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
-                     (credential.Provider != CredentialProviderKind.AlibabaCloud || credential.Kind != CredentialKind.AccessKeyPair))
-                errors.Add($"凭据“{credential.Name}”不是可用于阿里云 CDN 控制面的 Alibaba Cloud AccessKey。");
-            else if (string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase) &&
-                     (credential.Provider != CredentialProviderKind.GenericHttp ||
-                      credential.Kind is not (CredentialKind.BearerToken or CredentialKind.CustomHeader)))
-                errors.Add($"凭据“{credential.Name}”不是可用于通用 HTTP CDN 控制面的 HTTP 凭据。");
+            else if (!CdnProviderCatalog.IsCredentialCompatible(profile.ProviderId, credential))
+                errors.Add($"凭据“{credential.Name}”与 CDN Provider“{profile.ProviderId}”的控制面凭据类型不兼容。");
         }
         return errors;
     }
@@ -298,9 +297,18 @@ public static class CdnConfigurationValidator
             if (string.IsNullOrWhiteSpace(profile.Name)) errors.Add("CDN 配置名称不能为空。");
             if (profile.Notes.Length > CdnProfile.MaximumNotesLength)
                 errors.Add($"CDN 配置“{profile.Name}”的备注不能超过 {CdnProfile.MaximumNotesLength} 个字符。");
-            if (!string.Equals(profile.ProviderId, CdnProfile.GenericHttpProviderId, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+            if (!CdnProviderCatalog.TryGet(profile.ProviderId, out var provider))
                 errors.Add($"CDN 配置“{profile.Name}”使用了当前版本不支持的 Provider：{profile.ProviderId}");
+            else
+            {
+                if (!CdnProviderCatalog.IsControlResourceIdValid(provider, profile.ControlResourceId))
+                {
+                    var label = string.IsNullOrWhiteSpace(provider.ControlResourceLabel)
+                        ? "控制面资源 ID"
+                        : provider.ControlResourceLabel;
+                    errors.Add($"CDN 配置“{profile.Name}”的 {label} 无效。");
+                }
+            }
             if (!TryHttpUri(profile.BaseUrl, out var baseUri) || baseUri is null ||
                 !string.IsNullOrEmpty(baseUri.UserInfo) ||
                 !string.IsNullOrEmpty(baseUri.Query) ||

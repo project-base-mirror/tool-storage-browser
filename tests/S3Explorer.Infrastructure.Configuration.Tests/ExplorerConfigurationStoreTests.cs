@@ -244,7 +244,8 @@ public sealed class ExplorerConfigurationStoreTests
         {
             Name = "aliyun-cdn",
             ProviderId = CdnProfile.AlibabaCloudProviderId,
-            BaseUrl = "https://cdn.example/"
+            BaseUrl = "https://cdn.example/",
+            ControlCredentialId = credential.Id
         };
         var store = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), cancellationToken);
         await store.SaveAsync(new ExplorerConfiguration(

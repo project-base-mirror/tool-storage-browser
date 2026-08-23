@@ -76,7 +76,7 @@ public sealed class ConnectionArchiveService
     public const int PasswordMinimumLength = 8;
 
     private const string FormatName = "s3explorer-connections";
-    private const int FormatVersion = 5;
+    private const int FormatVersion = 6;
     private const int MinimumSupportedFormatVersion = 1;
     private const int SaltSize = 16;
     private const int NonceSize = 12;
@@ -302,7 +302,7 @@ public sealed class ConnectionArchiveService
                     !string.IsNullOrEmpty(profile.SecretKey) ||
                     !string.IsNullOrEmpty(profile.SessionToken) ||
                     !string.IsNullOrEmpty(profile.AwsExternalId)))
-                throw new InvalidDataException("v5 连接包不能在对象存储配置中内嵌秘密值。");
+                throw new InvalidDataException("v5+ 连接包不能在对象存储配置中内嵌秘密值。");
             cdnConfiguration = new CdnConfiguration(
                 payload.CdnProfiles.Select(profile => profile.ToRuntime()).ToArray(),
                 payload.CdnBindings);
@@ -1227,6 +1227,7 @@ public sealed class ConnectionArchiveService
         bool compareCredential) =>
         string.Equals(NormalizeCdnUrl(left.BaseUrl), NormalizeCdnUrl(right.BaseUrl), StringComparison.Ordinal) &&
         string.Equals(left.ProviderId?.Trim(), right.ProviderId?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.ControlResourceId?.Trim(), right.ControlResourceId?.Trim(), StringComparison.OrdinalIgnoreCase) &&
         (!compareCredential ||
          (left.ControlCredentialId == right.ControlCredentialId &&
           left.ContentAuthentication.AuthenticationType == right.ContentAuthentication.AuthenticationType &&
@@ -1376,7 +1377,8 @@ public sealed class ConnectionArchiveService
 
     /// <summary>
     /// Stable archive boundary for CDN profiles. CredentialId exists only to decode v3/v4
-    /// packages; v5 writes ContentAuthentication and ControlCredentialId instead.
+    /// packages; v5 writes ContentAuthentication and ControlCredentialId, while v6
+    /// also preserves the non-secret provider control resource identifier.
     /// </summary>
     private sealed class PortableCdnProfile
     {
@@ -1388,6 +1390,7 @@ public sealed class ConnectionArchiveService
         public Guid? CredentialId { get; set; }
         public CdnHttpAuthentication ContentAuthentication { get; set; } = CdnHttpAuthentication.Anonymous;
         public Guid? ControlCredentialId { get; set; }
+        public string ControlResourceId { get; set; } = string.Empty;
         public CdnWarmupMode WarmupMode { get; set; } = CdnWarmupMode.RangeGet;
         public long WarmupRangeBytes { get; set; } = 1024 * 1024;
         public string PurgeEndpointTemplate { get; set; } = string.Empty;
@@ -1410,6 +1413,7 @@ public sealed class ConnectionArchiveService
                 ? profile.ContentAuthentication
                 : CdnHttpAuthentication.Anonymous,
             ControlCredentialId = includeCredentials ? profile.ControlCredentialId : null,
+            ControlResourceId = profile.ControlResourceId,
             WarmupMode = profile.WarmupMode,
             WarmupRangeBytes = profile.WarmupRangeBytes,
             PurgeEndpointTemplate = profile.PurgeEndpointTemplate,
@@ -1431,6 +1435,7 @@ public sealed class ConnectionArchiveService
             BaseUrl = BaseUrl,
             ContentAuthentication = ContentAuthentication ?? CdnHttpAuthentication.Anonymous,
             ControlCredentialId = ControlCredentialId,
+            ControlResourceId = ControlResourceId ?? string.Empty,
             WarmupMode = WarmupMode,
             WarmupRangeBytes = WarmupRangeBytes,
             PurgeEndpointTemplate = PurgeEndpointTemplate,

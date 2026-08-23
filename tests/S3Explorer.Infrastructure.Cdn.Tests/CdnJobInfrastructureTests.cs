@@ -8,6 +8,24 @@ namespace S3Explorer.Infrastructure.Cdn.Tests;
 public sealed class CdnJobInfrastructureTests
 {
     [Fact]
+    public void RuntimeRegistersEveryCatalogControlProvider()
+    {
+        var providers = CdnProviderRuntime.CreateProviders(new RecordingDelivery([]));
+        var providerIds = providers.Select(value => value.ProviderId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var checkerIds = CdnProviderRuntime.CreateControlPermissionCheckers().Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Contains(CdnProfile.GenericHttpProviderId, providerIds);
+        Assert.Contains(CdnProfile.AlibabaCloudProviderId, providerIds);
+        Assert.Contains(CdnProfile.TencentCloudProviderId, providerIds);
+        Assert.Contains(CdnProfile.CloudflareProviderId, providerIds);
+        var expectedCheckerIds = CdnProviderCatalog.All
+            .Where(value => value.SupportsControlPlane)
+            .Select(value => value.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Assert.True(expectedCheckerIds.SetEquals(checkerIds));
+    }
+
+    [Fact]
     public async Task JobStoreRoundTripsAndUsesStringEnums()
     {
         var path = TemporaryFile();

@@ -57,6 +57,9 @@ public sealed class AliyunCdnProviderTests
         fake.Tasks["b"] = new("Failed");
         result = await provider.QueryAsync(request, TestContext.Current.CancellationToken);
         Assert.Equal(CdnProviderOperationState.Failed, result.State);
+        fake.Tasks["b"] = new("Unexpected");
+        result = await provider.QueryAsync(request, TestContext.Current.CancellationToken);
+        Assert.Equal(CdnProviderOperationState.Failed, result.State);
     }
 
     [Fact]

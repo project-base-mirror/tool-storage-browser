@@ -559,33 +559,21 @@ internal static class Program
         CredentialProfile? credential,
         CancellationToken cancellationToken)
     {
-        var checks = new List<PermissionCheck>();
-        if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+        var checkers = CdnProviderRuntime.CreateControlPermissionCheckers();
+        if (checkers.TryGetValue(profile.ProviderId, out var checker))
         {
-            var check = await new AliyunCdnProvider().CheckDomainPermissionAsync(
-                profile,
-                credential,
-                cancellationToken);
-            checks.Add(new PermissionCheck("cdn-control", "DescribeUserDomains", check.State, check.Message)
+            var nativeChecks = await checker.CheckControlPermissionsAsync(profile, credential, cancellationToken);
+            return new PermissionCheckResult(profile.ControlCredentialId ?? Guid.Empty, nativeChecks)
             {
-                StatusCode = check.StatusCode,
-                ProviderCode = check.Code,
-                RequestId = check.RequestId
-            });
-            checks.Add(new PermissionCheck(
-                "cdn-control",
-                "RefreshObjectCaches/PushObjectCache",
-                PermissionCheckState.Indeterminate,
-                "只读域名检测不会提交刷新或预热任务，因此不能证明控制面写权限。")
-            {
-                Required = false
-            });
+                TargetScope = profile.BaseUrl,
+                CheckedAtUtc = DateTimeOffset.UtcNow
+            };
         }
-        else
+        cancellationToken.ThrowIfCancellationRequested();
+        var endpointConfigured = !string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate);
+        var checks = new List<PermissionCheck>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var endpointConfigured = !string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate);
-            checks.Add(new PermissionCheck(
+            new(
                 "cdn-control",
                 "ControlEndpoint",
                 PermissionCheckState.Indeterminate,
@@ -597,16 +585,16 @@ internal static class Program
                 // permission command report success. A real purge request is
                 // intentionally a separate, explicit operation.
                 Required = true
-            });
-            checks.Add(new PermissionCheck(
+            },
+            new(
                 "cdn-control",
                 "Purge",
                 PermissionCheckState.Indeterminate,
                 "刷新会产生真实控制面操作，普通权限检查不会自动提交。")
             {
                 Required = false
-            });
-        }
+            }
+        };
 
         return new PermissionCheckResult(profile.ControlCredentialId ?? Guid.Empty, checks)
         {

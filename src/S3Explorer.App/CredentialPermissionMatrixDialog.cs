@@ -208,7 +208,7 @@ internal sealed class CredentialPermissionMatrixDialog : Form
         _grid.Columns.Add(StateColumn("RefreshOrPush", "CDN 刷新/预热*", 118));
         if (_grid.Columns["CdnControlQuery"] is { } cdnQueryColumn)
             cdnQueryColumn.HeaderCell.ToolTipText =
-                "阿里云执行 DescribeUserDomains；通用 HTTP 仅确认控制端点配置，不提交真实刷新请求。";
+                "阿里云、腾讯云和 Cloudflare 分别执行只读域名或 Zone 查询；通用 HTTP 仅确认控制端点配置。";
         if (_grid.Columns["RefreshOrPush"] is { } refreshColumn)
             refreshColumn.HeaderCell.ToolTipText =
                 "刷新/预热会产生真实控制面任务，当前无副作用检查不会自动提交，因此通常显示 ?。";

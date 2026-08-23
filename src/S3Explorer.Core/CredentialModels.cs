@@ -75,9 +75,11 @@ public sealed record CredentialProfile
         CredentialProviderKind.AmazonWebServices => Kind == CredentialKind.SecretValue
             ? "AWS secret:configured"
             : BuildAccessKeyFingerprint("AmazonS3"),
-        CredentialProviderKind.AlibabaCloud => BuildAccessKeyFingerprint("Aliyun OSS"),
-        CredentialProviderKind.TencentCloud => BuildAccessKeyFingerprint("Tencent COS"),
-        CredentialProviderKind.Cloudflare => BuildAccessKeyFingerprint("Cloudflare R2"),
+        CredentialProviderKind.AlibabaCloud => BuildAccessKeyFingerprint("Alibaba Cloud"),
+        CredentialProviderKind.TencentCloud => BuildAccessKeyFingerprint("Tencent Cloud"),
+        CredentialProviderKind.Cloudflare => Kind == CredentialKind.AccessKeyPair
+            ? BuildAccessKeyFingerprint("Cloudflare R2")
+            : "Cloudflare API token:configured",
         CredentialProviderKind.Backblaze => BuildAccessKeyFingerprint("Backblaze B2"),
         CredentialProviderKind.GoogleCloud => BuildAccessKeyFingerprint("Google Cloud Storage"),
         CredentialProviderKind.Supabase => BuildAccessKeyFingerprint("Supabase Storage"),
@@ -189,12 +191,7 @@ public sealed record CredentialProfile
         if (string.IsNullOrWhiteSpace(cdnProviderId))
             return false;
 
-        var providerId = cdnProviderId.Trim();
-        return providerId.Equals(GenericHttpCdnProviderId, StringComparison.OrdinalIgnoreCase)
-            ? Provider == CredentialProviderKind.GenericHttp
-            : providerId.Equals(CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
-              Provider == CredentialProviderKind.AlibabaCloud &&
-              Kind == CredentialKind.AccessKeyPair;
+        return CdnProviderCatalog.IsCredentialCompatible(cdnProviderId, this);
     }
 
     private static bool IsKindCompatibleWithProvider(
@@ -204,10 +201,12 @@ public sealed record CredentialProfile
         CredentialProviderKind.S3Compatible or
             CredentialProviderKind.AlibabaCloud or
             CredentialProviderKind.TencentCloud or
-            CredentialProviderKind.Cloudflare or
             CredentialProviderKind.Backblaze or
             CredentialProviderKind.GoogleCloud or
             CredentialProviderKind.Supabase => kind == CredentialKind.AccessKeyPair,
+
+        CredentialProviderKind.Cloudflare =>
+            kind is CredentialKind.AccessKeyPair or CredentialKind.BearerToken,
 
         CredentialProviderKind.AmazonWebServices =>
             kind is CredentialKind.AccessKeyPair or CredentialKind.SecretValue,

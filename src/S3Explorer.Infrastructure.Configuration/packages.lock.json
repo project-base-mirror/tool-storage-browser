@@ -133,6 +133,23 @@
           "Newtonsoft.Json": "13.0.3"
         }
       },
+      "TencentCloudSDK.Cdn": {
+        "type": "Transitive",
+        "resolved": "3.0.1481",
+        "contentHash": "xWaDEHq/+dX68N5e4gDalrNyrcHZIUcBiD1V9+y6+cjKW6JuL50DgS+QL/oyc3tZTwy/gMHWSBeDYfz5hS3BQQ==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.2",
+          "TencentCloudSDK.Common": "3.0.1481"
+        }
+      },
+      "TencentCloudSDK.Common": {
+        "type": "Transitive",
+        "resolved": "3.0.1481",
+        "contentHash": "onxy6pV4c4m5G9XZf/CinY4ePixjz04yHaThLnOl0YkwCaPU4QUPt43LuQr/h6kAAN8+/Ah+icmBIqkNybCdcg==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.1"
+        }
+      },
       "s3explorer.core": {
         "type": "Project"
       },
@@ -140,8 +157,9 @@
         "type": "Project",
         "dependencies": {
           "AlibabaCloud.SDK.Cdn20180510": "[8.2.0, )",
-          "S3Explorer.Core": "[0.7.6, )",
-          "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
+          "S3Explorer.Core": "[0.8.1, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )",
+          "TencentCloudSDK.Cdn": "[3.0.1481, )"
         }
       },
       "s3explorer.infrastructure.s3": {
@@ -151,7 +169,7 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.7.6, )",
+          "S3Explorer.Core": "[0.8.1, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       }

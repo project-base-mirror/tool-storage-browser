@@ -69,10 +69,17 @@ internal static class CredentialPermissionMatrixBuilder
             AggregateCell(
                 allChecks,
                 ("cdn-control", "DescribeUserDomains"),
+                ("cdn-control", "DescribeDomains"),
+                ("cdn-control", "ZoneRead"),
                 ("cdn-control", "ControlEndpoint")),
             AggregateCell(
                 allChecks,
                 ("cdn-control", "RefreshObjectCaches/PushObjectCache"),
+                ("cdn-control", "RefreshObjectCaches"),
+                ("cdn-control", "PushObjectCache"),
+                ("cdn-control", "PurgeUrlsCache"),
+                ("cdn-control", "PushUrlsCache"),
+                ("cdn-control", "CachePurge"),
                 ("cdn-control", "Purge")),
             LastChecked(entries));
     }

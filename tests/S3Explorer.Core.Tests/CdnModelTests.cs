@@ -112,6 +112,53 @@ public sealed class CdnModelTests
     }
 
     [Fact]
+    public void CatalogDescribesCommonProvidersAndCloudflareRequiresZone()
+    {
+        Assert.Equal("腾讯云 CDN", CdnProviderCatalog.Get(CdnProfile.TencentCloudProviderId).DisplayName);
+        Assert.True(CdnProviderCatalog.Get(CdnProfile.TencentCloudProviderId).SupportsControlPlane);
+        var cloudflare = Profile("cloudflare", "https://cdn.example") with
+        {
+            ProviderId = CdnProfile.CloudflareProviderId
+        };
+
+        var errors = CdnConfigurationValidator.Validate(new CdnConfiguration([cloudflare], []));
+
+        Assert.Contains(errors, value => value.Contains("Zone ID", StringComparison.Ordinal));
+        var invalidZone = cloudflare with
+        {
+            ControlCredentialId = Guid.NewGuid(),
+            ControlResourceId = "not-a-cloudflare-zone"
+        };
+        Assert.Contains(
+            CdnConfigurationValidator.Validate(new CdnConfiguration([invalidZone], [])),
+            value => value.Contains("Zone ID", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProviderCredentialsUseCatalogRules()
+    {
+        var token = new CredentialProfile
+        {
+            Name = "cf",
+            Provider = CredentialProviderKind.Cloudflare,
+            Kind = CredentialKind.BearerToken,
+            Secret = "token"
+        };
+        var accessKey = token with
+        {
+            Kind = CredentialKind.AccessKeyPair,
+            AccessKeyId = "key"
+        };
+
+        Assert.True(token.IsCompatibleWith(CdnProfile.CloudflareProviderId));
+        Assert.False(accessKey.IsCompatibleWith(CdnProfile.CloudflareProviderId));
+        token.Validate();
+        Assert.Equal("Cloudflare API token:configured", token.Fingerprint);
+        Assert.False(token.IsCompatibleWith(S3ServiceType.CloudflareR2));
+        Assert.True(accessKey.IsCompatibleWith(S3ServiceType.CloudflareR2));
+    }
+
+    [Fact]
     public void GenericContentAuthenticationIsInlineAndControlCredentialIsIndependent()
     {
         var control = new CredentialProfile

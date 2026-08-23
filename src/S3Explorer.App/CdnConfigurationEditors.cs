@@ -206,6 +206,18 @@ internal sealed class CdnProfileEditorDialog : Form
         Name = "CdnProfileControlCredential",
         DropDownStyle = ComboBoxStyle.DropDownList
     };
+    private readonly TextBox _controlResourceId = new()
+    {
+        Name = "CdnProfileControlResourceId",
+        PlaceholderText = "仅部分 Provider 需要，例如 Cloudflare Zone ID"
+    };
+    private readonly Label _controlResourceHint = new()
+    {
+        Name = "CdnProfileControlResourceHint",
+        AutoSize = true,
+        ForeColor = SystemColors.GrayText,
+        MaximumSize = new Size(600, 0)
+    };
     private readonly ComboBox _contentAuthentication = new()
     {
         Name = "CdnContentAuthentication",
@@ -286,10 +298,10 @@ internal sealed class CdnProfileEditorDialog : Form
         AutoScaleMode = AutoScaleMode.Font;
         Icon = UiIcons.CreateApplicationIcon();
 
-        _provider.Items.AddRange([
-            new Choice<string>(CdnProfile.GenericHttpProviderId, "通用 HTTP"),
-            new Choice<string>(CdnProfile.AlibabaCloudProviderId, "阿里云 CDN")
-        ]);
+        _provider.Items.AddRange(CdnProviderCatalog.All
+            .Select(value => new Choice<string>(value.Id, value.DisplayName))
+            .Cast<object>()
+            .ToArray());
         _warmupMode.Items.AddRange([
             new Choice<CdnWarmupMode>(CdnWarmupMode.Head, "HEAD（轻量，但部分 CDN 与 GET 行为不同）"),
             new Choice<CdnWarmupMode>(CdnWarmupMode.RangeGet, "Range GET（推荐）"),
@@ -313,6 +325,8 @@ internal sealed class CdnProfileEditorDialog : Form
         EditorLayout.AddField(fields, "秘密值：", _contentSecret);
         EditorLayout.AddSection(fields, "CDN 控制面凭据（查询、刷新、原生预热）");
         EditorLayout.AddField(fields, "控制面凭据：", _controlCredential);
+        EditorLayout.AddField(fields, "控制资源 ID：", _controlResourceId);
+        EditorLayout.AddWide(fields, _controlResourceHint);
         EditorLayout.AddWide(fields, new Label
         {
             Text = "控制面凭据只发送到 Provider 的管理 API；不会发送到 CDN 内容域名。通用 HTTP 只有配置刷新端点时才需要控制面凭据。",
@@ -370,6 +384,7 @@ internal sealed class CdnProfileEditorDialog : Form
         _contentHeader.Text = contentAuthentication.HeaderName;
         _contentSecret.Text = contentAuthentication.Secret;
         PopulateControlCredentials(profile.ProviderId, profile.ControlCredentialId);
+        _controlResourceId.Text = profile.ControlResourceId;
         _baseUrl.Text = profile.BaseUrl;
         _notes.Text = profile.Notes;
         SelectValue(_warmupMode, profile.WarmupMode);
@@ -404,6 +419,9 @@ internal sealed class CdnProfileEditorDialog : Form
             BaseUrl = _baseUrl.Text.Trim(),
             ContentAuthentication = BuildContentAuthentication(),
             ControlCredentialId = Selected(_controlCredential, (Guid?)null),
+            ControlResourceId = CdnProviderCatalog.Get(providerId).RequiresControlResourceId
+                ? _controlResourceId.Text.Trim()
+                : string.Empty,
             WarmupMode = Selected(_warmupMode, CdnWarmupMode.RangeGet),
             WarmupRangeBytes = decimal.ToInt64(_rangeMiB.Value) * 1024L * 1024L,
             PurgeEndpointTemplate = genericHttpProvider ? _purgeEndpoint.Text.Trim() : string.Empty,
@@ -426,9 +444,9 @@ internal sealed class CdnProfileEditorDialog : Form
         var selectedCredential = candidate.ControlCredentialId is Guid credentialId
             ? _credentials.FirstOrDefault(value => value.Id == credentialId)
             : null;
-        if (string.Equals(candidate.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase) &&
-            selectedCredential is null)
-            errors = errors.Append("阿里云 CDN 必须选择 Alibaba Cloud AccessKey 控制面凭据。").ToArray();
+        var provider = CdnProviderCatalog.Get(candidate.ProviderId);
+        if (provider.SupportsControlPlane && selectedCredential is null)
+            errors = errors.Append($"{provider.DisplayName} 必须选择控制面凭据。").ToArray();
         else if (selectedCredential is not null && !selectedCredential.IsCompatibleWith(candidate.ProviderId))
             errors = errors.Append("所选凭据与 CDN Provider 不兼容。").ToArray();
         if (errors.Count > 0)
@@ -476,14 +494,8 @@ internal sealed class CdnProfileEditorDialog : Form
     {
         _controlCredential.Items.Clear();
         _controlCredential.Items.Add(new Choice<Guid?>(null, "(不使用控制面凭据)"));
-        var providerKind = string.Equals(providerId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase)
-            ? CredentialProviderKind.AlibabaCloud
-            : CredentialProviderKind.GenericHttp;
         foreach (var item in _credentials
-                     .Where(value => value.Provider == providerKind &&
-                         (providerKind == CredentialProviderKind.AlibabaCloud
-                             ? value.Kind == CredentialKind.AccessKeyPair
-                             : value.Kind is CredentialKind.BearerToken or CredentialKind.CustomHeader))
+                     .Where(value => CdnProviderCatalog.IsCredentialCompatible(providerId, value))
                      .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
             _controlCredential.Items.Add(new Choice<Guid?>(item.Id, $"{item.Name} · {item.Fingerprint}"));
         SelectValue(_controlCredential, selectedId);
@@ -491,8 +503,10 @@ internal sealed class CdnProfileEditorDialog : Form
 
     private void UpdateProviderFields()
     {
+        var providerId = Selected(_provider, CdnProfile.GenericHttpProviderId);
+        var descriptor = CdnProviderCatalog.Get(providerId);
         var generic = string.Equals(
-            Selected(_provider, CdnProfile.GenericHttpProviderId),
+            providerId,
             CdnProfile.GenericHttpProviderId,
             StringComparison.OrdinalIgnoreCase);
         _purgeEndpoint.Enabled = generic;
@@ -502,6 +516,12 @@ internal sealed class CdnProfileEditorDialog : Form
         _controlCredential.Enabled = !generic || !string.IsNullOrWhiteSpace(_purgeEndpoint.Text);
         if (generic && string.IsNullOrWhiteSpace(_purgeEndpoint.Text))
             SelectValue(_controlCredential, (Guid?)null);
+        _controlResourceId.Enabled = descriptor.RequiresControlResourceId;
+        _controlResourceHint.Text = descriptor.RequiresControlResourceId
+            ? $"{descriptor.DisplayName} 控制面需要 {descriptor.ControlResourceLabel}；它不是秘密，不保存在凭据中心。"
+            : "当前 Provider 不需要额外的控制资源 ID。";
+        if (!descriptor.RequiresControlResourceId)
+            _controlResourceId.Text = string.Empty;
         _contentAuthentication.Enabled = true;
         UpdateContentAuthenticationFields();
     }
@@ -681,6 +701,8 @@ internal sealed class CredentialEditorDialog : Form
                 [CredentialKind.BearerToken, CredentialKind.CustomHeader],
             CredentialProviderKind.AmazonWebServices =>
                 [CredentialKind.AccessKeyPair, CredentialKind.SecretValue],
+            CredentialProviderKind.Cloudflare =>
+                [CredentialKind.AccessKeyPair, CredentialKind.BearerToken],
             _ => [CredentialKind.AccessKeyPair]
         };
         _type.Items.Clear();

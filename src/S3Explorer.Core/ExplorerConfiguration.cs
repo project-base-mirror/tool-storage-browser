@@ -123,16 +123,16 @@ public sealed record ExplorerConfiguration(
 
     private static void ValidateCdnProfile(CdnProfile profile, CredentialVault credentials)
     {
+        var provider = CdnProviderCatalog.Get(profile.ProviderId);
+        if (provider.RequiresControlResourceId && string.IsNullOrWhiteSpace(profile.ControlResourceId))
+            throw new InvalidDataException($"CDN 配置“{profile.Name}”必须指定 {provider.DisplayName} 的控制面资源 ID。");
+
         if (profile.ControlCredentialId is not Guid credentialId)
             return;
 
         var credential = credentials.FindById(credentialId)
             ?? throw new InvalidDataException($"CDN 配置“{profile.Name}”引用了不存在的控制凭据：{credentialId}");
-        var compatible = string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase)
-            ? credential.Provider == CredentialProviderKind.AlibabaCloud && credential.Kind == CredentialKind.AccessKeyPair
-            : credential.Provider == CredentialProviderKind.GenericHttp &&
-              credential.Kind is CredentialKind.BearerToken or CredentialKind.CustomHeader;
-        if (!compatible)
+        if (!CdnProviderCatalog.IsCredentialCompatible(profile.ProviderId, credential))
             throw new InvalidDataException($"凭据“{credential.Name}”与 CDN 控制面 Provider“{profile.ProviderId}”不兼容。");
     }
 

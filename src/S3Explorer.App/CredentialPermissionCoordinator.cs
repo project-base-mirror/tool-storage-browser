@@ -10,10 +10,11 @@ namespace S3Explorer.App;
 /// </summary>
 internal sealed class CredentialPermissionCoordinator(
     IS3StorageService storage,
-    AliyunCdnProvider? aliyunCdnProvider = null)
+    IReadOnlyDictionary<string, ICdnControlPermissionChecker>? controlPermissionCheckers = null)
 {
     private readonly S3PermissionChecker _storageChecker = new(storage);
-    private readonly AliyunCdnProvider _aliyunCdnProvider = aliyunCdnProvider ?? new AliyunCdnProvider();
+    private readonly IReadOnlyDictionary<string, ICdnControlPermissionChecker> _controlPermissionCheckers =
+        controlPermissionCheckers ?? CdnProviderRuntime.CreateControlPermissionCheckers();
 
     public async Task<PermissionCheckReport> CheckAsync(
         CredentialProfile credential,
@@ -95,29 +96,11 @@ internal sealed class CredentialPermissionCoordinator(
         CredentialProfile credential,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+        if (_controlPermissionCheckers.TryGetValue(profile.ProviderId, out var checker))
         {
-            var result = await _aliyunCdnProvider.CheckDomainPermissionAsync(
-                profile,
-                credential,
-                cancellationToken).ConfigureAwait(false);
-            return new PermissionCheckResult(credential.Id,
-            [
-                new PermissionCheck("cdn-control", "DescribeUserDomains", result.State, result.Message)
-                {
-                    StatusCode = result.StatusCode,
-                    ProviderCode = result.Code,
-                    RequestId = result.RequestId
-                },
-                new PermissionCheck(
-                    "cdn-control",
-                    "RefreshObjectCaches/PushObjectCache",
-                    PermissionCheckState.Indeterminate,
-                    "只读检测不提交刷新或预热任务，无法无副作用证明控制面写权限。")
-                {
-                    Required = false
-                }
-            ])
+            var checks = await checker.CheckControlPermissionsAsync(
+                profile, credential, cancellationToken).ConfigureAwait(false);
+            return new PermissionCheckResult(credential.Id, checks)
             {
                 TargetScope = profile.BaseUrl,
                 CheckedAtUtc = DateTimeOffset.UtcNow

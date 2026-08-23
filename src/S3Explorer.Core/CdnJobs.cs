@@ -138,6 +138,15 @@ public interface ICdnProvider
     Task<CdnProviderResult> QueryAsync(CdnProviderRequest request, CancellationToken cancellationToken);
 }
 
+public interface ICdnControlPermissionChecker
+{
+    string ProviderId { get; }
+    Task<IReadOnlyList<PermissionCheck>> CheckControlPermissionsAsync(
+        CdnProfile profile,
+        CredentialProfile? credential,
+        CancellationToken cancellationToken);
+}
+
 public interface ICdnJobExecutor
 {
     Task<CdnProviderResult> ExecuteAsync(CdnJobRecord job, CancellationToken cancellationToken);

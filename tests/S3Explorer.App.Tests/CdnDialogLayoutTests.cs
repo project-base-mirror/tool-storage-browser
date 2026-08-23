@@ -342,6 +342,35 @@ public sealed class CdnDialogLayoutTests
     }
 
     [Fact]
+    public void CredentialEditorCanCreateCloudflareApiTokenWithoutChangingR2KeySupport()
+    {
+        RunSta(() =>
+        {
+            using var editor = new CredentialEditorDialog(
+                null,
+                CredentialProviderKind.Cloudflare,
+                CredentialKind.BearerToken);
+            editor.Show();
+            var kinds = Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnCredentialType", searchAllChildren: true)));
+            Assert.Contains(kinds.Items.Cast<object>(), value => value.ToString() == "Access Key / Secret Key");
+            Assert.Contains(kinds.Items.Cast<object>(), value => value.ToString() == "Bearer Token");
+            Assert.Equal("Bearer Token", kinds.SelectedItem?.ToString());
+            Assert.IsType<TextBox>(Assert.Single(
+                editor.Controls.Find("CredentialName", searchAllChildren: true))).Text = "cloudflare-control";
+            Assert.IsType<TextBox>(Assert.Single(
+                editor.Controls.Find("CredentialSecret", searchAllChildren: true))).Text = "api-token";
+
+            FindButton(editor, "SaveCredentialButton").PerformClick();
+
+            Assert.Equal(DialogResult.OK, editor.DialogResult);
+            Assert.Equal(CredentialProviderKind.Cloudflare, editor.Credential.Provider);
+            Assert.Equal(CredentialKind.BearerToken, editor.Credential.Kind);
+            Assert.False(editor.Credential.IsCompatibleWith(S3ServiceType.CloudflareR2));
+        });
+    }
+
+    [Fact]
     public void CredentialAndCdnCentersValidateGroupedConnectionsWithoutDroppingGroups()
     {
         RunSta(() =>
@@ -448,6 +477,56 @@ public sealed class CdnDialogLayoutTests
             Assert.Empty(editor.Profile.ContentAuthentication.HeaderName);
             Assert.Equal("content-secret", editor.Profile.ContentAuthentication.Secret);
             Assert.Null(editor.Profile.ControlCredentialId);
+        });
+    }
+
+    [Fact]
+    public void ProfileEditorSupportsTencentAndCloudflareControlCredentials()
+    {
+        RunSta(() =>
+        {
+            var tencent = new CredentialProfile
+            {
+                Name = "tencent-cdn-control",
+                Provider = CredentialProviderKind.TencentCloud,
+                Kind = CredentialKind.AccessKeyPair,
+                AccessKeyId = "secret-id",
+                Secret = "secret-key"
+            };
+            var cloudflare = new CredentialProfile
+            {
+                Name = "cloudflare-cdn-control",
+                Provider = CredentialProviderKind.Cloudflare,
+                Kind = CredentialKind.BearerToken,
+                Secret = "api-token"
+            };
+            using var editor = new CdnProfileEditorDialog(new CdnProfile
+            {
+                Name = "edge-cdn",
+                BaseUrl = "https://cdn.example.com/"
+            }, [tencent, cloudflare]);
+            editor.Show();
+
+            var provider = Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnProfileProvider", searchAllChildren: true)));
+            Assert.Contains(provider.Items.Cast<object>(), value => value.ToString() == "腾讯云 CDN");
+            SelectByText(provider, "Cloudflare");
+            var credentials = Assert.IsType<ComboBox>(Assert.Single(
+                editor.Controls.Find("CdnProfileControlCredential", searchAllChildren: true)));
+            Assert.Contains(credentials.Items.Cast<object>(), value => value.ToString()!.Contains(cloudflare.Name, StringComparison.Ordinal));
+            Assert.DoesNotContain(credentials.Items.Cast<object>(), value => value.ToString()!.Contains(tencent.Name, StringComparison.Ordinal));
+            SelectByTextContains(credentials, cloudflare.Name);
+            var zone = Assert.IsType<TextBox>(Assert.Single(
+                editor.Controls.Find("CdnProfileControlResourceId", searchAllChildren: true)));
+            Assert.True(zone.Enabled);
+            zone.Text = "023e105f4ecef8ad9ca31a8372d0c353";
+
+            FindButton(editor, "SaveCdnProfileButton").PerformClick();
+
+            Assert.Equal(DialogResult.OK, editor.DialogResult);
+            Assert.Equal(CdnProfile.CloudflareProviderId, editor.Profile.ProviderId);
+            Assert.Equal(cloudflare.Id, editor.Profile.ControlCredentialId);
+            Assert.Equal("023e105f4ecef8ad9ca31a8372d0c353", editor.Profile.ControlResourceId);
         });
     }
 

@@ -8,7 +8,7 @@ using S3Explorer.Core;
 namespace S3Explorer.Infrastructure.Cdn;
 
 /// <summary>Typed Alibaba CDN adapter. The client seam keeps tests offline and makes SDK upgrades explicit.</summary>
-public sealed class AliyunCdnProvider : ICdnProvider
+public sealed class AliyunCdnProvider : ICdnProvider, ICdnControlPermissionChecker
 {
     public const string ProviderIdValue = CdnProfile.AlibabaCloudProviderId;
     private const int RefreshBatchSize = 1000;
@@ -77,6 +77,8 @@ public sealed class AliyunCdnProvider : ICdnProvider
                 return new(CdnProviderOperationState.Failed, "阿里云 CDN 任务失败或超时。", false, request.ProviderTaskId);
             if (normalized.All(value => value is "complete" or "completed" or "success"))
                 return new(CdnProviderOperationState.Completed, "阿里云 CDN 任务已完成。", false, request.ProviderTaskId);
+            if (normalized.Any(value => value is not ("complete" or "completed" or "success" or "refreshing" or "pending" or "processing")))
+                return new(CdnProviderOperationState.Failed, "阿里云 CDN 返回了无法识别的任务状态。", false, request.ProviderTaskId);
             return new(CdnProviderOperationState.Accepted, "阿里云 CDN 任务仍在处理中。", true, request.ProviderTaskId);
         }
         catch (Exception ex) { return FromException(ex); }
@@ -109,6 +111,39 @@ public sealed class AliyunCdnProvider : ICdnProvider
                 result.StatusCode,
                 Extract(result.ResponseSnippet, "requestId"));
         }
+    }
+
+    public async Task<IReadOnlyList<PermissionCheck>> CheckControlPermissionsAsync(
+        CdnProfile profile,
+        CredentialProfile? credential,
+        CancellationToken cancellationToken)
+    {
+        var domain = await CheckDomainPermissionAsync(profile, credential, cancellationToken).ConfigureAwait(false);
+        return
+        [
+            new PermissionCheck("cdn-control", "DescribeUserDomains", domain.State, domain.Message)
+            {
+                StatusCode = domain.StatusCode,
+                ProviderCode = domain.Code,
+                RequestId = domain.RequestId
+            },
+            new PermissionCheck(
+                "cdn-control",
+                "RefreshObjectCaches",
+                PermissionCheckState.Indeterminate,
+                "刷新权限需要提交真实缓存刷新任务，普通检查不会产生该副作用。")
+            {
+                Required = false
+            },
+            new PermissionCheck(
+                "cdn-control",
+                "PushObjectCache",
+                PermissionCheckState.Indeterminate,
+                "预热权限需要提交真实预热任务，普通检查不会产生该副作用。")
+            {
+                Required = false
+            }
+        ];
     }
 
     private static IEnumerable<Uri> DistinctUrls(IEnumerable<Uri> urls) =>

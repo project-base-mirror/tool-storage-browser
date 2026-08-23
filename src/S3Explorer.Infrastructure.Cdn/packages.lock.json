@@ -21,6 +21,16 @@
         "resolved": "10.0.10",
         "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
       },
+      "TencentCloudSDK.Cdn": {
+        "type": "Direct",
+        "requested": "[3.0.1481, )",
+        "resolved": "3.0.1481",
+        "contentHash": "xWaDEHq/+dX68N5e4gDalrNyrcHZIUcBiD1V9+y6+cjKW6JuL50DgS+QL/oyc3tZTwy/gMHWSBeDYfz5hS3BQQ==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.2",
+          "TencentCloudSDK.Common": "3.0.1481"
+        }
+      },
       "AlibabaCloud.EndpointUtil": {
         "type": "Transitive",
         "resolved": "0.1.2",
@@ -95,6 +105,14 @@
         "contentHash": "vwpYRSIcbNeRDrrRp6eG1rB2rAE5vOZyrQAjMPCxDTisptsIq4ApdmFc9jvthCIgOeBwTyOe4Y/TYTD88Zq+Yw==",
         "dependencies": {
           "Newtonsoft.Json": "13.0.3"
+        }
+      },
+      "TencentCloudSDK.Common": {
+        "type": "Transitive",
+        "resolved": "3.0.1481",
+        "contentHash": "onxy6pV4c4m5G9XZf/CinY4ePixjz04yHaThLnOl0YkwCaPU4QUPt43LuQr/h6kAAN8+/Ah+icmBIqkNybCdcg==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.1"
         }
       },
       "s3explorer.core": {

@@ -136,7 +136,7 @@ public sealed class ConnectionArchiveServiceTests
         var text = Encoding.UTF8.GetString(archive);
         var imported = Assert.Single(_service.Import(archive).Profiles);
 
-        Assert.Contains("\"version\": 5", text, StringComparison.Ordinal);
+        Assert.Contains("\"version\": 6", text, StringComparison.Ordinal);
         Assert.Contains("audit", text, StringComparison.Ordinal);
         Assert.DoesNotContain("stale-", text, StringComparison.Ordinal);
         Assert.Equal(CredentialSourceKind.AwsSharedProfile, imported.CredentialSource);
@@ -273,6 +273,7 @@ public sealed class ConnectionArchiveServiceTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
     public void UnprotectedArchiveRejectsStorageSecretsAndReferencesBeforeMigration(int version)
     {
         var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
@@ -301,6 +302,7 @@ public sealed class ConnectionArchiveServiceTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
     public void UnprotectedArchiveRejectsCredentialEntriesBeforeMigration(int version)
     {
         var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
@@ -336,6 +338,7 @@ public sealed class ConnectionArchiveServiceTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
     public void UnprotectedArchiveRejectsCdnSecretsAndReferencesBeforeMigration(int version)
     {
         var document = JsonNode.Parse(Encoding.UTF8.GetString(_service.Export([CreateProfile()])))!.AsObject();
@@ -459,6 +462,55 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal(
             Assert.Single(package.ImportedCredentials).Id,
             Assert.Single(package.ImportedCdnConfiguration.Profiles).ControlCredentialId);
+    }
+
+    [Fact]
+    public void FormatSixRoundTripPreservesCloudflareZoneAndApiTokenSeparately()
+    {
+        var storage = CreateProfile();
+        var credential = new CredentialProfile
+        {
+            Name = "Cloudflare control token",
+            Provider = CredentialProviderKind.Cloudflare,
+            Kind = CredentialKind.BearerToken,
+            Secret = "cloudflare-api-token"
+        };
+        var cdnProfile = new CdnProfile
+        {
+            Name = "Cloudflare CDN",
+            ProviderId = CdnProfile.CloudflareProviderId,
+            BaseUrl = "https://cdn.example.test",
+            ControlCredentialId = credential.Id,
+            ControlResourceId = "023e105f4ecef8ad9ca31a8372d0c353"
+        };
+        var configuration = new CdnConfiguration(
+            [cdnProfile],
+            [CreateCdnBinding(storage.Id, cdnProfile.Id)]);
+
+        var archive = _service.Export(
+            [storage],
+            includeCredentials: true,
+            password: "portable-password",
+            cdnConfiguration: configuration,
+            credentials: [credential]);
+        var package = _service.Import(archive, "portable-password");
+        var importedProfile = Assert.Single(package.ImportedCdnConfiguration.Profiles);
+        var importedCredential = Assert.Single(package.ImportedCredentials);
+
+        Assert.Equal("023e105f4ecef8ad9ca31a8372d0c353", importedProfile.ControlResourceId);
+        Assert.Equal(importedCredential.Id, importedProfile.ControlCredentialId);
+        Assert.Equal(CredentialProviderKind.Cloudflare, importedCredential.Provider);
+        Assert.Equal(CredentialKind.BearerToken, importedCredential.Kind);
+        Assert.Equal("cloudflare-api-token", importedCredential.Secret);
+
+        var credentialFreePackage = _service.Import(_service.Export(
+            [storage],
+            cdnConfiguration: configuration,
+            credentials: [credential]));
+        var credentialFreeProfile = Assert.Single(credentialFreePackage.ImportedCdnConfiguration.Profiles);
+        Assert.Equal("023e105f4ecef8ad9ca31a8372d0c353", credentialFreeProfile.ControlResourceId);
+        Assert.Null(credentialFreeProfile.ControlCredentialId);
+        Assert.Empty(credentialFreePackage.ImportedCredentials);
     }
 
     [Fact]

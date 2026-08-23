@@ -354,21 +354,19 @@ internal sealed partial class MainForm
             ? _credentials.FirstOrDefault(value => value.Id == credentialId)
             : null;
         var controlPassed = true;
-        if (string.Equals(profile.ProviderId, CdnProfile.AlibabaCloudProviderId, StringComparison.OrdinalIgnoreCase))
+        var controlCheckers = CdnProviderRuntime.CreateControlPermissionCheckers();
+        if (controlCheckers.TryGetValue(profile.ProviderId, out var checker))
         {
-            if (controlCredential is null)
-            {
-                summaries.Add("控制面：未关联 Alibaba Cloud AccessKey");
-                controlPassed = false;
-            }
-            else
-            {
-                var result = await new AliyunCdnProvider()
-                    .CheckDomainPermissionAsync(profile, controlCredential, cancellationToken)
-                    .ConfigureAwait(true);
-                summaries.Add($"控制面：{PermissionStateText(result.State)}");
-                controlPassed = result.State == PermissionCheckState.Passed;
-            }
+            var checks = await checker.CheckControlPermissionsAsync(
+                profile, controlCredential, cancellationToken).ConfigureAwait(true);
+            var requiredChecks = checks.Where(value => value.Required).ToArray();
+            var state = requiredChecks.Length > 0 && requiredChecks.All(value => value.State == PermissionCheckState.Passed)
+                ? PermissionCheckState.Passed
+                : requiredChecks.Any(value => value.State == PermissionCheckState.Denied)
+                    ? PermissionCheckState.Denied
+                    : PermissionCheckState.Indeterminate;
+            summaries.Add($"控制面：{PermissionStateText(state)}");
+            controlPassed = state == PermissionCheckState.Passed;
         }
         else if (string.IsNullOrWhiteSpace(profile.PurgeEndpointTemplate))
         {
@@ -463,14 +461,12 @@ internal sealed partial class MainForm
         credential = null;
         if (target.Profile.ControlCredentialId is not Guid credentialId)
         {
-            if (showMessage && string.Equals(
-                    target.Profile.ProviderId,
-                    CdnProfile.AlibabaCloudProviderId,
-                    StringComparison.OrdinalIgnoreCase))
+            var provider = CdnProviderCatalog.Get(target.Profile.ProviderId);
+            if (showMessage && provider.SupportsControlPlane)
             {
                 MessageBox.Show(
                     this,
-                    $"CDN 配置“{target.Profile.Name}”没有关联阿里云控制面凭据。请先在 CDN 配置中选择 Alibaba Cloud AccessKey。",
+                    $"CDN 配置“{target.Profile.Name}”没有关联 {provider.DisplayName} 控制面凭据。请先在 CDN 配置中选择兼容凭据。",
                     "CDN 控制面凭据缺失",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -622,10 +618,8 @@ internal sealed partial class MainForm
     private async Task EnqueueCdnOperationAsync(CdnJobAction action, CdnResolvedTarget target)
     {
         var purge = action is CdnJobAction.PurgeUrl or CdnJobAction.PurgeThenWarmup;
-        var requiresControlCredential = purge || string.Equals(
-            target.Profile.ProviderId,
-            CdnProfile.AlibabaCloudProviderId,
-            StringComparison.OrdinalIgnoreCase);
+        var requiresControlCredential = purge ||
+            CdnProviderCatalog.Get(target.Profile.ProviderId).SupportsControlPlane;
         if (requiresControlCredential &&
             !TryResolveCdnControlCredential(target, out _, showMessage: true))
             return;

@@ -344,6 +344,7 @@ internal sealed class CdnConfigurationDialog : Form
     {
         _profileGrid.Columns.Clear();
         _profileGrid.Columns.Add("name", "名称");
+        _profileGrid.Columns.Add("provider", "Provider");
         _profileGrid.Columns.Add("base", "基础 URL");
         _profileGrid.Columns.Add("certificate", "HTTPS 证书");
         _profileGrid.Columns.Add("notes", "备注");
@@ -359,12 +360,13 @@ internal sealed class CdnConfigurationDialog : Form
                 : "无";
             var index = _profileGrid.Rows.Add(
                 profile.Name,
+                CdnProviderCatalog.Get(profile.ProviderId).DisplayName,
                 profile.BaseUrl,
                 CertificateStatus(profile),
                 NotesPreview(profile.Notes),
                 AuthenticationText(profile.ContentAuthentication.AuthenticationType),
                 WarmupText(profile),
-                profile.Capabilities.HasFlag(CdnCapabilities.Purge) ? profile.PurgeHttpMethod : "未配置",
+                PurgeText(profile),
                 credentialName,
                 _profileCheckStatuses.GetValueOrDefault(profile.Id, "尚未检查"));
             _profileGrid.Rows[index].Tag = profile.Id;
@@ -663,12 +665,26 @@ internal sealed class CdnConfigurationDialog : Form
             args.Cancel = true;
     }
 
-    private static string WarmupText(CdnProfile profile) => profile.WarmupMode switch
+    private static string WarmupText(CdnProfile profile)
     {
-        CdnWarmupMode.Head => "HEAD",
-        CdnWarmupMode.FullGet => "完整 GET",
-        _ => $"Range GET ({profile.WarmupRangeBytes / 1024d / 1024d:N0} MiB)"
-    };
+        if (CdnProviderCatalog.Get(profile.ProviderId).NativeCapabilities.HasFlag(CdnCapabilities.Warmup))
+            return "原生 API";
+        return profile.WarmupMode switch
+        {
+            CdnWarmupMode.Head => "HEAD",
+            CdnWarmupMode.FullGet => "完整 GET",
+            _ => $"Range GET ({profile.WarmupRangeBytes / 1024d / 1024d:N0} MiB)"
+        };
+    }
+
+    private static string PurgeText(CdnProfile profile)
+    {
+        if (!profile.Capabilities.HasFlag(CdnCapabilities.Purge))
+            return "未配置";
+        return CdnProviderCatalog.Get(profile.ProviderId).SupportsControlPlane
+            ? "原生 API"
+            : profile.PurgeHttpMethod;
+    }
 
     private static string NotesPreview(string notes)
     {

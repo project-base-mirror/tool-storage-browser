@@ -62,7 +62,7 @@ internal static class Program
             var cdnJobStore = new JsonCdnJobStore(Path.Combine(dataRoot, "cdn-jobs.json"));
             var cdnJobExecutor = new StoreBackedCdnJobExecutor(
                 configurationStore,
-                [new GenericHttpCdnProvider(cdnDeliveryService), new AliyunCdnProvider()]);
+                CdnProviderRuntime.CreateProviders(cdnDeliveryService));
             var cdnJobQueue = new PersistentCdnJobQueue(cdnJobStore, cdnJobExecutor);
             var cdnCertificateInspector = new TlsCdnCertificateInspector();
             using var updateChecker = new GitHubUpdateChecker(

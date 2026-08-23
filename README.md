@@ -22,9 +22,9 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象、同步、增量发布、远程验证和 CDN 自动化，支持稳定 JSON 输出、取消与自动化隔离数据目录。
 - 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
-- 统一 Credential Vault：对象存储、AWS External ID 与 CDN 控制面凭据共享安全引用；CDN 内容认证内联在对应 Profile 中。连接包 v5 安全迁移两类秘密，等价配置复用且重复导入不生成副本。
+- 统一 Credential Vault：对象存储、AWS External ID 与 CDN 控制面凭据共享安全引用；CDN 内容认证内联在对应 Profile 中。连接包 v6 安全迁移两类秘密与非秘密控制资源 ID，等价配置复用且重复导入不生成副本。
 - 连接复制、健康状态、最近检查与最近成功时间。
-- 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、HTTP 预热与通用刷新端点。
+- 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、通用 HTTP，以及阿里云、腾讯云和 Cloudflare 原生控制面。
 - 上传后 CDN 自动化：关联可分别设置新对象预热、覆盖后刷新或刷新后预热；任务独立重试、取消并在重启后恢复，不改变上传成功状态。
 - GitHub Pages 项目主页、tag 驱动的 GitHub Release、可关闭的启动更新检查，以及安装版经 SHA-256 复验后的用户确认静默升级。
 
@@ -211,7 +211,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 - 日志目录：`%LOCALAPPDATA%\S3Explorer\logs`
 - `configuration.json` 整体使用 DPAPI CurrentUser 加密；SecretKey、SessionToken、CDN Secret 和 AssumeRole External ID 不会明文落盘。
 - AWS Profile/SSO 连接只保存 Profile 名称；SSO 浏览器令牌、Web Identity token 内容、环境/容器/实例角色凭据和短期角色会话不写入 `configuration.json`、连接包或日志。
-- 凭据按 Provider 和类型显式校验；Alibaba Cloud AccessKey 可由 OSS 与 Alibaba CDN 共享引用，通用 HTTP Token/Header 不会与 S3 SecretKey 混用。
+- 凭据按 Provider 和类型显式校验；Alibaba Cloud AccessKey 可由 OSS 与 Alibaba CDN 共享，腾讯云 CDN 使用 SecretId/SecretKey，Cloudflare CDN 使用 API Token；内容 Token/Header 不会与控制面或 S3 SecretKey 混用。
 - 导出配置默认不包含 S3 或 CDN 秘密值；显式选择后使用迁移密码重新加密，不复制本机 DPAPI 密文。
 - 日志不得记录 SecretKey、SessionToken、Authorization Header 或完整预签名 URL。
 - 忽略证书错误仅用于用户明确配置的测试环境。
@@ -254,7 +254,7 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 生命周期编辑当前对 Amazon S3 开放完整规则；MinIO 已实测对象过期与非当前版本规则，但存储分层转换和未完成 Multipart 生命周期清理会在本地阻止。Object Lock 提供 AWS Bucket 状态探测和单对象 Retention/Legal Hold；不提供事后启用 Bucket Object Lock 或修改默认保留期。安装版支持用户确认的静默升级，但不做无人值守自动安装；便携 ZIP 继续打开下载页面，由用户手动替换。托盘驻留可在设置中显式启用。
 
-CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、可配置 HTTP 刷新端点、Alibaba Cloud CDN 原生刷新/预热、持久作业队列和显式开启的上传后自动化；尚未实现 CloudFront、Cloudflare、腾讯云原生签名 API 或统一 Prefix Purge。
+CDN 当前提供通用 HTTP 交付域名、CLI 探测/预热、可配置 HTTP 刷新端点、阿里云与腾讯云原生刷新/预热、Cloudflare Zone 查询与按 URL 清理、持久作业队列和显式开启的上传后自动化。Cloudflare 没有原生预热接口，工具明确使用内容 URL GET 预热；尚未实现 CloudFront 或统一 Prefix Purge。
 
 文件夹同步当前是本地文件夹与 S3 路径之间的单向镜像。分析结果可筛选、排序、逐项勾选并从右键添加文件/扩展名/目录排除规则；分析快照会在任务参数变化或 15 分钟后失效。执行记录支持脱敏 JSON/CSV 导出和失败项重新入队。默认比较大小与修改时间；启用哈希比较后，仅对可作为 MD5 的单段 ETag 做内容比较，Multipart ETag 会回退到大小与时间。同步不会跟随本地重解析点；删除传播默认关闭且执行前必须确认。
 
