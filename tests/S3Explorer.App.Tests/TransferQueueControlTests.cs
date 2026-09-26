@@ -45,6 +45,95 @@ public sealed class TransferQueueControlTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HighFrequencyProgressKeepsMessagePumpResponsiveAndDisplaysFinalProgress(bool manualRetry)
+    {
+        RunSta(() =>
+        {
+            var executor = new HighFrequencyProgressExecutor();
+            var task = CreateTask(Guid.NewGuid(), "large.bin",
+                manualRetry ? TransferTaskState.Failed : TransferTaskState.RetryPending) with
+            {
+                Direction = TransferDirection.Upload,
+                TotalBytes = 100_000,
+                AttemptCount = manualRetry ? 3 : 1,
+                NextAttemptAt = DateTimeOffset.UtcNow.AddHours(1)
+            };
+            var queue = new PersistentTransferQueue(
+                new SnapshotStore(new TransferStoreSnapshot { Tasks = [task] }), executor);
+            using var form = new Form { Width = 900, Height = 600 };
+            using var control = new TransferQueueControl(queue) { Dock = DockStyle.Fill };
+            form.Controls.Add(control);
+            control.CreateControl();
+            control.InitializeAsync().GetAwaiter().GetResult();
+
+            var timer = new System.Windows.Forms.Timer { Interval = 20 };
+            var pumpTicksWhileRunning = 0;
+            var sawIntermediateProgress = false;
+            var timedOut = false;
+            var sixtyPercent = $"{60d:N1}%";
+            var oneHundredPercent = $"{100d:N1}%";
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            var cancellationToken = TestContext.Current.CancellationToken;
+            timer.Tick += (_, _) =>
+            {
+                if (executor.Reported.Task.IsCompleted &&
+                    queue.Snapshot.Tasks.SingleOrDefault(item => item.Id == task.Id)?.State == TransferTaskState.Running)
+                {
+                    pumpTicksWhileRunning++;
+                    var rows = FindList(control, "AllTransfersList").Items;
+                    if (rows.Count > 0 && rows[0].SubItems[5].Text == sixtyPercent)
+                        sawIntermediateProgress = true;
+                    if (sawIntermediateProgress && pumpTicksWhileRunning >= 5)
+                        executor.Continue();
+                }
+
+                var row = FindList(control, "AllTransfersList").Items
+                    .Cast<ListViewItem>()
+                    .FirstOrDefault(item => item.Tag is TransferTaskRecord record && record.Id == task.Id);
+                if (row is not null && row.SubItems[5].Text == oneHundredPercent && row.SubItems[8].Text == "成功")
+                {
+                    timer.Stop();
+                    form.Close();
+                    return;
+                }
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    timedOut = true;
+                    timer.Stop();
+                    executor.Continue();
+                    form.Close();
+                }
+            };
+
+            form.Shown += (_, _) =>
+            {
+                timer.Start();
+                var resume = Task.Run(() => manualRetry
+                    ? queue.RetryAsync(task.Id, cancellationToken)
+                    : queue.ResumeAsync(task.Id, cancellationToken), cancellationToken);
+                executor.Reported.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                resume.GetAwaiter().GetResult();
+            };
+            try
+            {
+                Application.Run(form);
+            }
+            finally
+            {
+                timer.Dispose();
+                executor.Continue();
+                queue.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+
+            Assert.False(timedOut, "The WinForms message pump did not observe upload completion.");
+            Assert.True(pumpTicksWhileRunning >= 5, "The WinForms message pump stopped while progress was reported.");
+            Assert.True(sawIntermediateProgress, "The throttled UI did not display progress before completion.");
+        });
+    }
+
     [Fact]
     public void TaskDetailsShowFullFailureAndRedactCredentials()
     {
@@ -172,5 +261,23 @@ public sealed class TransferQueueControlTests
     {
         public Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Terminal and paused test tasks must not execute.");
+    }
+
+    private sealed class HighFrequencyProgressExecutor : ITransferTaskExecutor
+    {
+        private readonly TaskCompletionSource _continue = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Reported { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken)
+        {
+            for (var bytes = 1; bytes <= 60_000; bytes++)
+                context.ReportProgress(new TransferProgress(bytes, 100_000));
+            Reported.TrySetResult();
+            await _continue.Task.WaitAsync(cancellationToken);
+            for (var bytes = 60_001; bytes <= 100_000; bytes++)
+                context.ReportProgress(new TransferProgress(bytes, 100_000));
+        }
+
+        public void Continue() => _continue.TrySetResult();
     }
 }

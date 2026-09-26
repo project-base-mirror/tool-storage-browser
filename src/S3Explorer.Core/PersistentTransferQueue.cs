@@ -570,7 +570,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
                 return;
             }
             Publish(task.Id);
-            _ = ExecuteAsync(task, runtime!);
+            _ = Task.Run(() => ExecuteAsync(task, runtime!));
         }
     }
 

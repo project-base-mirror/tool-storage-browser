@@ -37,6 +37,7 @@ internal sealed class TransferFinishedEventArgs(TransferTaskRecord task) : Event
 internal sealed class TransferQueueControl : UserControl
 {
     private const int VisibleStandaloneLimit = 1_000;
+    private const int ProgressRefreshIntervalMilliseconds = 150;
 
     private sealed record ProgressSample(long Bytes, long Total, double BytesPerSecond, DateTimeOffset At);
 
@@ -47,13 +48,22 @@ internal sealed class TransferQueueControl : UserControl
     private readonly ListView _active = CreateTaskList("ActiveTransfersList");
     private readonly ListView _completed = CreateTaskList("SuccessfulTransfersList");
     private readonly ListView _failed = CreateTaskList("FailedTransfersList");
+    private readonly System.Windows.Forms.Timer _progressTimer = new()
+    {
+        Interval = ProgressRefreshIntervalMilliseconds
+    };
+    private readonly ConcurrentDictionary<Guid, TransferProgress> _pendingProgress = new();
     private readonly ConcurrentDictionary<Guid, ProgressSample> _progress = new();
+    private readonly object _attemptSync = new();
+    private readonly Dictionary<Guid, int> _observedAttempts = [];
     private readonly Dictionary<Guid, TransferTaskState> _knownStates = [];
+    private readonly Dictionary<Guid, int> _knownAttempts = [];
     private TransferBatchSummary[] _batchRows = [];
     private TransferBatchRecord[] _batchRecords = [];
     private int _maxAttempts = 4;
     private int _retryBaseDelaySeconds = 2;
     private bool _initializing;
+    private int _disposeStarted;
 
     public TransferQueueControl(PersistentTransferQueue queue)
     {
@@ -62,6 +72,8 @@ internal sealed class TransferQueueControl : UserControl
         BuildUi();
         _queue.Changed += QueueChanged;
         _queue.ProgressChanged += QueueProgressChanged;
+        _progressTimer.Tick += ProgressTimerTick;
+        _progressTimer.Start();
     }
 
     public event EventHandler<TransferCompletedEventArgs>? TransferCompleted;
@@ -77,7 +89,12 @@ internal sealed class TransferQueueControl : UserControl
         _initializing = true;
         await _queue.InitializeAsync(cancellationToken);
         foreach (var task in _queue.Snapshot.Tasks)
+        {
             _knownStates[task.Id] = task.State;
+            _knownAttempts[task.Id] = task.AttemptCount;
+            lock (_attemptSync)
+                _observedAttempts.TryAdd(task.Id, task.AttemptCount);
+        }
         _initializing = false;
         RefreshViews(_queue.Snapshot);
     }
@@ -404,13 +421,61 @@ internal sealed class TransferQueueControl : UserControl
         return list;
     }
 
-    private void QueueChanged(object? sender, TransferQueueChangedEventArgs args) => InvokeOnUi(() =>
+    private void QueueChanged(object? sender, TransferQueueChangedEventArgs args)
     {
+        if (Volatile.Read(ref _disposeStarted) != 0)
+            return;
+        // Observe attempt changes synchronously, before PumpAsync starts the executor. The UI
+        // callback can be delayed while progress is already arriving on the worker thread.
+        lock (_attemptSync)
+        {
+            if (Volatile.Read(ref _disposeStarted) != 0)
+                return;
+            var currentSnapshot = _queue.Snapshot;
+            var currentIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
+            foreach (var taskId in _observedAttempts.Keys.Where(taskId => !currentIds.Contains(taskId)).ToArray())
+            {
+                _observedAttempts.Remove(taskId);
+                _pendingProgress.TryRemove(taskId, out _);
+            }
+            foreach (var task in currentSnapshot.Tasks)
+            {
+                if (ObserveAttempt(task.Id, task.AttemptCount))
+                    _pendingProgress.TryRemove(task.Id, out _);
+            }
+        }
+
+        InvokeOnUi(() => QueueChangedOnUi(args));
+    }
+
+    private void QueueChangedOnUi(TransferQueueChangedEventArgs args)
+    {
+        var currentSnapshot = _queue.Snapshot;
+        var activeIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
+        foreach (var taskId in _progress.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+            _progress.TryRemove(taskId, out _);
+
+        // Manual retry resets AttemptCount to zero. Use the current snapshot so delayed
+        // notifications cannot reset a newer attempt's already displayed samples.
+        foreach (var task in currentSnapshot.Tasks)
+        {
+            if (_knownAttempts.TryGetValue(task.Id, out var previousAttempt) &&
+                task.AttemptCount != previousAttempt)
+                _progress.TryRemove(task.Id, out _);
+            _knownAttempts[task.Id] = task.AttemptCount;
+        }
+
         if (!_initializing)
         {
             foreach (var task in args.Snapshot.Tasks)
             {
                 _knownStates.TryGetValue(task.Id, out var previous);
+                if (task.State == TransferTaskState.Completed)
+                    _pendingProgress[task.Id] = new TransferProgress(task.TotalBytes, task.TotalBytes);
+                if (task.State is TransferTaskState.Completed or TransferTaskState.Failed or
+                    TransferTaskState.Cancelled or TransferTaskState.Paused or TransferTaskState.Interrupted)
+                    ApplyPendingProgress(task.Id);
+
                 if (task.State == TransferTaskState.Completed &&
                     previous != TransferTaskState.Completed)
                 {
@@ -424,26 +489,77 @@ internal sealed class TransferQueueControl : UserControl
                 _knownStates[task.Id] = task.State;
             }
         }
-        RefreshViews(args.Snapshot);
-    });
+        foreach (var taskId in _knownStates.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+            _knownStates.Remove(taskId);
+        foreach (var taskId in _knownAttempts.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+            _knownAttempts.Remove(taskId);
+        RefreshViews(_queue.Snapshot);
+    }
+
+    private bool ObserveAttempt(Guid taskId, int attemptCount)
+    {
+        if (_observedAttempts.TryGetValue(taskId, out var previous))
+        {
+            if (attemptCount == previous)
+                return false;
+            _observedAttempts[taskId] = attemptCount;
+            return true;
+        }
+
+        _observedAttempts.Add(taskId, attemptCount);
+        return false;
+    }
 
     private void QueueProgressChanged(object? sender, TransferTaskProgressEventArgs args)
     {
+        lock (_attemptSync)
+        {
+            if (Volatile.Read(ref _disposeStarted) != 0)
+                return;
+            _pendingProgress.AddOrUpdate(
+                args.TaskId,
+                args.Progress,
+                (_, previous) => args.Progress.TransferredBytes >= previous.TransferredBytes
+                    ? args.Progress
+                    : previous);
+        }
+    }
+
+    private void ProgressTimerTick(object? sender, EventArgs args)
+    {
+        if (IsDisposed || Disposing)
+            return;
+
+        var changed = false;
+        foreach (var taskId in _pendingProgress.Keys)
+        {
+            if (_pendingProgress.TryRemove(taskId, out var latest))
+                changed |= ApplyProgress(taskId, latest);
+        }
+        if (changed)
+            RefreshViews(_queue.Snapshot);
+    }
+
+    private bool ApplyPendingProgress(Guid taskId) =>
+        _pendingProgress.TryRemove(taskId, out var pending) && ApplyProgress(taskId, pending);
+
+    private bool ApplyProgress(Guid taskId, TransferProgress progress)
+    {
         var now = DateTimeOffset.UtcNow;
         var speed = 0d;
-        if (_progress.TryGetValue(args.TaskId, out var previous))
+        if (_progress.TryGetValue(taskId, out var previous))
         {
             var seconds = (now - previous.At).TotalSeconds;
             speed = seconds > 0.05
-                ? Math.Max(0, (args.Progress.TransferredBytes - previous.Bytes) / seconds)
+                ? Math.Max(0, (progress.TransferredBytes - previous.Bytes) / seconds)
                 : previous.BytesPerSecond;
         }
-        _progress[args.TaskId] = new ProgressSample(
-            args.Progress.TransferredBytes,
-            args.Progress.TotalBytes,
+        _progress[taskId] = new ProgressSample(
+            progress.TransferredBytes,
+            progress.TotalBytes,
             speed,
             now);
-        InvokeOnUi(() => RefreshViews(_queue.Snapshot));
+        return true;
     }
 
     private void RefreshViews(TransferStoreSnapshot snapshot)
@@ -667,15 +783,47 @@ internal sealed class TransferQueueControl : UserControl
 
     private void InvokeOnUi(Action action)
     {
-        if (IsDisposed || Disposing)
+        if (Volatile.Read(ref _disposeStarted) != 0 || IsDisposed || Disposing)
             return;
         if (InvokeRequired)
         {
             if (IsHandleCreated)
-                BeginInvoke(action);
+            {
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        if (!IsDisposed && !Disposing)
+                            action();
+                    });
+                }
+                catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
+                {
+                }
+            }
             return;
         }
         action();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Interlocked.Exchange(ref _disposeStarted, 1);
+            _queue.Changed -= QueueChanged;
+            _queue.ProgressChanged -= QueueProgressChanged;
+            _progressTimer.Stop();
+            _progressTimer.Tick -= ProgressTimerTick;
+            _progressTimer.Dispose();
+            lock (_attemptSync)
+            {
+                _pendingProgress.Clear();
+                _progress.Clear();
+                _observedAttempts.Clear();
+            }
+        }
+        base.Dispose(disposing);
     }
 
     private static string TabText(string name, int total) =>

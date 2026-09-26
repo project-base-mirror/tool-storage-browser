@@ -132,7 +132,8 @@ internal sealed partial class MainForm : Form
         AutomationSession? automation = null,
         PermissionCheckHistoryStore? permissionCheckHistoryStore = null,
         bool developmentMode = false,
-        BucketDiscoveryCache? bucketDiscoveryCache = null)
+        BucketDiscoveryCache? bucketDiscoveryCache = null,
+        Func<string, CancellationToken, Task>? clipboardWriter = null)
     {
         _profileStore = profileStore;
         _storage = storage;
@@ -153,6 +154,8 @@ internal sealed partial class MainForm : Form
         _bucketDiscoveryCache = bucketDiscoveryCache ?? new BucketDiscoveryCache();
         _automation = automation;
         _developmentMode = developmentMode;
+        _clipboardWriter = clipboardWriter ?? ClipboardTextWriter.SetTextAsync;
+        Disposed += (_, _) => _cdnCopyCancellation?.Cancel();
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
         Name = "MainWindow";

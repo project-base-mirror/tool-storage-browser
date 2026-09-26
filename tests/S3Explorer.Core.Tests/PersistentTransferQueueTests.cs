@@ -88,6 +88,32 @@ public sealed class PersistentTransferQueueTests
     }
 
     [Fact]
+    public async Task SynchronouslyBlockingExecutorDoesNotBlockEnqueueCaller()
+    {
+        var executor = new SynchronouslyBlockingExecutor();
+        await using var queue = new PersistentTransferQueue(new MemoryStore(), executor, maxConcurrency: 1);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var task = CreateTask();
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        try
+        {
+            await Task.Run(
+                    () => queue.EnqueueAsync(task, cancellationToken),
+                    cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            Assert.Equal(TransferTaskState.Running, queue.Snapshot.Tasks.Single().State);
+        }
+        finally
+        {
+            executor.Release();
+        }
+
+        await WaitUntilAsync(() => queue.Snapshot.Tasks.Single().State == TransferTaskState.Completed);
+    }
+
+    [Fact]
     public async Task PauseResumeCancelAndRetryAreDurable()
     {
         var executor = new BlockingExecutor();
@@ -365,6 +391,22 @@ public sealed class PersistentTransferQueueTests
             ObservedPersistedSnapshot = context.Task.DestinationExistedBeforeTransfer == true;
             context.ReportProgress(new TransferProgress(context.Task.TotalBytes, context.Task.TotalBytes));
         }
+    }
+
+    private sealed class SynchronouslyBlockingExecutor : ITransferTaskExecutor
+    {
+        private readonly ManualResetEventSlim _release = new();
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ExecuteAsync(ITransferTaskExecutionContext context, CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            _release.Wait(cancellationToken);
+            context.ReportProgress(new TransferProgress(context.Task.TotalBytes, context.Task.TotalBytes));
+            return Task.CompletedTask;
+        }
+
+        public void Release() => _release.Set();
     }
 
     private sealed class MultipartBlockingExecutor : ITransferTaskExecutor

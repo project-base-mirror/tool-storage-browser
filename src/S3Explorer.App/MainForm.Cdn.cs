@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.Cdn;
 
@@ -21,6 +22,8 @@ internal sealed partial class MainForm
     private ToolStripMenuItem? _cdnObjectContextWarmup;
     private ToolStripMenuItem? _cdnObjectContextPurge;
     private readonly List<ToolStripMenuItem> _cdnSpecifiedMenus = [];
+    private readonly Func<string, CancellationToken, Task> _clipboardWriter;
+    private CancellationTokenSource? _cdnCopyCancellation;
 
     private ToolStripMenuItem BuildCdnMenu()
     {
@@ -34,13 +37,9 @@ internal sealed partial class MainForm
             "CDN 任务中心...",
             (_, _) => ShowCdnJobs()));
         menu.DropDownItems.Add(new ToolStripSeparator());
-        menu.DropDownItems.Add(Command("cdn-copy-url", "复制 CDN URL", (_, _) => CopySelectedCdnUrl()));
+        menu.DropDownItems.Add(Command("cdn-copy-url", "复制 CDN URL", async (_, _) => await CopySelectedCdnUrlAsync()));
         menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
-            "复制指定 CDN URL", "CdnCopySpecifiedMenu", target =>
-            {
-                CopyCdnUrl(target);
-                return Task.CompletedTask;
-            }));
+            "复制指定 CDN URL", "CdnCopySpecifiedMenu", CopyCdnUrlAsync));
         menu.DropDownItems.Add(Command("cdn-open-url", "使用 CDN 打开", (_, _) => OpenSelectedCdnUrl()));
         menu.DropDownItems.Add(CreateSpecifiedCdnMenu(
             "使用指定 CDN 打开", "CdnOpenSpecifiedMenu", target =>
@@ -83,16 +82,12 @@ internal sealed partial class MainForm
         {
             Name = "CdnObjectContextMenu"
         };
-        _cdnObjectContextCopy = new ToolStripMenuItem("复制 CDN URL", null, (_, _) => CopySelectedCdnUrl())
+        _cdnObjectContextCopy = new ToolStripMenuItem("复制 CDN URL", null, async (_, _) => await CopySelectedCdnUrlAsync())
         {
             Name = "CdnObjectContextCopy"
         };
         var copySpecified = CreateSpecifiedCdnMenu(
-            "复制指定 CDN URL", "CdnObjectContextCopySpecified", target =>
-            {
-                CopyCdnUrl(target);
-                return Task.CompletedTask;
-            });
+            "复制指定 CDN URL", "CdnObjectContextCopySpecified", CopyCdnUrlAsync);
         _cdnObjectContextOpen = new ToolStripMenuItem("使用 CDN 打开", null, (_, _) => OpenSelectedCdnUrl())
         {
             Name = "CdnObjectContextOpen"
@@ -489,18 +484,40 @@ internal sealed partial class MainForm
         return false;
     }
 
-    private void CopySelectedCdnUrl()
+    private async Task CopySelectedCdnUrlAsync()
     {
         if (!TryResolveSelectedCdnTarget(out var target, showMessage: true) || target is null)
             return;
 
-        CopyCdnUrl(target);
+        await CopyCdnUrlAsync(target);
     }
 
-    private void CopyCdnUrl(CdnResolvedTarget target)
+    private async Task CopyCdnUrlAsync(CdnResolvedTarget target)
     {
-        Clipboard.SetText(target.Url.AbsoluteUri);
-        _requestStatus.Text = $"已复制 CDN URL：{target.Profile.Name}";
+        _cdnCopyCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _cdnCopyCancellation = cancellation;
+        _requestStatus.Text = "正在复制 CDN URL…";
+        try
+        {
+            await _clipboardWriter(target.Url.AbsoluteUri, cancellation.Token);
+            if (!cancellation.IsCancellationRequested && !IsDisposed)
+                _requestStatus.Text = $"已复制 CDN URL：{target.Profile.Name}";
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (ExternalException exception)
+        {
+            _logger.Error("Copy CDN URL failed: Windows clipboard is unavailable", exception);
+            if (!cancellation.IsCancellationRequested && !IsDisposed)
+                _requestStatus.Text = "复制 CDN URL 失败：剪贴板暂时不可用，请稍后重试。";
+        }
+        finally
+        {
+            if (ReferenceEquals(_cdnCopyCancellation, cancellation))
+                _cdnCopyCancellation = null;
+        }
     }
 
     private void OpenSelectedCdnUrl()
