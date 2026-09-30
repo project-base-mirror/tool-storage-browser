@@ -1,16 +1,16 @@
 {
   "schemaVersion": 3,
-  "tagName": "v0.8.2",
-  "version": "0.8.2",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.2",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64.zip",
+  "tagName": "v0.8.3",
+  "version": "0.8.3",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.3",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/S3Explorer-v0.8.3-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/S3Explorer-v0.8.2-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/S3Explorer-v0.8.3-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/S3Explorer-v0.8.3-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/S3Explorer-v0.8.3-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/S3Explorer-v0.8.3-win-x64-setup.msi"
   },
-  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.2/SHA256SUMS.txt",
-  "notes": "新增独立凭据权限矩阵、统一 Bucket 选择器以及腾讯云 CDN 与 Cloudflare 原生控制面；CDN 内容认证和云厂商控制凭据正式分离。",
-  "publishedAt": "2026-08-24T01:47:06+08:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.3/SHA256SUMS.txt",
+  "notes": "修复复制 CDN URL 时的剪贴板争用、上传高频进度导致的界面卡顿，以及 CI 中 SDK 自动滚动造成的锁依赖恢复失败。",
+  "publishedAt": "2026-09-30T14:40:00+08:00"
 }
