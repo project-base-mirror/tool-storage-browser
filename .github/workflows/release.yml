@@ -129,11 +129,13 @@ jobs:
             './artifacts/release/SHA256SUMS.txt'
           )
 
-          gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseTags = @(gh api "repos/$env:GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to read existing GitHub Releases.' }
+          if ($releaseTags -ccontains $env:RELEASE_TAG) {
             gh release upload $env:RELEASE_TAG @assets --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Failed to replace release assets.' }
-            gh release edit $env:RELEASE_TAG --title "S3 Explorer $env:RELEASE_TAG" --notes-file $env:RELEASE_NOTES
+            # Preserve manually edited release notes when republishing an existing release.
+            gh release edit $env:RELEASE_TAG --title "S3 Explorer $env:RELEASE_TAG"
           }
           else {
             gh release create $env:RELEASE_TAG @assets --verify-tag --title "S3 Explorer $env:RELEASE_TAG" --notes-file $env:RELEASE_NOTES
