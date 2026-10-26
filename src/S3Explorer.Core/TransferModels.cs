@@ -65,12 +65,35 @@ public sealed record DownloadCheckpoint(
     string? ETag = null,
     string? VersionId = null)
 {
+    // Zero denotes the legacy contiguous-prefix checkpoint. Segment numbers are zero based.
+    public long SegmentSizeBytes { get; init; }
+    public IReadOnlyList<int> CompletedSegments { get; init; } = [];
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(TemporaryPath))
             throw new ArgumentException("临时下载路径不能为空。", nameof(TemporaryPath));
         if (CompletedBytes < 0 || RemoteLength < 0 || CompletedBytes > RemoteLength)
             throw new ArgumentOutOfRangeException(nameof(CompletedBytes), "下载检查点字节范围无效。");
+        if (SegmentSizeBytes < 0 || CompletedSegments is null)
+            throw new ArgumentException("下载分段检查点无效。");
+        if (SegmentSizeBytes == 0)
+        {
+            if (CompletedSegments.Count != 0)
+                throw new ArgumentException("连续下载检查点不能包含分段。");
+            return;
+        }
+        var seen = new HashSet<int>();
+        long confirmed = 0;
+        foreach (var segment in CompletedSegments)
+        {
+            if (segment < 0 || segment > long.MaxValue / SegmentSizeBytes ||
+                segment * SegmentSizeBytes >= RemoteLength || !seen.Add(segment))
+                throw new ArgumentException("下载检查点包含无效或重复的分段。");
+            confirmed = checked(confirmed + Math.Min(SegmentSizeBytes, RemoteLength - segment * SegmentSizeBytes));
+        }
+        if (confirmed != CompletedBytes)
+            throw new ArgumentException("下载检查点分段与已完成字节数不一致。");
     }
 }
 
@@ -157,6 +180,7 @@ public sealed record TransferTaskRecord
     public int MaxAttempts { get; init; } = 3;
     public int RetryBaseDelaySeconds { get; init; } = 2;
     public DateTimeOffset? NextAttemptAt { get; init; }
+    public DateTimeOffset? RetryStartedAt { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? StartedAt { get; init; }
@@ -282,15 +306,15 @@ public static class TransferTaskStateMachine
     private static readonly IReadOnlyDictionary<TransferTaskState, HashSet<TransferTaskState>> Allowed =
         new Dictionary<TransferTaskState, HashSet<TransferTaskState>>
         {
-            [TransferTaskState.Queued] = [TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
+            [TransferTaskState.Queued] = [TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.Running] = [TransferTaskState.Paused, TransferTaskState.RetryPending, TransferTaskState.Completed, TransferTaskState.Failed, TransferTaskState.Cancelled, TransferTaskState.Interrupted, TransferTaskState.CleanupPending],
-            [TransferTaskState.Paused] = [TransferTaskState.Queued, TransferTaskState.Cancelled],
-            [TransferTaskState.RetryPending] = [TransferTaskState.Queued, TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled],
+            [TransferTaskState.Paused] = [TransferTaskState.Queued, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
+            [TransferTaskState.RetryPending] = [TransferTaskState.Failed, TransferTaskState.Queued, TransferTaskState.Running, TransferTaskState.Paused, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.Interrupted] = [TransferTaskState.Queued, TransferTaskState.Paused, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.Failed] = [TransferTaskState.RetryPending, TransferTaskState.Queued, TransferTaskState.Cancelled, TransferTaskState.CleanupPending],
             [TransferTaskState.CleanupPending] = [TransferTaskState.Queued, TransferTaskState.Failed, TransferTaskState.Cancelled],
             [TransferTaskState.Completed] = [],
-            [TransferTaskState.Cancelled] = []
+            [TransferTaskState.Cancelled] = [TransferTaskState.CleanupPending]
         };
 
     public static bool CanTransition(TransferTaskState from, TransferTaskState to) =>
@@ -346,7 +370,12 @@ public static class TransferTaskStateMachine
         {
             Tasks = snapshot.Tasks.Select(task => task.State == TransferTaskState.Running
                 ? Transition(task, TransferTaskState.Interrupted, now)
-                : task).ToArray()
+                : task.State == TransferTaskState.Cancelled && task.MultipartCheckpoint is { } checkpoint
+                    ? Transition(task, TransferTaskState.CleanupPending, now) with
+                    {
+                        MultipartCheckpoint = checkpoint with { CleanupPending = true }
+                    }
+                    : task).ToArray()
         };
     }
 }

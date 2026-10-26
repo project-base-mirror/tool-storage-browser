@@ -63,6 +63,14 @@ internal sealed class TransferQueueControl : UserControl
     private int _maxAttempts = 4;
     private int _retryBaseDelaySeconds = 2;
     private bool _initializing;
+    private bool _viewsDirty;
+    private readonly Dictionary<ListView, TransferTaskRecord[]> _listRows = [];
+    private readonly HashSet<ListView> _dirtyLists = [];
+    private readonly Dictionary<Guid, TransferTaskRecord> _displayTasks = [];
+    private readonly Dictionary<Guid, int> _batchIndices = [];
+    private readonly Dictionary<Guid, long> _batchContributions = [];
+    internal int StructuralRefreshCount { get; private set; }
+    internal int ProgressRowUpdateCount { get; private set; }
     private int _disposeStarted;
 
     public TransferQueueControl(PersistentTransferQueue queue)
@@ -74,6 +82,15 @@ internal sealed class TransferQueueControl : UserControl
         _queue.ProgressChanged += QueueProgressChanged;
         _progressTimer.Tick += ProgressTimerTick;
         _progressTimer.Start();
+        _tabs.SelectedIndexChanged += (_, _) =>
+        {
+            if (_viewsDirty)
+            {
+                _viewsDirty = false;
+                RefreshViews(_queue.Snapshot);
+            }
+            else RefreshSelectedList();
+        };
     }
 
     public event EventHandler<TransferCompletedEventArgs>? TransferCompleted;
@@ -432,16 +449,25 @@ internal sealed class TransferQueueControl : UserControl
             if (Volatile.Read(ref _disposeStarted) != 0)
                 return;
             var currentSnapshot = _queue.Snapshot;
-            var currentIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
-            foreach (var taskId in _observedAttempts.Keys.Where(taskId => !currentIds.Contains(taskId)).ToArray())
+            if (args.ChangedTaskId is { } changedId)
             {
-                _observedAttempts.Remove(taskId);
-                _pendingProgress.TryRemove(taskId, out _);
+                var changed = currentSnapshot.Tasks.FirstOrDefault(task => task.Id == changedId);
+                if (changed is not null && ObserveAttempt(changed.Id, changed.AttemptCount))
+                    _pendingProgress.TryRemove(changed.Id, out _);
             }
-            foreach (var task in currentSnapshot.Tasks)
+            else
             {
-                if (ObserveAttempt(task.Id, task.AttemptCount))
-                    _pendingProgress.TryRemove(task.Id, out _);
+                var currentIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
+                foreach (var taskId in _observedAttempts.Keys.Where(taskId => !currentIds.Contains(taskId)).ToArray())
+                {
+                    _observedAttempts.Remove(taskId);
+                    _pendingProgress.TryRemove(taskId, out _);
+                }
+                foreach (var task in currentSnapshot.Tasks)
+                {
+                    if (ObserveAttempt(task.Id, task.AttemptCount))
+                        _pendingProgress.TryRemove(task.Id, out _);
+                }
             }
         }
 
@@ -451,14 +477,23 @@ internal sealed class TransferQueueControl : UserControl
     private void QueueChangedOnUi(TransferQueueChangedEventArgs args)
     {
         var currentSnapshot = _queue.Snapshot;
-        var activeIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
-        foreach (var taskId in _progress.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
-            _progress.TryRemove(taskId, out _);
-
-        // Manual retry resets AttemptCount to zero. Use the current snapshot so delayed
-        // notifications cannot reset a newer attempt's already displayed samples.
-        foreach (var task in currentSnapshot.Tasks)
+        // State notifications are not discarded: completion/CDN callbacks must run once even
+        // when several states arrive within one rendering interval.
+        var changedTasks = (args.ChangedTaskId is { } id
+            ? args.Snapshot.Tasks.Where(task => task.Id == id)
+            : args.Snapshot.Tasks).ToArray();
+        var latestTasks = (args.ChangedTaskId is { } latestId
+            ? currentSnapshot.Tasks.Where(task => task.Id == latestId)
+            : currentSnapshot.Tasks).ToArray();
+        var structuralChange = args.ChangedTaskId is null || latestTasks.Any(task =>
+            !_displayTasks.TryGetValue(task.Id, out var previous) ||
+            previous.State != task.State || previous.AttemptCount != task.AttemptCount ||
+            previous.TotalBytes != task.TotalBytes || previous.Failure != task.Failure);
+        foreach (var task in latestTasks)
         {
+            // Checkpoint-only notifications do not rebuild lists, but must still replace
+            // the cached record used by subsequent progress rendering.
+            _displayTasks[task.Id] = task;
             if (_knownAttempts.TryGetValue(task.Id, out var previousAttempt) &&
                 task.AttemptCount != previousAttempt)
                 _progress.TryRemove(task.Id, out _);
@@ -467,14 +502,19 @@ internal sealed class TransferQueueControl : UserControl
 
         if (!_initializing)
         {
-            foreach (var task in args.Snapshot.Tasks)
+            var latestById = latestTasks.ToDictionary(task => task.Id);
+            foreach (var task in changedTasks)
             {
                 _knownStates.TryGetValue(task.Id, out var previous);
-                if (task.State == TransferTaskState.Completed)
-                    _pendingProgress[task.Id] = new TransferProgress(task.TotalBytes, task.TotalBytes);
-                if (task.State is TransferTaskState.Completed or TransferTaskState.Failed or
-                    TransferTaskState.Cancelled or TransferTaskState.Paused or TransferTaskState.Interrupted)
-                    ApplyPendingProgress(task.Id);
+                if (latestById.TryGetValue(task.Id, out var latest) &&
+                    latest.AttemptCount == task.AttemptCount && latest.State == task.State)
+                {
+                    if (task.State == TransferTaskState.Completed)
+                        _pendingProgress[task.Id] = new TransferProgress(task.TotalBytes, task.TotalBytes);
+                    if (task.State is TransferTaskState.Completed or TransferTaskState.Failed or
+                        TransferTaskState.Cancelled or TransferTaskState.Paused or TransferTaskState.Interrupted)
+                        ApplyPendingProgress(task.Id);
+                }
 
                 if (task.State == TransferTaskState.Completed &&
                     previous != TransferTaskState.Completed)
@@ -489,11 +529,17 @@ internal sealed class TransferQueueControl : UserControl
                 _knownStates[task.Id] = task.State;
             }
         }
-        foreach (var taskId in _knownStates.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
-            _knownStates.Remove(taskId);
-        foreach (var taskId in _knownAttempts.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
-            _knownAttempts.Remove(taskId);
-        RefreshViews(_queue.Snapshot);
+        if (args.ChangedTaskId is null)
+        {
+            var activeIds = currentSnapshot.Tasks.Select(task => task.Id).ToHashSet();
+            foreach (var taskId in _knownStates.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+                _knownStates.Remove(taskId);
+            foreach (var taskId in _knownAttempts.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+                _knownAttempts.Remove(taskId);
+            foreach (var taskId in _progress.Keys.Where(taskId => !activeIds.Contains(taskId)).ToArray())
+                _progress.TryRemove(taskId, out _);
+        }
+        _viewsDirty |= structuralChange;
     }
 
     private bool ObserveAttempt(Guid taskId, int attemptCount)
@@ -530,14 +576,71 @@ internal sealed class TransferQueueControl : UserControl
         if (IsDisposed || Disposing)
             return;
 
-        var changed = false;
+        var changed = new HashSet<Guid>();
         foreach (var taskId in _pendingProgress.Keys)
         {
-            if (_pendingProgress.TryRemove(taskId, out var latest))
-                changed |= ApplyProgress(taskId, latest);
+            if (_pendingProgress.TryRemove(taskId, out var latest) && ApplyProgress(taskId, latest))
+                changed.Add(taskId);
         }
-        if (changed)
+        if (_viewsDirty)
+        {
+            _viewsDirty = false;
             RefreshViews(_queue.Snapshot);
+        }
+        else if (changed.Count > 0)
+            RefreshProgressRows(changed);
+    }
+
+    private void RefreshProgressRows(IReadOnlySet<Guid> changed)
+    {
+        foreach (var id in changed)
+        {
+            if (!_displayTasks.TryGetValue(id, out var task)) continue;
+            if (task.BatchId is { } batchId && _batchIndices.TryGetValue(batchId, out var index))
+            {
+                var bytes = DisplayedBytes(task);
+                var previous = _batchContributions.GetValueOrDefault(id);
+                _batchContributions[id] = bytes;
+                _batchRows[index] = _batchRows[index] with
+                {
+                    TransferredBytes = _batchRows[index].TransferredBytes + bytes - previous
+                };
+            }
+        }
+        if (_tabs.SelectedIndex == 0)
+        {
+            _batches.Invalidate();
+            return;
+        }
+        var list = SelectedList();
+        if (list is null) return;
+        foreach (ListViewItem item in list.Items)
+        {
+            if (item.Tag is TransferTaskRecord task && changed.Contains(task.Id))
+            {
+                UpdateItem(item, _displayTasks.GetValueOrDefault(task.Id, task));
+                ProgressRowUpdateCount++;
+            }
+        }
+    }
+
+    private long DisplayedBytes(TransferTaskRecord task) => task.State == TransferTaskState.Completed
+        ? task.TotalBytes
+        : Math.Clamp(_progress.TryGetValue(task.Id, out var sample) ? sample.Bytes : task.TransferredBytes,
+            0, task.TotalBytes);
+
+    private ListView? SelectedList() => _tabs.SelectedTab?.Controls.OfType<ListView>().FirstOrDefault();
+
+    private void RefreshSelectedList()
+    {
+        var list = SelectedList();
+        if (list is null || list == _batches) return;
+        if (_dirtyLists.Remove(list) && _listRows.TryGetValue(list, out var rows))
+            Populate(list, rows.Select(task => _displayTasks.GetValueOrDefault(task.Id, task)).ToArray());
+        else
+            foreach (ListViewItem item in list.Items)
+                if (item.Tag is TransferTaskRecord task)
+                    UpdateItem(item, _displayTasks.GetValueOrDefault(task.Id, task));
     }
 
     private bool ApplyPendingProgress(Guid taskId) =>
@@ -567,14 +670,27 @@ internal sealed class TransferQueueControl : UserControl
         if (IsDisposed)
             return;
 
+        StructuralRefreshCount++;
+        _displayTasks.Clear();
+        _batchContributions.Clear();
+        foreach (var task in snapshot.Tasks)
+        {
+            _displayTasks[task.Id] = task;
+            if (task.BatchId is not null) _batchContributions[task.Id] = DisplayedBytes(task);
+        }
+        var tasksByBatch = snapshot.Tasks.Where(task => task.BatchId is not null)
+            .ToLookup(task => task.BatchId!.Value);
         var liveProgress = _progress.ToDictionary(pair => pair.Key, pair => pair.Value.Bytes);
         _batchRecords = snapshot.Batches
             .OrderByDescending(batch => batch.UpdatedAt)
             .ThenByDescending(batch => batch.CreatedAt)
             .ToArray();
         _batchRows = _batchRecords
-            .Select(batch => TransferBatchProjector.Project(batch, snapshot.Tasks, liveProgress))
+            .Select(batch => TransferBatchProjector.Project(batch, tasksByBatch[batch.Id], liveProgress))
             .ToArray();
+        _batchIndices.Clear();
+        for (var index = 0; index < _batchRows.Length; index++)
+            _batchIndices[_batchRows[index].BatchId] = index;
         _batches.VirtualListSize = _batchRows.Length;
         _batches.Invalidate();
 
@@ -597,16 +713,23 @@ internal sealed class TransferQueueControl : UserControl
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
 
-        Populate(_all, standalone.Take(VisibleStandaloneLimit));
-        Populate(_active, active.Take(VisibleStandaloneLimit));
-        Populate(_completed, completed.Take(VisibleStandaloneLimit));
-        Populate(_failed, failed.Take(VisibleStandaloneLimit));
+        SetListRows(_all, standalone);
+        SetListRows(_active, active);
+        SetListRows(_completed, completed);
+        SetListRows(_failed, failed);
+        RefreshSelectedList();
 
         _tabs.TabPages[0].Text = $"批次 ({_batchRows.Length:N0})";
         _tabs.TabPages[1].Text = TabText("全部", standalone.Length);
         _tabs.TabPages[2].Text = TabText("进行中", active.Length);
         _tabs.TabPages[3].Text = TabText("成功", completed.Length);
         _tabs.TabPages[4].Text = TabText("失败", failed.Length);
+    }
+
+    private void SetListRows(ListView list, TransferTaskRecord[] rows)
+    {
+        _listRows[list] = rows.Take(VisibleStandaloneLimit).ToArray();
+        _dirtyLists.Add(list);
     }
 
     private void RetrieveBatchItem(object? sender, RetrieveVirtualItemEventArgs args)
@@ -633,31 +756,43 @@ internal sealed class TransferQueueControl : UserControl
 
     private void Populate(ListView list, IEnumerable<TransferTaskRecord> tasks)
     {
-        var selectedId = list.SelectedItems.Count == 1 &&
-            list.SelectedItems[0].Tag is TransferTaskRecord selected
-                ? selected.Id
-                : Guid.Empty;
+        var existing = list.Items.Cast<ListViewItem>().ToDictionary(item => ((TransferTaskRecord)item.Tag!).Id);
+        var rows = tasks.Select(task =>
+        {
+            if (!existing.TryGetValue(task.Id, out var row)) return CreateItem(task);
+            UpdateItem(row, task);
+            return row;
+        }).ToArray();
+        var retained = rows.ToHashSet();
+        var ranks = rows.Select((row, index) => (row, index)).ToDictionary(pair => pair.row, pair => pair.index);
         list.BeginUpdate();
         try
         {
-            list.Items.Clear();
-            foreach (var task in tasks)
-                list.Items.Add(CreateItem(task));
-            var selectedItem = list.Items
-                .Cast<ListViewItem>()
-                .FirstOrDefault(entry =>
-                    entry.Tag is TransferTaskRecord task &&
-                    task.Id == selectedId);
-            if (selectedItem is not null)
-                selectedItem.Selected = true;
+            foreach (var row in existing.Values)
+                if (!retained.Contains(row)) row.Remove();
+            list.Items.AddRange(rows.Where(row => row.ListView is null).ToArray());
+            list.ListViewItemSorter = new TaskRowOrder(ranks);
+            list.Sort();
+            list.ListViewItemSorter = null;
         }
-        finally
-        {
-            list.EndUpdate();
-        }
+        finally { list.EndUpdate(); }
+    }
+
+    private sealed class TaskRowOrder(IReadOnlyDictionary<ListViewItem, int> ranks) : System.Collections.IComparer
+    {
+        public int Compare(object? left, object? right) =>
+            ranks[(ListViewItem)left!].CompareTo(ranks[(ListViewItem)right!]);
     }
 
     private ListViewItem CreateItem(TransferTaskRecord task)
+    {
+        var item = new ListViewItem();
+        for (var index = 1; index < 10; index++) item.SubItems.Add(string.Empty);
+        UpdateItem(item, task);
+        return item;
+    }
+
+    private void UpdateItem(ListViewItem item, TransferTaskRecord task)
     {
         _progress.TryGetValue(task.Id, out var sample);
         var transferred = task.State == TransferTaskState.Completed
@@ -692,21 +827,18 @@ internal sealed class TransferQueueControl : UserControl
         var remaining = speed > 0 && total > transferred
             ? TimeSpan.FromSeconds((total - transferred) / speed).ToString(@"hh\:mm\:ss")
             : "—";
-        var item = new ListViewItem(name)
-        {
-            Tag = task,
-            ToolTipText = task.Failure?.SafeMessage ?? string.Empty
-        };
-        item.SubItems.Add(DirectionText(task.Direction));
-        item.SubItems.Add(source);
-        item.SubItems.Add(target);
-        item.SubItems.Add(FormatBytes(total));
-        item.SubItems.Add($"{percentage:N1}%");
-        item.SubItems.Add(speed > 0 ? $"{FormatBytes((long)speed)}/s" : "—");
-        item.SubItems.Add(remaining);
-        item.SubItems.Add(StateText(task.State));
-        item.SubItems.Add(task.Failure?.SafeMessage ?? string.Empty);
-        return item;
+        item.Tag = task;
+        item.ToolTipText = task.Failure?.SafeMessage ?? string.Empty;
+        item.Text = name;
+        item.SubItems[1].Text = DirectionText(task.Direction);
+        item.SubItems[2].Text = source;
+        item.SubItems[3].Text = target;
+        item.SubItems[4].Text = FormatBytes(total);
+        item.SubItems[5].Text = $"{percentage:N1}%";
+        item.SubItems[6].Text = speed > 0 ? $"{FormatBytes((long)speed)}/s" : "—";
+        item.SubItems[7].Text = remaining;
+        item.SubItems[8].Text = StateText(task.State);
+        item.SubItems[9].Text = task.Failure?.SafeMessage ?? string.Empty;
     }
 
     private TransferTaskRecord? SelectedTask()
@@ -716,7 +848,11 @@ internal sealed class TransferQueueControl : UserControl
             .FirstOrDefault();
         if (list is null || list == _batches || list.SelectedItems.Count != 1)
             return null;
-        return list.SelectedItems[0].Tag as TransferTaskRecord;
+        // Hidden/lazy rows can retain an older checkpoint. Resolve on demand for details,
+        // clipboard and actions rather than rebuilding every tab for each checkpoint.
+        return list.SelectedItems[0].Tag is TransferTaskRecord selected
+            ? _queue.Snapshot.Tasks.FirstOrDefault(task => task.Id == selected.Id)
+            : null;
     }
 
     private TransferBatchRecord? SelectedBatch()

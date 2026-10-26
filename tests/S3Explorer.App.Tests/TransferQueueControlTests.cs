@@ -32,9 +32,14 @@ public sealed class TransferQueueControlTests
                 Assert.Equal(
                     ["批次 (0)", "全部 (4)", "进行中 (1)", "成功 (1)", "失败 (1)"],
                     tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                Assert.Empty(FindList(control, "AllTransfersList").Items.Cast<ListViewItem>());
+                tabs.SelectedIndex = 1;
                 Assert.Equal(4, FindList(control, "AllTransfersList").Items.Count);
+                tabs.SelectedIndex = 2;
                 Assert.Single(FindList(control, "ActiveTransfersList").Items.Cast<ListViewItem>());
+                tabs.SelectedIndex = 3;
                 Assert.Single(FindList(control, "SuccessfulTransfersList").Items.Cast<ListViewItem>());
+                tabs.SelectedIndex = 4;
                 Assert.Single(FindList(control, "FailedTransfersList").Items.Cast<ListViewItem>());
                 Assert.Equal("成功", FindList(control, "SuccessfulTransfersList").Items[0].SubItems[8].Text);
             }
@@ -68,6 +73,7 @@ public sealed class TransferQueueControlTests
             form.Controls.Add(control);
             control.CreateControl();
             control.InitializeAsync().GetAwaiter().GetResult();
+            Assert.Single(control.Controls.OfType<TabControl>()).SelectedIndex = 1;
 
             var timer = new System.Windows.Forms.Timer { Interval = 20 };
             var pumpTicksWhileRunning = 0;
@@ -131,6 +137,123 @@ public sealed class TransferQueueControlTests
             Assert.False(timedOut, "The WinForms message pump did not observe upload completion.");
             Assert.True(pumpTicksWhileRunning >= 5, "The WinForms message pump stopped while progress was reported.");
             Assert.True(sawIntermediateProgress, "The throttled UI did not display progress before completion.");
+        });
+    }
+
+    [Fact]
+    public void CheckpointOnlyNotificationRefreshesCachedRecordWithoutRebuildingLists()
+    {
+        RunSta(() =>
+        {
+            var task = CreateTask(Guid.NewGuid(), "checkpoint.bin", TransferTaskState.Paused)
+                with { TransferredBytes = 25 };
+            var queue = new PersistentTransferQueue(
+                new SnapshotStore(new TransferStoreSnapshot { Tasks = [task] }), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue);
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var cache = (Dictionary<Guid, TransferTaskRecord>)typeof(TransferQueueControl)
+                    .GetField("_displayTasks", flags)!.GetValue(control)!;
+                cache[task.Id] = task with { TransferredBytes = 0 };
+                var refreshes = control.StructuralRefreshCount;
+                typeof(TransferQueueControl).GetMethod("QueueChangedOnUi", flags)!
+                    .Invoke(control, [new TransferQueueChangedEventArgs(queue.Snapshot, task.Id)]);
+                Assert.Equal(25, cache[task.Id].TransferredBytes);
+                Assert.Equal(refreshes, control.StructuralRefreshCount);
+            }
+            finally
+            {
+                queue.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        });
+    }
+
+    [Fact]
+    public void LargeQueueProgressUpdatesExistingVisibleRowWithoutRebuildingHiddenTabs()
+    {
+        RunSta(() =>
+        {
+            var profileId = Guid.NewGuid();
+            var tasks = Enumerable.Range(0, 10_000)
+                .Select(index => CreateTask(profileId, $"{index}.bin", TransferTaskState.Paused)).ToArray();
+            var queue = new PersistentTransferQueue(
+                new SnapshotStore(new TransferStoreSnapshot { Tasks = tasks }), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue);
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                Assert.Single(control.Controls.OfType<TabControl>()).SelectedIndex = 1;
+                var list = FindList(control, "AllTransfersList");
+                Assert.Equal(1_000, list.Items.Count);
+                var original = list.Items[0];
+                var task = Assert.IsType<TransferTaskRecord>(original.Tag);
+                var tick = typeof(TransferQueueControl).GetMethod("ProgressTimerTick",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                // Drain initialization's coalesced structural refresh before measuring progress.
+                tick.Invoke(control, [null, EventArgs.Empty]);
+                original = list.Items.Cast<ListViewItem>().Single(item =>
+                    ((TransferTaskRecord)item.Tag!).Id == task.Id);
+                var refreshes = control.StructuralRefreshCount;
+                var progress = typeof(TransferQueueControl).GetMethod("QueueProgressChanged",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                for (var value = 1; value <= 80; value++)
+                    progress.Invoke(control, [null, new TransferTaskProgressEventArgs(task.Id, new TransferProgress(value, 100))]);
+                tick.Invoke(control, [null, EventArgs.Empty]);
+
+                Assert.Equal(refreshes, control.StructuralRefreshCount);
+                Assert.Equal(1, control.ProgressRowUpdateCount);
+                Assert.Same(original, list.Items.Cast<ListViewItem>().Single(item =>
+                    ((TransferTaskRecord)item.Tag!).Id == task.Id));
+                Assert.Equal($"{80d:N1}%", original.SubItems[5].Text);
+                Assert.Empty(FindList(control, "ActiveTransfersList").Items.Cast<ListViewItem>());
+                Assert.Empty(FindList(control, "SuccessfulTransfersList").Items.Cast<ListViewItem>());
+            }
+            finally { queue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        });
+    }
+
+    [Fact]
+    public void BatchProgressChangesOnlyAffectedSummaryWithoutStructuralRefresh()
+    {
+        RunSta(() =>
+        {
+            var profileId = Guid.NewGuid();
+            var batches = Enumerable.Range(0, 200).Select(index => new TransferBatchRecord
+            {
+                ProfileId = profileId, ProfileName = "test-profile", Name = $"batch-{index}",
+                Bucket = "test-bucket", RootPath = Path.GetTempPath(), DiscoveryCompleted = true,
+                Direction = TransferDirection.Download
+            }).ToArray();
+            var tasks = batches.SelectMany(batch => Enumerable.Range(0, 20).Select(index =>
+                CreateTask(profileId, $"{batch.Id}/{index}.bin", TransferTaskState.Paused) with
+                { BatchId = batch.Id, Kind = TransferTaskKind.FolderBatchItem })).ToArray();
+            batches = batches.Select(batch => batch with
+            { TaskIds = tasks.Where(task => task.BatchId == batch.Id).Select(task => task.Id).ToArray() }).ToArray();
+            var queue = new PersistentTransferQueue(new SnapshotStore(new TransferStoreSnapshot
+            { Tasks = tasks, Batches = batches }), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue);
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var tick = typeof(TransferQueueControl).GetMethod("ProgressTimerTick", flags)!;
+                tick.Invoke(control, [null, EventArgs.Empty]);
+                var refreshes = control.StructuralRefreshCount;
+                typeof(TransferQueueControl).GetMethod("QueueProgressChanged", flags)!.Invoke(control,
+                    [null, new TransferTaskProgressEventArgs(tasks[0].Id, new TransferProgress(75, 100))]);
+                tick.Invoke(control, [null, EventArgs.Empty]);
+                var rows = (TransferBatchSummary[])typeof(TransferQueueControl).GetField("_batchRows", flags)!.GetValue(control)!;
+                Assert.Equal(refreshes, control.StructuralRefreshCount);
+                Assert.Equal(75, rows.Single(row => row.BatchId == tasks[0].BatchId).TransferredBytes);
+                Assert.All(rows.Where(row => row.BatchId != tasks[0].BatchId), row => Assert.Equal(0, row.TransferredBytes));
+            }
+            finally { queue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
         });
     }
 

@@ -2000,29 +2000,7 @@ internal sealed partial class MainForm : Form
             ? ordered.ThenBy(selector, Comparer<object>.Create(CompareObjects))
             : ordered.ThenByDescending(selector, Comparer<object>.Create(CompareObjects));
 
-        _objects.BeginUpdate();
-        try
-        {
-            _objects.Items.Clear();
-            if (!string.IsNullOrEmpty(_currentPrefix))
-                _objects.Items.Add(CreateParentDirectoryItem(_objects.Font));
-
-            foreach (var entry in ordered)
-                _objects.Items.Add(CreateObjectItem(entry));
-            if (_hasMore)
-            {
-                var more = new ListViewItem("加载更多...")
-                {
-                    Tag = new LoadMoreTag(),
-                    ImageKey = "refresh",
-                    Font = new Font(_objects.Font, FontStyle.Bold),
-                    ForeColor = SystemColors.HotTrack
-                };
-                more.SubItems.AddRange(["", "分页", "", ""]);
-                _objects.Items.Add(more);
-            }
-        }
-        finally { _objects.EndUpdate(); }
+        SynchronizeObjectRows(_objects, ordered.ToArray(), !string.IsNullOrEmpty(_currentPrefix), _hasMore);
 
         _objectStatus.Text = _objectLimitReached
             ? $"已显示 {_loadedItems.Count:N0} 个对象，已达到内存保护上限"
@@ -2030,6 +2008,76 @@ internal sealed partial class MainForm : Form
                 ? $"已显示 {_loadedItems.Count:N0} 个对象，还有更多"
                 : $"{_loadedItems.Count:N0} 个对象";
         UpdateSelectionStatus();
+    }
+
+    internal static void SynchronizeObjectRows(
+        ListView list, IReadOnlyList<S3ObjectEntry> entries, bool showParent, bool showMore)
+    {
+        // Retain native rows, selection and focus across paging/filtering. Only new keys
+        // allocate rows; sorting does not reconstruct every existing ListViewItem.
+        var existing = list.Items.Cast<ListViewItem>().ToArray();
+        var byIdentity = existing.Where(item => item.Tag is S3ObjectEntry)
+            .ToDictionary(item =>
+            {
+                var entry = (S3ObjectEntry)item.Tag!;
+                return new ObjectEntryIdentity(entry.Key, entry.IsDirectory);
+            });
+        var desired = new List<ListViewItem>(entries.Count + 2);
+        if (showParent)
+            desired.Add(existing.FirstOrDefault(item => item.Tag is ParentDirectoryTag)
+                ?? CreateParentDirectoryItem(list.Font));
+        foreach (var entry in entries)
+        {
+            if (!byIdentity.TryGetValue(new ObjectEntryIdentity(entry.Key, entry.IsDirectory), out var item))
+                item = CreateObjectItem(entry);
+            else if (!Equals(item.Tag, entry))
+            {
+                item.Tag = entry;
+                item.Text = entry.Name;
+                item.ImageKey = UiIcons.ObjectImageKey(entry.Name, entry.IsDirectory);
+                item.SubItems[1].Text = entry.IsDirectory ? string.Empty : FileSizeFormatter.Format(entry.Size);
+                item.SubItems[2].Text = ObjectTypeDetector.Detect(entry.Name, entry.IsDirectory);
+                item.SubItems[3].Text = entry.LastModified?.LocalDateTime.ToString("G") ?? string.Empty;
+                item.SubItems[4].Text = entry.IsDirectory ? string.Empty : entry.StorageClass;
+            }
+            desired.Add(item);
+        }
+        if (showMore)
+        {
+            var more = existing.FirstOrDefault(item => item.Tag is LoadMoreTag);
+            if (more is null)
+            {
+                more = new ListViewItem("加载更多...")
+                {
+                    Tag = new LoadMoreTag(),
+                    ImageKey = "refresh",
+                    Font = new Font(list.Font, FontStyle.Bold),
+                    ForeColor = SystemColors.HotTrack
+                };
+                more.SubItems.AddRange(["", "分页", "", ""]);
+            }
+            desired.Add(more);
+        }
+        var retained = desired.ToHashSet();
+        var ranks = desired.Select((item, index) => (item, index))
+            .ToDictionary(pair => pair.item, pair => pair.index);
+        list.BeginUpdate();
+        try
+        {
+            foreach (var item in existing)
+                if (!retained.Contains(item)) item.Remove();
+            list.Items.AddRange(desired.Where(item => item.ListView is null).ToArray());
+            list.ListViewItemSorter = new ObjectRowOrder(ranks);
+            list.Sort();
+            list.ListViewItemSorter = null;
+        }
+        finally { list.EndUpdate(); }
+    }
+
+    private sealed class ObjectRowOrder(IReadOnlyDictionary<ListViewItem, int> ranks) : System.Collections.IComparer
+    {
+        public int Compare(object? left, object? right) =>
+            ranks[(ListViewItem)left!].CompareTo(ranks[(ListViewItem)right!]);
     }
 
     private static int CompareObjects(object? left, object? right)

@@ -27,12 +27,25 @@ public sealed record MultipartCleanupResult(
 
 public static class MultipartUploadPlanner
 {
+    public static long EffectivePartSize(long sourceLength, long requestedPartSize)
+    {
+        const long minimum = 5L * 1024 * 1024;
+        const long maximum = 5L * 1024 * 1024 * 1024;
+        if (sourceLength <= 0) throw new ArgumentOutOfRangeException(nameof(sourceLength));
+        if (requestedPartSize < minimum || requestedPartSize > maximum)
+            throw new ArgumentOutOfRangeException(nameof(requestedPartSize));
+        var required = sourceLength / 10_000 + (sourceLength % 10_000 == 0 ? 0 : 1);
+        if (required > maximum)
+            throw new ArgumentOutOfRangeException(nameof(sourceLength), "对象超出 Multipart 分片容量。");
+        return Math.Max(requestedPartSize, required);
+    }
+
     public static IReadOnlyList<MultipartPartDescriptor> BuildParts(long sourceLength, long partSize)
     {
         if (sourceLength <= 0) throw new ArgumentOutOfRangeException(nameof(sourceLength));
         if (partSize < 5L * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(partSize));
 
-        var count = checked((int)((sourceLength + partSize - 1) / partSize));
+        var count = sourceLength / partSize + (sourceLength % partSize == 0 ? 0 : 1);
         if (count > 10_000)
             throw new InvalidOperationException($"分片数量 {count:N0} 超过 S3 上限 10,000。");
 

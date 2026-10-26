@@ -89,7 +89,10 @@ public sealed class SharedTransferBandwidthLimiter : ITransferBandwidthLimiter
     }
 }
 
-public sealed record RemoteObjectIdentity(long Length, string? ETag, string? VersionId);
+public sealed record RemoteObjectIdentity(long Length, string? ETag, string? VersionId)
+{
+    public string? FullObjectSha256 { get; init; }
+}
 
 public sealed record DownloadResumeDecision(bool Resume, bool ResetTemporaryFile, long Offset, string Reason);
 
@@ -108,11 +111,12 @@ public static class DownloadResumePlanner
             return new(false, true, 0, "临时文件长度超出远端对象范围。");
         if (checkpoint is null)
             return new(false, true, 0, "缺少可验证的下载检查点。");
-        if (checkpoint.CompletedBytes != temporaryLength || checkpoint.RemoteLength != remote.Length)
+        if (checkpoint.SegmentSizeBytes != 0 || checkpoint.CompletedBytes > temporaryLength ||
+            checkpoint.RemoteLength != remote.Length)
             return new(false, true, 0, "本地长度或远端长度已变化。");
         if (!SameIdentity(checkpoint.ETag, remote.ETag) || !SameIdentity(checkpoint.VersionId, remote.VersionId))
             return new(false, true, 0, "远端 ETag 或 VersionId 已变化。");
-        return new(true, false, temporaryLength, "检查点与远端对象一致。");
+        return new(true, false, checkpoint.CompletedBytes, "检查点与远端对象一致，未确认尾部将被截断。");
     }
 
     private static bool SameIdentity(string? expected, string? actual) =>
@@ -123,12 +127,14 @@ public static class DownloadResumePlanner
 
 public static class RetryBackoff
 {
-    public static TimeSpan Calculate(int baseDelaySeconds, int completedAttempts)
+    public static TimeSpan Calculate(int baseDelaySeconds, int completedAttempts, double jitterFactor = 1)
     {
+        if (!double.IsFinite(jitterFactor) || jitterFactor is < 0.5 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(jitterFactor));
         if (baseDelaySeconds <= 0) return TimeSpan.Zero;
         var exponent = Math.Clamp(completedAttempts - 1, 0, 10);
         var seconds = Math.Min(3600d, baseDelaySeconds * Math.Pow(2, exponent));
-        return TimeSpan.FromSeconds(seconds);
+        return TimeSpan.FromSeconds(seconds * jitterFactor);
     }
 }
 
@@ -138,7 +144,10 @@ public sealed record TransferOperationContext(
     DownloadCheckpoint? DownloadCheckpoint,
     MultipartUploadCheckpoint? MultipartCheckpoint,
     Action<TransferProgress> ReportProgress,
-    Func<long, DownloadCheckpoint?, MultipartUploadCheckpoint?, CancellationToken, Task> UpdateCheckpointAsync);
+    Func<long, DownloadCheckpoint?, MultipartUploadCheckpoint?, CancellationToken, Task> UpdateCheckpointAsync)
+{
+    public SharedTransferRequestBudget RequestBudget { get; init; } = SharedTransferRequestBudget.Default;
+}
 
 public static class ResumableDownloadFile
 {

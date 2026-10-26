@@ -15,6 +15,37 @@ public sealed class MainFormInteractionCollection
 public sealed class MainFormInteractionTests
 {
     [Fact]
+    public async Task PagingAndFilteringReuseObjectRowsAndPreserveSelection()
+    {
+        await RunMessagePumpAsync(host =>
+        {
+            using var list = new ListView { View = View.Details, MultiSelect = true };
+            for (var column = 0; column < 5; column++) list.Columns.Add(column.ToString());
+            host.Controls.Add(list);
+            _ = list.Handle;
+            var firstPage = Enumerable.Range(0, 1_000).Select(index =>
+                new S3ObjectEntry($"{index:0000}.bin", $"{index:0000}.bin", index, false, null, "STANDARD")).ToArray();
+            MainForm.SynchronizeObjectRows(list, firstPage, true, true);
+            var retained = list.Items.Cast<ListViewItem>().Single(item =>
+                item.Tag is S3ObjectEntry entry && entry.Key == "0500.bin");
+            retained.Selected = true;
+            var next = firstPage.Append(new S3ObjectEntry("1000.bin", "1000.bin", 1, false, null, "STANDARD")).Reverse().ToArray();
+            MainForm.SynchronizeObjectRows(list, next, true, false);
+            Assert.Equal(1_002, list.Items.Count);
+            Assert.IsType<ParentDirectoryTag>(list.Items[0].Tag);
+            Assert.Equal("1000.bin", Assert.IsType<S3ObjectEntry>(list.Items[1].Tag).Key);
+            Assert.Same(retained, list.Items.Cast<ListViewItem>().Single(item =>
+                item.Tag is S3ObjectEntry entry && entry.Key == "0500.bin"));
+            Assert.True(retained.Selected);
+            Assert.DoesNotContain(list.Items.Cast<ListViewItem>(), item => item.Tag is LoadMoreTag);
+            MainForm.SynchronizeObjectRows(list, firstPage.Where(entry => entry.Key == "0500.bin").ToArray(), false, false);
+            Assert.Same(retained, Assert.Single(list.Items.Cast<ListViewItem>()));
+            Assert.True(retained.Selected);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public async Task DragDropUploadKeepsMessagePumpResponsiveAndCompletesWithExactSourceAndKey()
     {
         await RunMessagePumpAsync(async host =>
@@ -49,6 +80,7 @@ public sealed class MainFormInteractionTests
                 var transfers = GetField<TransferQueueControl>(form, "_transfers");
                 _ = transfers.Handle;
                 await transfers.InitializeAsync();
+                Assert.Single(transfers.Controls.OfType<TabControl>()).SelectedIndex = 1;
                 var rows = Assert.IsType<ListView>(Assert.Single(transfers.Controls.Find("AllTransfersList", true)));
                 _ = rows.Handle;
 

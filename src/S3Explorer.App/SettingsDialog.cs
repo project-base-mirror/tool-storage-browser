@@ -190,7 +190,7 @@ internal sealed class SettingsDialog : Form
         var row = 0;
         AddNumber(table, ref row, "同时传输文件数：", _files);
         AddNumber(table, ref row, "单文件分片并发数：", _parts);
-        AddNumber(table, ref row, "分片上传阈值（MB）：", _threshold);
+        AddNumber(table, ref row, "分片传输阈值（MB）：", _threshold);
         AddNumber(table, ref row, "分片大小（MB）：", _partSize);
         AddNumber(table, ref row, "失败重试次数：", _retries);
         AddNumber(table, ref row, "重试基础间隔（秒）：", _delay);
@@ -198,7 +198,7 @@ internal sealed class SettingsDialog : Form
         AddNumber(table, ref row, "下载限速（KiB/s）：", _downloadLimit);
         var note = new Label
         {
-            Text = "限速设为 0 表示不限速；重试采用指数退避。分片大小最小为 5 MiB。",
+            Text = "限速 0 表示不限速；重试采用抖动退避。上传分片至少 5 MiB，大文件下载分段至少 32 MiB。",
             AutoSize = true, MaximumSize = new Size(560, 0), Margin = new Padding(3, 12, 3, 3)
         };
         table.Controls.Add(note, 0, row);

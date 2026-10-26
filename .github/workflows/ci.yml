@@ -59,3 +59,64 @@ jobs:
           name: focused-coverage-${{ github.run_id }}
           if-no-files-found: warn
           path: artifacts/coverage/**
+
+  minio-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      S3EXPLORER_MATRIX_PROVIDER: minio
+      S3EXPLORER_MINIO_ENDPOINT: http://127.0.0.1:19000
+      S3EXPLORER_MINIO_ACCESS_KEY: s3explorer-ci
+      S3EXPLORER_MINIO_SECRET_KEY: isolated-ci-test-password
+      S3EXPLORER_MINIO_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Start pinned isolated MinIO
+        shell: bash
+        run: |
+          docker run --detach --name s3explorer-ci-minio \
+            --publish 127.0.0.1:19000:9000 \
+            --env MINIO_ROOT_USER="$S3EXPLORER_MINIO_ACCESS_KEY" \
+            --env MINIO_ROOT_PASSWORD="$S3EXPLORER_MINIO_SECRET_KEY" \
+            quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            server /data
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$S3EXPLORER_MINIO_ENDPOINT/minio/health/ready"; then exit 0; fi
+            sleep 2
+          done
+          docker logs s3explorer-ci-minio
+          exit 1
+      - name: Run real storage integration tests
+        shell: bash
+        run: |
+          dotnet restore tests/S3Explorer.Infrastructure.S3.Tests/S3Explorer.Infrastructure.S3.Tests.csproj --locked-mode --nologo
+          dotnet test tests/S3Explorer.Infrastructure.S3.Tests/S3Explorer.Infrastructure.S3.Tests.csproj \
+            -c Release --no-restore --nologo --filter 'Category=Integration' \
+            --logger 'trx;LogFileName=minio.trx' --results-directory artifacts/minio
+      - name: Reject empty or skipped integration runs
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          root = ET.parse('artifacts/minio/minio.trx').getroot()
+          counters = root.find('.//{*}Counters')
+          assert counters is not None, 'Missing integration test counters'
+          counts = {key: int(value) for key, value in counters.attrib.items()}
+          assert counts.get('total', 0) > 0, f'No integration tests discovered: {counts}'
+          assert counts.get('passed', 0) == counts['total'], f'Integration tests skipped or failed: {counts}'
+          print(f"All {counts['total']} real MinIO integration tests passed without skips.")
+      - name: Preserve integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minio-integration-${{ github.run_id }}
+          if-no-files-found: warn
+          path: artifacts/minio/**
+      - name: Stop isolated MinIO
+        if: always()
+        shell: bash
+        run: |
+          docker logs s3explorer-ci-minio || true
+          docker rm --force s3explorer-ci-minio || true
