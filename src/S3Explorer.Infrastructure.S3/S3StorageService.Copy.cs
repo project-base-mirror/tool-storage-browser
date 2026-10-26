@@ -15,6 +15,10 @@ public sealed partial class S3StorageService
         if (sourceBucket == destinationBucket && sourceKey == destinationKey)
             throw new TransferExecutionException(new TransferFailureInfo(
                 "来源与目标相同。", TransferFailureCategory.Validation));
+        var conditionalDelete = S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete;
+        if (move && !conditionalDelete.Supported)
+            throw new TransferExecutionException(new TransferFailureInfo(
+                conditionalDelete.Reason, TransferFailureCategory.Validation, Retryable: false));
         try
         {
             var source = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest

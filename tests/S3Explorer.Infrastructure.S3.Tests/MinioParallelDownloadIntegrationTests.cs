@@ -24,7 +24,7 @@ public sealed class MinioParallelDownloadIntegrationTests(ITestOutputHelper outp
             await using (var source = File.Create(sourcePath))
             {
                 var buffer = new byte[1024 * 1024];
-                for (var block = 0; block < 64; block++)
+                for (var block = 0; block < 128; block++)
                 {
                     Array.Fill(buffer, (byte)block);
                     await source.WriteAsync(buffer, token);
@@ -53,7 +53,13 @@ public sealed class MinioParallelDownloadIntegrationTests(ITestOutputHelper outp
                 profile, bucket, "ranges.bin", targetPath, first, pause.Token));
             Assert.NotNull(saved);
             Assert.Equal(32L * 1024 * 1024, saved.SegmentSizeBytes);
-            Assert.Single(saved.CompletedSegments);
+            // Both already in-flight requests may durably finish before cancellation is
+            // observed. Four segments ensure this still exercises an incomplete resume.
+            Assert.Equal(128L * 1024 * 1024, saved.RemoteLength);
+            Assert.InRange(saved.CompletedSegments.Count, 1, options.MultipartConcurrency);
+            Assert.Equal(saved.CompletedSegments.Count * saved.SegmentSizeBytes, saved.CompletedBytes);
+            saved.Validate();
+            Assert.True(saved.CompletedBytes < saved.RemoteLength);
             Assert.False(File.Exists(targetPath));
             var resumedWatch = System.Diagnostics.Stopwatch.StartNew();
             await service.DownloadFileAsync(profile, bucket, "ranges.bin", targetPath,

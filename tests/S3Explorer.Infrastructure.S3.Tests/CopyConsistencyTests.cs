@@ -9,10 +9,31 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 
 public sealed class CopyConsistencyTests
 {
-    private static ConnectionProfile Profile => ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
+    private static ConnectionProfile Profile => ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
     {
         Name = "isolated", AccessKey = "test", SecretKey = "test", EnableMultipartCopy = true
     };
+
+    [Fact]
+    public void PinnedSdkSerializesConditionalDeleteHeader()
+    {
+        var request = Amazon.S3.Model.Internal.MarshallTransformations.DeleteObjectRequestMarshaller.Instance.Marshall(
+            new DeleteObjectRequest { BucketName = "bucket", Key = "key", IfMatch = "\"old-etag\"" });
+        Assert.Equal("\"old-etag\"", request.Headers["If-Match"]);
+    }
+
+    [Fact]
+    public async Task MinioMoveIsRejectedBeforeAnySideEffects()
+    {
+        using var client = new CopyClient();
+        var error = await Assert.ThrowsAsync<TransferExecutionException>(() => S3StorageService.CopyOrMoveObjectAsync(
+            client, ConnectionProfile.CreatePreset(S3ServiceType.MinIO), "source", "key", "target", "copy", true,
+            TestContext.Current.CancellationToken));
+        Assert.False(error.Failure.Retryable);
+        Assert.Null(client.Copy);
+        Assert.Null(client.Delete);
+        Assert.True(client.SourceExists);
+    }
 
     [Fact]
     public async Task CopyPinsVersionAndEtag()

@@ -128,8 +128,18 @@ public sealed class ProviderMatrixIntegrationTests
             keys.Add(copyKey);
             keys.Add(movedKey);
             await service.CopyObjectAsync(profile, bucket, specialKey, bucket, copyKey, CancellationToken.None);
-            await service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None);
-            keys.Remove(copyKey);
+            if (S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete.Supported)
+            {
+                await service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None);
+                keys.Remove(copyKey);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<TransferExecutionException>(() =>
+                    service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None));
+                Assert.True(await service.ObjectExistsAsync(profile, bucket, copyKey, CancellationToken.None));
+                Assert.False(await service.ObjectExistsAsync(profile, bucket, movedKey, CancellationToken.None));
+            }
 
             var singleDeleteKey = Key("folder/single-delete.txt");
             keys.Add(singleDeleteKey);

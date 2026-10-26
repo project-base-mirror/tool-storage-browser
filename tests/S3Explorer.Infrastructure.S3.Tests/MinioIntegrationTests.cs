@@ -42,7 +42,7 @@ public sealed class MinioIntegrationTests
 
     [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
-    public async Task Copy_and_move_support_same_and_cross_bucket_with_special_keys()
+    public async Task Copy_supports_special_keys_and_unsafe_minio_move_is_rejected()
     {
         var previous = Environment.GetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER");
         Environment.SetEnvironmentVariable("S3EXPLORER_MATRIX_PROVIDER", "minio");
@@ -92,12 +92,12 @@ public sealed class MinioIntegrationTests
                 Assert.True(await service.ObjectExistsAsync(
                     profile, destinationBucket, crossBucketCopyKey, CancellationToken.None));
 
-                await service.MoveObjectAsync(
+                await Assert.ThrowsAsync<TransferExecutionException>(() => service.MoveObjectAsync(
                     profile, destinationBucket, crossBucketCopyKey,
-                    sourceBucket, movedBackKey, CancellationToken.None);
-                Assert.False(await service.ObjectExistsAsync(
-                    profile, destinationBucket, crossBucketCopyKey, CancellationToken.None));
+                    sourceBucket, movedBackKey, CancellationToken.None));
                 Assert.True(await service.ObjectExistsAsync(
+                    profile, destinationBucket, crossBucketCopyKey, CancellationToken.None));
+                Assert.False(await service.ObjectExistsAsync(
                     profile, sourceBucket, movedBackKey, CancellationToken.None));
                 Assert.True(await service.ObjectExistsAsync(
                     profile, sourceBucket, sourceKey, CancellationToken.None));

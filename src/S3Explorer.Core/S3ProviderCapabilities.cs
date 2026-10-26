@@ -3,7 +3,14 @@ namespace S3Explorer.Core;
 public sealed record S3ProviderCapabilities(
     S3ServiceType ServiceType,
     BucketCapabilities Bucket,
-    ObjectCapabilities Object);
+    ObjectCapabilities Object)
+{
+    // Pinned Community MinIO silently ignores If-Match on DeleteObject. Other
+    // providers retain their conditional request contract, not a live-test guarantee.
+    public BucketFeatureSupport ConditionalDelete => ServiceType == S3ServiceType.MinIO
+        ? BucketFeatureSupport.No("MinIO Community 不保证条件删除，已禁用自动移动；请复制后人工核对再删除源对象。")
+        : BucketFeatureSupport.Yes("依赖服务端遵守 DeleteObject If-Match 条件。");
+}
 
 public static class S3ProviderCapabilityRegistry
 {
