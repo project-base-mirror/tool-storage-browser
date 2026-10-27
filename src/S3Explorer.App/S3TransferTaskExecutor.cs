@@ -19,6 +19,7 @@ internal sealed class S3TransferTaskExecutor(
         switch (task.Direction)
         {
             case TransferDirection.Upload:
+                transfer = transfer with { Options = transfer.Options with { AllowDestinationOverwrite = task.ConflictPolicy == ObjectConflictPolicy.Overwrite } };
                 if (!File.Exists(task.LocalPath))
                     throw new FileNotFoundException("上传源文件不存在。", task.LocalPath);
                 await CaptureDestinationSnapshotAsync(context, profile, cancellationToken)
@@ -29,6 +30,7 @@ internal sealed class S3TransferTaskExecutor(
                 return;
 
             case TransferDirection.Download:
+                transfer = transfer with { Options = transfer.Options with { AllowDestinationOverwrite = task.ConflictPolicy == ObjectConflictPolicy.Overwrite } };
                 var directory = Path.GetDirectoryName(task.LocalPath);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
                 if (string.IsNullOrWhiteSpace(task.VersionId))
@@ -44,7 +46,7 @@ internal sealed class S3TransferTaskExecutor(
             case TransferDirection.Copy:
                 await storage.CopyObjectAsync(
                     profile, task.Bucket, task.ObjectKey,
-                    task.DestinationBucket, task.DestinationObjectKey, cancellationToken)
+                    task.DestinationBucket, task.DestinationObjectKey, transfer, cancellationToken)
                     .ConfigureAwait(false);
                 context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
                 return;
@@ -52,7 +54,7 @@ internal sealed class S3TransferTaskExecutor(
             case TransferDirection.Move:
                 await storage.MoveObjectAsync(
                     profile, task.Bucket, task.ObjectKey,
-                    task.DestinationBucket, task.DestinationObjectKey, cancellationToken)
+                    task.DestinationBucket, task.DestinationObjectKey, transfer, cancellationToken)
                     .ConfigureAwait(false);
                 context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
                 return;

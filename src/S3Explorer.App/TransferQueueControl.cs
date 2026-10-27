@@ -8,13 +8,15 @@ internal sealed record UploadBatchItem(
     string ObjectKey,
     string RelativePath,
     long Size,
-    string StorageClass);
+    string StorageClass,
+    ObjectConflictPolicy ConflictPolicy = ObjectConflictPolicy.Overwrite);
 
 internal sealed record DownloadBatchItem(
     string ObjectKey,
     string LocalPath,
     string RelativePath,
-    long Size);
+    long Size,
+    ObjectConflictPolicy ConflictPolicy = ObjectConflictPolicy.Overwrite);
 
 internal sealed record ObjectTransferBatchItem(
     string SourceKey,
@@ -141,7 +143,8 @@ internal sealed class TransferQueueControl : UserControl
         string localPath,
         long size,
         string storageClass,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        ObjectConflictPolicy conflictPolicy = ObjectConflictPolicy.Overwrite) =>
         _queue.EnqueueAsync(new TransferTaskRecord
         {
             ProfileId = profile.Id,
@@ -151,6 +154,7 @@ internal sealed class TransferQueueControl : UserControl
             ObjectKey = key,
             LocalPath = localPath,
             StorageClass = storageClass,
+            ConflictPolicy = conflictPolicy,
             TotalBytes = Math.Max(0, size),
             MaxAttempts = _maxAttempts,
             RetryBaseDelaySeconds = _retryBaseDelaySeconds
@@ -163,7 +167,8 @@ internal sealed class TransferQueueControl : UserControl
         string localPath,
         long size,
         string? versionId = null,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        ObjectConflictPolicy conflictPolicy = ObjectConflictPolicy.Overwrite) =>
         _queue.EnqueueAsync(new TransferTaskRecord
         {
             ProfileId = profile.Id,
@@ -172,6 +177,7 @@ internal sealed class TransferQueueControl : UserControl
             Bucket = bucket,
             ObjectKey = key,
             VersionId = versionId,
+            ConflictPolicy = conflictPolicy,
             LocalPath = localPath,
             TotalBytes = Math.Max(0, size),
             MaxAttempts = _maxAttempts,
@@ -211,6 +217,7 @@ internal sealed class TransferQueueControl : UserControl
             ObjectKey = item.ObjectKey,
             LocalPath = item.LocalPath,
             RelativePath = item.RelativePath,
+            ConflictPolicy = item.ConflictPolicy,
             StorageClass = item.StorageClass,
             TotalBytes = Math.Max(0, item.Size),
             MaxAttempts = _maxAttempts,
@@ -234,6 +241,7 @@ internal sealed class TransferQueueControl : UserControl
             Bucket = batch.Bucket,
             ObjectKey = item.ObjectKey,
             LocalPath = LocalObjectPath.ToExtendedLengthPath(item.LocalPath),
+            ConflictPolicy = item.ConflictPolicy,
             RelativePath = item.RelativePath,
             TotalBytes = Math.Max(0, item.Size),
             MaxAttempts = _maxAttempts,

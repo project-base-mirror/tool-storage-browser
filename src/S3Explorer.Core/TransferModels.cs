@@ -66,6 +66,7 @@ public sealed record DownloadCheckpoint(
     string? VersionId = null)
 {
     // Zero denotes the legacy contiguous-prefix checkpoint. Segment numbers are zero based.
+    public string? IntegritySummary { get; init; }
     public long SegmentSizeBytes { get; init; }
     public IReadOnlyList<int> CompletedSegments { get; init; } = [];
 
@@ -121,6 +122,15 @@ public sealed record MultipartUploadCheckpoint(
     DateTimeOffset SourceLastWriteTimeUtc = default,
     DateTimeOffset InitiatedAt = default)
 {
+    // Optional server-side copy identity; absent on existing local-upload checkpoints.
+    public string? CopySourceBucket { get; init; }
+    public string? CopySourceKey { get; init; }
+    public string? CopySourceETag { get; init; }
+    public string? CopySourceVersionId { get; init; }
+    public bool CopyCompleted { get; init; }
+    public string? CopyDestinationETag { get; init; }
+    public string? CopyDestinationVersionId { get; init; }
+
     public bool HasSourceIdentity =>
         !string.IsNullOrWhiteSpace(Bucket) &&
         !string.IsNullOrWhiteSpace(ObjectKey) &&
@@ -189,6 +199,7 @@ public sealed record TransferTaskRecord
     public TransferFailureInfo? Failure { get; init; }
     public DownloadCheckpoint? DownloadCheckpoint { get; init; }
     public MultipartUploadCheckpoint? MultipartCheckpoint { get; init; }
+    public string? IntegritySummary { get; init; }
 
     public bool IsTerminal => State is TransferTaskState.Completed or TransferTaskState.Cancelled;
     public bool CanResume => State is TransferTaskState.Paused or TransferTaskState.Interrupted or TransferTaskState.Failed or TransferTaskState.RetryPending;

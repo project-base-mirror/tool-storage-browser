@@ -247,7 +247,7 @@ public sealed class TransferQueueRecoveryTests
         await using var queue = new PersistentTransferQueue(store, executor, maxConcurrency: 1);
         await queue.InitializeAsync(TestContext.Current.CancellationToken);
         var first = NewTask();
-        var second = NewTask();
+        var second = NewTask() with { LocalPath = "second-local.bin" };
         await queue.EnqueueAsync(first, TestContext.Current.CancellationToken);
         var context = await executor.Context.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         await context.UpdateCheckpointAsync(0, null, Multipart(), TestContext.Current.CancellationToken);

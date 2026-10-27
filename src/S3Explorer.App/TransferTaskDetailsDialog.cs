@@ -103,6 +103,7 @@ internal static class TransferTaskDetailsFormatter
             .AppendLine($"本地路径：{Value(task.LocalPath)}")
             .AppendLine($"总大小：{task.TotalBytes:N0} B")
             .AppendLine($"已传输：{task.TransferredBytes:N0} B")
+            .AppendLine($"完整性校验：{task.IntegritySummary ?? "未完成应用级完整校验"}")
             .AppendLine($"尝试次数：{task.AttemptCount:N0} / {task.MaxAttempts:N0}")
             .AppendLine($"创建时间：{LocalTime(task.CreatedAt)}")
             .AppendLine($"开始时间：{LocalTime(task.StartedAt)}")

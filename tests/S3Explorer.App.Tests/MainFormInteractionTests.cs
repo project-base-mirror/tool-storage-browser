@@ -15,6 +15,81 @@ public sealed class MainFormInteractionCollection
 public sealed class MainFormInteractionTests
 {
     [Fact]
+    public async Task UploadKeepsCapturedDestinationWhenNavigationChangesDuringConflictLookup()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "s3-upload-location-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var source = Path.Combine(root, "file.txt");
+            await File.WriteAllTextAsync(source, "content");
+            var original = new ConnectionProfile { Name = "original", Endpoint = "https://original.example.test" };
+            var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseLookup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var storage = DispatchProxy.Create<IS3StorageService, FakeStorageProxy>();
+            ((FakeStorageProxy)(object)storage).Exists = (profile, bucket, key) =>
+            {
+                Assert.Equal(original.Id, profile.Id);
+                Assert.Equal("original-bucket", bucket);
+                Assert.Equal("original-prefix/file.txt", key);
+                lookupStarted.TrySetResult();
+                return releaseLookup.Task;
+            };
+            await using var queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(root, "tasks.json")), new NeverRunExecutor());
+            await queue.InitializeAsync();
+            using var form = CreateForm(queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(root, "logs")), new SingleProfileStore(original), storage: storage);
+            form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Skip;
+            SetField(form, "_currentProfile", original);
+            SetField(form, "_currentBucket", "original-bucket");
+            SetField(form, "_currentPrefix", "original-prefix/");
+            var upload = Assert.IsAssignableFrom<Task>(typeof(MainForm).GetMethod("UploadPathsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(form, [new[] { source }]));
+            await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            SetField(form, "_currentProfile", new ConnectionProfile { Name = "different", Endpoint = "https://different.example.test" });
+            SetField(form, "_currentBucket", "different-bucket");
+            SetField(form, "_currentPrefix", "different-prefix/");
+            releaseLookup.SetResult(false);
+            await upload;
+            var queued = Assert.Single(queue.Snapshot.Tasks);
+            Assert.Equal(original.Id, queued.ProfileId);
+            Assert.Equal("original-bucket", queued.Bucket);
+            Assert.Equal("original-prefix/file.txt", queued.ObjectKey);
+            await queue.WaitForIdleAsync();
+            Directory.Delete(root, recursive: true);
+        });
+    }
+
+    [Fact]
+    public async Task DownloadConflictChoicesPreserveExistingFilesAndMappedCaseCollisions()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "s3-conflict-ui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var target = Path.Combine(root, "A.txt");
+            await File.WriteAllTextAsync(target, "existing");
+            var profile = new ConnectionProfile { Name = "test", Endpoint = "https://storage.example.test" };
+            await using var queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(root, "tasks.json")), new NeverRunExecutor());
+            await queue.InitializeAsync();
+            using var form = CreateForm(queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(root, "logs")), new SingleProfileStore(profile));
+            SetField(form, "_currentProfile", profile);
+            SetField(form, "_currentBucket", "bucket");
+            var resolver = typeof(MainForm).GetMethod("ResolveDownloadDestination", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var allocated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            object? Resolve(string path, ObjectConflictPolicy policy) => resolver.Invoke(form, [path, policy, allocated]);
+            Assert.Null(Resolve(target, ObjectConflictPolicy.Skip));
+            var overwrite = Resolve(target, ObjectConflictPolicy.Overwrite)!;
+            Assert.Equal(ObjectConflictPolicy.Overwrite, overwrite.GetType().GetProperty("Policy")!.GetValue(overwrite));
+            var collision = Resolve(Path.Combine(root, "a.txt"), ObjectConflictPolicy.Overwrite)!;
+            var renamed = Assert.IsType<string>(collision.GetType().GetProperty("Path")!.GetValue(collision));
+            Assert.Equal("a (2).txt", Path.GetFileName(renamed));
+            Assert.Equal(ObjectConflictPolicy.AutoRename, collision.GetType().GetProperty("Policy")!.GetValue(collision));
+            Assert.Equal("existing", await File.ReadAllTextAsync(target));
+            Directory.Delete(root, recursive: true);
+        });
+    }
+
+    [Fact]
     public async Task PagingAndFilteringReuseObjectRowsAndPreserveSelection()
     {
         await RunMessagePumpAsync(host =>
@@ -71,6 +146,7 @@ public sealed class MainFormInteractionTests
             {
                 await queue.InitializeAsync();
                 using var form = CreateForm(queue, runtime, logger, new SingleProfileStore(profile), storage: storage);
+                form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Overwrite;
                 SetField(form, "_currentProfile", profile);
                 SetField(form, "_currentBucket", "ui-bucket");
                 SetField(form, "_currentPrefix", "中文/目录/");
@@ -512,10 +588,14 @@ public sealed class MainFormInteractionTests
     public class FakeStorageProxy : DispatchProxy
     {
         public PausedFakeUpload? Upload { get; set; }
+        public Func<ConnectionProfile, string, string, Task<bool>>? Exists { get; set; }
         public int ListRequests;
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
+            if (targetMethod?.Name == nameof(IS3StorageService.ObjectExistsAsync) && args is not null)
+                return (Exists ?? throw new InvalidOperationException("Fake existence lookup was not configured."))(
+                    (ConnectionProfile)args[0]!, (string)args[1]!, (string)args[2]!);
             if (targetMethod?.Name == nameof(IS3StorageService.ListObjectsAsync))
             {
                 ListRequests++;

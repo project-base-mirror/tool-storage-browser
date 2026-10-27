@@ -132,7 +132,7 @@ public static class LocalObjectPath
         for (var index = 0; index < segment.Length; index++)
         {
             var value = segment[index];
-            if (IsInvalidWindowsCharacter(value) || index >= trailingStart)
+            if (value == '_' || IsInvalidWindowsCharacter(value) || index >= trailingStart)
                 builder.Append($"_x{(int)value:X4}_");
             else
                 builder.Append(value);

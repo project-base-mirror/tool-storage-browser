@@ -228,6 +228,11 @@ public sealed partial class S3StorageService : IS3StorageService
         var file = new FileInfo(localPath);
         if (!file.Exists)
             throw new FileNotFoundException("上传源文件不存在。", localPath);
+        if (!transferContext.Options.AllowDestinationOverwrite &&
+            profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO) &&
+            !(profile.ServiceType == S3ServiceType.CloudflareR2 && file.Length < transferContext.Options.MultipartThresholdBytes))
+            throw new TransferExecutionException(new TransferFailureInfo(
+                "此服务商/上传方式尚无可靠的原子非覆盖写入支持；请明确选择覆盖或更换目标。", TransferFailureCategory.Validation));
 
         try
         {
@@ -257,6 +262,7 @@ public sealed partial class S3StorageService : IS3StorageService
                 {
                     BucketName = bucket,
                     Key = key,
+                    IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
                     InputStream = throttled,
                     AutoCloseStream = false,
                     TagSet = []
@@ -355,17 +361,13 @@ public sealed partial class S3StorageService : IS3StorageService
         CancellationToken cancellationToken)
     {
         transferContext.Options.Validate();
-        var temporaryPath = ResumableDownloadFile.TemporaryPath(localPath);
+        var temporaryPath = transferContext.DownloadCheckpoint?.TemporaryPath ?? ResumableDownloadFile.TemporaryPath(localPath);
 
         try
         {
             using var client = _factory.Create(profile);
-            var metadata = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
-            {
-                BucketName = bucket,
-                Key = key,
-                VersionId = versionId
-            }, cancellationToken).ConfigureAwait(false);
+            var metadata = await GetDownloadMetadataAsync(client, profile.ServiceType, bucket, key,
+                versionId, cancellationToken).ConfigureAwait(false);
 
             var maximumDownloadBytes = transferContext.Options.MaximumDownloadBytes;
             if (maximumDownloadBytes > 0 && metadata.ContentLength > maximumDownloadBytes)
@@ -374,13 +376,12 @@ public sealed partial class S3StorageService : IS3StorageService
                     TransferFailureCategory.Validation,
                     Retryable: false));
 
-            var remote = new RemoteObjectIdentity(
-                metadata.ContentLength,
-                metadata.ETag,
-                metadata.VersionId)
+            temporaryPath = ResumableDownloadFile.ReserveTemporaryPath(localPath, transferContext.DownloadCheckpoint);
+            var remote = CreateDownloadIdentity(metadata);
+            transferContext = transferContext with
             {
-                FullObjectSha256 = string.Equals(metadata.ChecksumType?.Value, "FULL_OBJECT", StringComparison.Ordinal)
-                    ? metadata.ChecksumSHA256 : null
+                DownloadCheckpoint = transferContext.DownloadCheckpoint ?? new DownloadCheckpoint(
+                    temporaryPath, 0, remote.Length, remote.ETag, remote.VersionId)
             };
             var segmentSize = Math.Max(32L * 1024 * 1024, transferContext.Options.PartSizeBytes);
             if (transferContext.Options.MultipartConcurrency > 1 &&
@@ -402,7 +403,7 @@ public sealed partial class S3StorageService : IS3StorageService
                         transferContext with
                         {
                             Options = transferContext.Options with { MultipartConcurrency = 1 },
-                            DownloadCheckpoint = null
+                            DownloadCheckpoint = new DownloadCheckpoint(temporaryPath, 0, 0)
                         }, cancellationToken).ConfigureAwait(false);
                     return;
                 }
@@ -527,8 +528,10 @@ public sealed partial class S3StorageService : IS3StorageService
                 checkpoint,
                 transferContext.MultipartCheckpoint,
                 cancellationToken).ConfigureAwait(false);
-            await VerifyFullObjectChecksumAsync(temporaryPath, remote, cancellationToken).ConfigureAwait(false);
-            ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length);
+            var integrity = await VerifyDownloadBeforeCommitAsync(temporaryPath, remote, checkpoint, transferContext, cancellationToken).ConfigureAwait(false);
+            checkpoint = checkpoint with { IntegritySummary = integrity };
+            await transferContext.UpdateCheckpointAsync(completed, checkpoint, transferContext.MultipartCheckpoint, cancellationToken).ConfigureAwait(false);
+            ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length, transferContext.Options.AllowDestinationOverwrite);
             transferContext.ReportProgress(new TransferProgress(remote.Length, remote.Length));
         }
         catch (ParallelRangeNotSupportedException)
@@ -537,7 +540,7 @@ public sealed partial class S3StorageService : IS3StorageService
                 transferContext with
                 {
                     Options = transferContext.Options with { MultipartConcurrency = 1 },
-                    DownloadCheckpoint = null
+                    DownloadCheckpoint = new DownloadCheckpoint(temporaryPath, 0, 0)
                 }, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -806,6 +809,24 @@ public sealed partial class S3StorageService : IS3StorageService
             destinationBucket, destinationKey, move: true, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task CopyObjectAsync(
+        ConnectionProfile profile, string sourceBucket, string sourceKey,
+        string destinationBucket, string destinationKey, TransferOperationContext context, CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        await CopyOrMoveObjectAsync(client, profile, sourceBucket, sourceKey,
+            destinationBucket, destinationKey, false, cancellationToken, context).ConfigureAwait(false);
+    }
+
+    public async Task MoveObjectAsync(
+        ConnectionProfile profile, string sourceBucket, string sourceKey,
+        string destinationBucket, string destinationKey, TransferOperationContext context, CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        await CopyOrMoveObjectAsync(client, profile, sourceBucket, sourceKey,
+            destinationBucket, destinationKey, true, cancellationToken, context).ConfigureAwait(false);
+    }
+
     public async Task<bool> ObjectExistsAsync(
         ConnectionProfile profile,
         string bucket,
@@ -1022,6 +1043,7 @@ public sealed partial class S3StorageService : IS3StorageService
         var complete = new CompleteMultipartUploadRequest
         {
             BucketName = bucket,
+            IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
             Key = key,
             UploadId = uploadId,
             PartETags = completedParts.Values

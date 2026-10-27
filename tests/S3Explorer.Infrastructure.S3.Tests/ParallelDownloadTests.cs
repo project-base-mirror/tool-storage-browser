@@ -114,8 +114,14 @@ public sealed class ParallelDownloadTests(ITestOutputHelper output)
         await File.WriteAllBytesAsync(files.Target, [7, 8, 9], TestContext.Current.CancellationToken);
         var fake = CreateFake();
         var remote = Identity(fake.Bytes) with { FullObjectSha256 = Convert.ToBase64String(new byte[32]) };
+        var checkpoints = new ConcurrentBag<DownloadCheckpoint>();
         await Assert.ThrowsAsync<TransferExecutionException>(() => S3StorageService.DownloadParallelAsync(fake.Client,
-            "bucket", "key", files.Target, remote, 64, Context(), TestContext.Current.CancellationToken));
+            "bucket", "key", files.Target, remote, 64, Context(checkpoints: checkpoints), TestContext.Current.CancellationToken));
+        var invalidated = Assert.Single(checkpoints, item => item.IntegritySummary?.Contains("校验失败", StringComparison.Ordinal) == true);
+        Assert.Equal(0, invalidated.CompletedBytes);
+        Assert.Empty(invalidated.CompletedSegments);
+        Assert.Contains("校验失败", invalidated.IntegritySummary);
+        Assert.False(File.Exists(invalidated.TemporaryPath));
         Assert.Equal(new byte[] { 7, 8, 9 }, await File.ReadAllBytesAsync(files.Target, TestContext.Current.CancellationToken));
     }
 

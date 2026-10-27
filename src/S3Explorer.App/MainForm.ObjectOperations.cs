@@ -26,12 +26,18 @@ internal sealed partial class MainForm
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
         var prefix = _currentPrefix;
+        var policy = ChooseTransferConflictPolicy("上传冲突处理");
+        if (policy is null) return;
+        var allocated = new HashSet<string>(StringComparer.Ordinal);
+        var skippedFiles = 0;
 
         foreach (var path in paths)
         {
             if (File.Exists(path))
             {
-                await EnqueueUploadAsync(path, prefix + Path.GetFileName(path));
+                var destination = await ResolveUploadDestinationAsync(profile, bucket, prefix + Path.GetFileName(path), policy.Value, allocated);
+                if (destination is null) { skippedFiles++; continue; }
+                await EnqueueUploadAsync(profile, bucket, path, destination.Path, destination.Policy);
                 continue;
             }
             if (!Directory.Exists(path))
@@ -56,12 +62,12 @@ internal sealed partial class MainForm
                 {
                     var info = new FileInfo(file);
                     var relative = Path.GetRelativePath(path, file).Replace('\\', '/');
+                    var destination = await ResolveUploadDestinationAsync(
+                        profile, bucket, S3Path.Combine(prefix, $"{rootName}/{relative}"), policy.Value, allocated);
+                    if (destination is null) { skipped++; continue; }
                     chunk.Add(new UploadBatchItem(
-                        file,
-                        S3Path.Combine(prefix, $"{rootName}/{relative}"),
-                        relative,
-                        info.Length,
-                        profile.DefaultStorageClass));
+                        file, destination.Path, relative, info.Length,
+                        profile.DefaultStorageClass, destination.Policy));
                     if (chunk.Count < 256)
                         continue;
                     await _transfers.AddUploadBatchItemsAsync(batch, chunk);
@@ -88,15 +94,14 @@ internal sealed partial class MainForm
             _logger.Info($"Upload batch queued profile={profile.Name} bucket={bucket} batch={batch.Id} root={path} skipped={skipped}");
         }
         SetTransferVisibility(true);
+        _requestStatus.Text = $"上传已入队，跳过 {skippedFiles:N0} 个单文件（文件夹跳过数见批次详情）";
     }
 
-    private async Task EnqueueUploadAsync(string localPath, string key)
+    private async Task EnqueueUploadAsync(ConnectionProfile profile, string bucket, string localPath, string key, ObjectConflictPolicy conflictPolicy = ObjectConflictPolicy.Overwrite)
     {
         var file = new FileInfo(localPath);
-        var profile = _currentProfile!;
-        var bucket = _currentBucket!;
         await _transfers.EnqueueUploadAsync(
-            profile, bucket, key, localPath, file.Length, profile.DefaultStorageClass);
+            profile, bucket, key, localPath, file.Length, profile.DefaultStorageClass, conflictPolicy: conflictPolicy);
         _logger.Info($"Upload queued profile={profile.Name} bucket={bucket} key={key} bytes={file.Length}");
     }
 
@@ -122,6 +127,9 @@ internal sealed partial class MainForm
             targetRoot = folder.SelectedPath;
         }
 
+        var policy = ChooseTransferConflictPolicy("下载冲突处理");
+        if (policy is null) return;
+        var allocated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
         var batchName = selected.Count == 1
@@ -146,11 +154,10 @@ internal sealed partial class MainForm
                     if (seenKeys.Add(entry.Key))
                     {
                         var relative = entry.Name;
-                        chunk.Add(new DownloadBatchItem(
-                            entry.Key,
-                            LocalObjectPath.MapRelativeKey(targetRoot, relative),
-                            relative,
-                            entry.Size));
+                        var destination = ResolveDownloadDestination(
+                            LocalObjectPath.MapRelativeKey(targetRoot, relative), policy.Value, allocated);
+                        if (destination is null) { skipped++; continue; }
+                        chunk.Add(new DownloadBatchItem(entry.Key, destination.Path, relative, entry.Size, destination.Policy));
                     }
                 }
                 else
@@ -164,11 +171,10 @@ internal sealed partial class MainForm
 
                         var childRelative = child.Key[entry.Key.Length..].TrimStart('/');
                         var relative = $"{entry.Name}/{childRelative}";
-                        chunk.Add(new DownloadBatchItem(
-                            child.Key,
-                            LocalObjectPath.MapRelativeKey(targetRoot, relative),
-                            relative,
-                            child.Size));
+                        var destination = ResolveDownloadDestination(
+                            LocalObjectPath.MapRelativeKey(targetRoot, relative), policy.Value, allocated);
+                        if (destination is null) { skipped++; continue; }
+                        chunk.Add(new DownloadBatchItem(child.Key, destination.Path, relative, child.Size, destination.Policy));
                         if (chunk.Count < 256)
                             continue;
                         await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
@@ -215,6 +221,9 @@ internal sealed partial class MainForm
         };
         if (folder.ShowDialog(this) != DialogResult.OK) return;
 
+        var policy = ChooseTransferConflictPolicy("下载冲突处理");
+        if (policy is null) return;
+        var allocated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
         var targetRoot = folder.SelectedPath;
@@ -232,11 +241,10 @@ internal sealed partial class MainForm
             await foreach (var entry in EnumerateAllObjectsAsync(string.Empty))
             {
                 if (entry.IsDirectory) continue;
-                chunk.Add(new DownloadBatchItem(
-                    entry.Key,
-                    LocalObjectPath.MapRelativeKey(targetRoot, entry.Key),
-                    entry.Key,
-                    entry.Size));
+                var destination = ResolveDownloadDestination(
+                    LocalObjectPath.MapRelativeKey(targetRoot, entry.Key), policy.Value, allocated);
+                if (destination is null) { skipped++; continue; }
+                chunk.Add(new DownloadBatchItem(entry.Key, destination.Path, entry.Key, entry.Size, destination.Policy));
                 if (chunk.Count < 256) continue;
                 await _transfers.AddDownloadBatchItemsAsync(batch, chunk);
                 chunk.Clear();
@@ -264,12 +272,12 @@ internal sealed partial class MainForm
         SetTransferVisibility(true);
     }
 
-    private async Task EnqueueDownloadAsync(S3ObjectEntry entry, string localPath)
+    private async Task EnqueueDownloadAsync(S3ObjectEntry entry, string localPath, ObjectConflictPolicy conflictPolicy = ObjectConflictPolicy.Overwrite)
     {
         localPath = LocalObjectPath.ToExtendedLengthPath(localPath);
         var profile = _currentProfile!;
         var bucket = _currentBucket!;
-        await _transfers.EnqueueDownloadAsync(profile, bucket, entry.Key, localPath, entry.Size);
+        await _transfers.EnqueueDownloadAsync(profile, bucket, entry.Key, localPath, entry.Size, conflictPolicy: conflictPolicy);
         _logger.Info($"Download queued profile={profile.Name} bucket={bucket} key={entry.Key} bytes={entry.Size}");
     }
 
@@ -279,10 +287,14 @@ internal sealed partial class MainForm
         {
             FileName = entry.Name,
             InitialDirectory = _settings.DefaultDownloadDirectory,
-            OverwritePrompt = _settings.ConfirmOverwrite
+            OverwritePrompt = false
         };
         if (save.ShowDialog(this) != DialogResult.OK) return;
-        await EnqueueDownloadAsync(entry, save.FileName);
+        var policy = ChooseTransferConflictPolicy("下载冲突处理");
+        if (policy is null) return;
+        var destination = ResolveDownloadDestination(save.FileName, policy.Value, new(StringComparer.OrdinalIgnoreCase));
+        if (destination is null) { _requestStatus.Text = "已跳过已有下载目标"; return; }
+        await EnqueueDownloadAsync(entry, destination.Path, destination.Policy);
         SetTransferVisibility(true);
     }
 

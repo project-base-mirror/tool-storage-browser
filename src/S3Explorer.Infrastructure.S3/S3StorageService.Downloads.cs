@@ -24,7 +24,7 @@ public sealed partial class S3StorageService
     {
         if (segmentSize <= 0) throw new ArgumentOutOfRangeException(nameof(segmentSize));
         var segmentCount = checked((int)(remote.Length / segmentSize + (remote.Length % segmentSize == 0 ? 0 : 1)));
-        var temporaryPath = ResumableDownloadFile.TemporaryPath(localPath);
+        var temporaryPath = ResumableDownloadFile.ReserveTemporaryPath(localPath, context.DownloadCheckpoint);
         var existing = context.DownloadCheckpoint;
         var exists = File.Exists(temporaryPath);
         var length = exists ? new FileInfo(temporaryPath).Length : 0;
@@ -126,23 +126,11 @@ public sealed partial class S3StorageService
         if (confirmedBytes != remote.Length || completed.Count != segmentCount)
             throw new InvalidDataException("下载分段尚未全部完成。");
         handle.Dispose();
-        await VerifyFullObjectChecksumAsync(temporaryPath, remote, cancellationToken).ConfigureAwait(false);
-        ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length);
+        var integrity = await VerifyDownloadBeforeCommitAsync(temporaryPath, remote, checkpoint, context, cancellationToken).ConfigureAwait(false);
+        checkpoint = checkpoint with { IntegritySummary = integrity };
+        await context.UpdateCheckpointAsync(confirmedBytes, checkpoint, context.MultipartCheckpoint, cancellationToken).ConfigureAwait(false);
+        ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length, context.Options.AllowDestinationOverwrite);
         context.ReportProgress(new TransferProgress(remote.Length, remote.Length));
-    }
-
-    private static async Task VerifyFullObjectChecksumAsync(
-        string temporaryPath, RemoteObjectIdentity remote, CancellationToken cancellationToken)
-    {
-        // Only compare explicitly full-object hashes. Multipart composite hashes and ETags
-        // cannot be compared with a plain whole-file SHA-256.
-        if (string.IsNullOrWhiteSpace(remote.FullObjectSha256)) return;
-        await using var stream = new FileStream(temporaryPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var actual = Convert.ToBase64String(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-        if (!string.Equals(actual, remote.FullObjectSha256, StringComparison.Ordinal))
-            throw new TransferExecutionException(new TransferFailureInfo(
-                "下载文件 SHA-256 与服务端完整对象校验值不符。", TransferFailureCategory.Validation, Retryable: false));
     }
 
     private static void ValidateRangeResponse(GetObjectResponse response, long first, long last, RemoteObjectIdentity remote)

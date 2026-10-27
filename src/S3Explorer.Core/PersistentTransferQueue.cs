@@ -162,6 +162,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         {
             if (snapshot.Tasks.Any(item => item.Id == task.Id))
                 throw new InvalidOperationException($"传输任务 ID 已存在：{task.Id}");
+            task = TransferDestinationReservation.Reserve(task, snapshot.Tasks);
             return snapshot with { Tasks = snapshot.Tasks.Append(task).ToArray() };
         }, task.Id, cancellationToken).ConfigureAwait(false);
         await PumpAsync().ConfigureAwait(false);
@@ -230,8 +231,11 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             {
                 throw new InvalidOperationException("批次子任务的连接、方向或 Bucket 与父批次不一致。");
             }
-            if (snapshot.Tasks.Any(existing => prepared.Any(task => task.Id == existing.Id)))
+            var existingIds = snapshot.Tasks.Select(item => item.Id).ToHashSet();
+            if (prepared.Any(task => existingIds.Contains(task.Id)))
                 throw new InvalidOperationException("批次子任务 ID 已存在。");
+
+            TransferDestinationReservation.ReserveBatch(prepared, snapshot.Tasks, batchId);
 
             var updatedBatch = batch with
             {
@@ -635,9 +639,11 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             {
                 if (!_initialized || _disposed || _persistenceFailed || _running.Count >= _maxConcurrency) return;
                 var now = _clock();
+                var runningDestinations = _snapshot.Tasks.Where(active => _running.ContainsKey(active.Id)).ToArray();
                 var candidate = _snapshot.Tasks.FirstOrDefault(item =>
-                    item.State == TransferTaskState.Queued ||
-                    (item.State == TransferTaskState.RetryPending && (item.NextAttemptAt is null || item.NextAttemptAt <= now)));
+                    (item.State == TransferTaskState.Queued ||
+                    (item.State == TransferTaskState.RetryPending && (item.NextAttemptAt is null || item.NextAttemptAt <= now))) &&
+                    !runningDestinations.Any(active => TransferDestinationReservation.Conflicts(item, active)));
                 if (candidate is null)
                 {
                     nextRetryAt = _snapshot.Tasks
@@ -814,12 +820,15 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             {
                 TransferredBytes = bounded,
                 DownloadCheckpoint = downloadCheckpoint,
+                IntegritySummary = downloadCheckpoint is not null ? downloadCheckpoint.IntegritySummary : current.IntegritySummary,
                 MultipartCheckpoint = multipartCheckpoint,
                 UpdatedAt = _clock()
             });
             // Only progress is coalesced. New remote uploads / download identities must be
             // durable before the executor sends data; every state transition flushes the rest.
             var newIdentity = task.MultipartCheckpoint?.UploadId != multipartCheckpoint?.UploadId ||
+                task.MultipartCheckpoint?.CopyCompleted != multipartCheckpoint?.CopyCompleted ||
+                task.DownloadCheckpoint?.IntegritySummary != downloadCheckpoint?.IntegritySummary ||
                 task.DownloadCheckpoint?.TemporaryPath != downloadCheckpoint?.TemporaryPath ||
                 task.DownloadCheckpoint?.ETag != downloadCheckpoint?.ETag ||
                 task.DownloadCheckpoint?.VersionId != downloadCheckpoint?.VersionId ||

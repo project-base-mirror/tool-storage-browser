@@ -9,6 +9,7 @@ public sealed record TransferExecutionOptions
     public long DownloadBytesPerSecond { get; init; }
     /// <summary>Optional hard upper bound for a single download. Zero means unlimited.</summary>
     public long MaximumDownloadBytes { get; init; }
+    public bool AllowDestinationOverwrite { get; init; } = true;
 
     public void Validate()
     {
@@ -92,6 +93,9 @@ public sealed class SharedTransferBandwidthLimiter : ITransferBandwidthLimiter
 public sealed record RemoteObjectIdentity(long Length, string? ETag, string? VersionId)
 {
     public string? FullObjectSha256 { get; init; }
+    public string? FullObjectSha1 { get; init; }
+    public string? FullObjectCrc32 { get; init; }
+    public string IntegrityUnavailableReason { get; init; } = "无可用完整对象校验值（仅验证长度与对象身份）";
 }
 
 public sealed record DownloadResumeDecision(bool Resume, bool ResetTemporaryFile, long Offset, string Reason);
@@ -153,6 +157,27 @@ public static class ResumableDownloadFile
 {
     public static string TemporaryPath(string localPath) => localPath + ".s3explorer.download";
 
+    public static string ReserveTemporaryPath(string localPath, DownloadCheckpoint? checkpoint)
+    {
+        if (checkpoint is not null) return checkpoint.TemporaryPath;
+        var candidate = TemporaryPath(localPath);
+        var directory = Path.GetDirectoryName(candidate);
+        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+        while (true)
+        {
+            try
+            {
+                using var reserved = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                return candidate;
+            }
+            catch (IOException) when (File.Exists(candidate) || Directory.Exists(candidate))
+            {
+                // Never treat an unrelated file (including another downloaded object) as our scratch data.
+                candidate = TemporaryPath(localPath) + "." + Guid.NewGuid().ToString("N");
+            }
+        }
+    }
+
     public static void Prepare(string temporaryPath, bool reset, long offset)
     {
         if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
@@ -163,7 +188,7 @@ public static class ResumableDownloadFile
         stream.Flush(flushToDisk: true);
     }
 
-    public static void Commit(string temporaryPath, string localPath, long expectedLength)
+    public static void Commit(string temporaryPath, string localPath, long expectedLength, bool overwrite = true)
     {
         if (!File.Exists(temporaryPath))
             throw new FileNotFoundException("下载临时文件不存在。", temporaryPath);
@@ -172,7 +197,7 @@ public static class ResumableDownloadFile
             throw new IOException($"下载长度校验失败：预期 {expectedLength}，实际 {actualLength}。");
         var directory = Path.GetDirectoryName(localPath);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        File.Move(temporaryPath, localPath, overwrite: true);
+        File.Move(temporaryPath, localPath, overwrite);
     }
 }
 

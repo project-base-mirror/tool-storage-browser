@@ -106,6 +106,8 @@ internal sealed partial class MainForm : Form
     private bool _sortAscending = true;
     private long _navigationRevision;
     private bool _closing;
+    private bool _shutdownInProgress;
+    private CancellationTokenSource? _waitForExitCancellation;
     private bool _suppressTreeSelection;
     private bool _populatingProfiles;
     private ObjectClipboardPayload? _objectClipboard;
@@ -2945,6 +2947,12 @@ internal sealed partial class MainForm : Form
         }
         if (_closing) return;
         e.Cancel = true;
+        if (_shutdownInProgress)
+        {
+            // Closing again while waiting means return to the application, not a second shutdown.
+            _waitForExitCancellation?.Cancel();
+            return;
+        }
 
         var closeAction = TransferCloseAction.Pause;
         if (_transfers.ActiveCount > 0)
@@ -2959,6 +2967,7 @@ internal sealed partial class MainForm : Form
             }
         }
 
+        _shutdownInProgress = true;
         try
         {
             CancelNavigation();
@@ -2974,7 +2983,10 @@ internal sealed partial class MainForm : Form
             switch (closeAction)
             {
                 case TransferCloseAction.Wait:
-                    await AwaitShutdownStepAsync(_transfers.WaitForIdleAsync(), "等待传输完成");
+                    _requestStatus.Text = "等待传输完成（再次关闭窗口可返回程序）...";
+                    using (_waitForExitCancellation = new CancellationTokenSource())
+                        await WaitForTransfersBeforeExitAsync(_transfers.WaitForIdleAsync, _waitForExitCancellation.Token);
+                    _waitForExitCancellation = null;
                     break;
                 case TransferCloseAction.Cancel:
                     await AwaitShutdownStepAsync(_transfers.CancelAllAsync(), "取消传输");
@@ -2994,6 +3006,12 @@ internal sealed partial class MainForm : Form
                 _trayIcon.Visible = false;
             BeginInvoke(Close);
         }
+        catch (OperationCanceledException) when (_waitForExitCancellation?.IsCancellationRequested == true)
+        {
+            _exitRequested = false;
+            _speedTimer.Start();
+            _requestStatus.Text = "已取消等待退出，传输继续运行。";
+        }
         catch (Exception exception)
         {
             _logger.Error("Failed to close transfer queue safely", exception);
@@ -3001,7 +3019,15 @@ internal sealed partial class MainForm : Form
             _speedTimer.Start();
             ErrorDialog.ShowException(this, "无法安全退出", "保存传输队列", exception);
         }
+        finally
+        {
+            _waitForExitCancellation = null;
+            _shutdownInProgress = false;
+        }
     }
+
+    internal static Task WaitForTransfersBeforeExitAsync(
+        Func<CancellationToken, Task> waitForIdle, CancellationToken cancellationToken) => waitForIdle(cancellationToken);
 
     private async Task SaveSettingsAsync()
     {

@@ -149,6 +149,12 @@ public interface IS3StorageService
     Task<bool> ObjectExistsAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
+    Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
+        TransferOperationContext context, CancellationToken cancellationToken) =>
+        CopyObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken);
+    Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
+        TransferOperationContext context, CancellationToken cancellationToken) =>
+        MoveObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken);
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task ReplaceObjectMetadataAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectWriteHeaders headers, CancellationToken cancellationToken);
     Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);

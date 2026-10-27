@@ -220,11 +220,12 @@ public static class FolderSyncPlanner
         var allPaths = local.Keys.Concat(remote.Keys).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         var result = new List<FolderSyncPlanItem>(allPaths.Length);
 
+        var exclusions = new FolderSyncExclusions(job.ExclusionPatterns);
         foreach (var path in allPaths)
         {
             local.TryGetValue(path, out var localFile);
             remote.TryGetValue(path, out var remoteFile);
-            if (FolderSyncGlobMatcher.IsMatch(path, job.ExclusionPatterns))
+            if (exclusions.IsMatch(path))
             {
                 result.Add(new(path, FolderSyncChange.Excluded, FolderSyncAction.None, localFile, remoteFile, "匹配排除规则"));
                 continue;
@@ -340,15 +341,20 @@ public static class FolderSyncAnalyzer
         pageSize = Math.Clamp(pageSize, ObjectListingLimits.MinimumPageSize, ObjectListingLimits.MaximumPageSize);
         itemLimit = Math.Clamp(itemLimit, ObjectListingLimits.MinimumCacheLimit, ObjectListingLimits.MaximumCacheLimit);
 
+        var exclusions = new FolderSyncExclusions(job.ExclusionPatterns);
+        var rootPrefix = S3Path.NormalizePrefix(job.Prefix);
         var localTask = FolderSyncSnapshot.ReadLocalAsync(
-            job.LocalDirectory, job.CompareHashesWhenAvailable, itemLimit, cancellationToken);
+            job.LocalDirectory, job.CompareHashesWhenAvailable, itemLimit, cancellationToken, job.ExclusionPatterns);
         var remoteTask = RecursiveObjectListing.ListFilesAsync(
             job.Prefix,
             pageSize,
             itemLimit,
             (prefix, token, operationToken) => storage.ListObjectsAsync(
                 profile, job.Bucket, prefix, token, pageSize, operationToken),
-            cancellationToken);
+            cancellationToken,
+            maxConcurrency: 4,
+            excludePrefix: prefix => exclusions.CanPruneDirectory(prefix[rootPrefix.Length..]),
+            excludeKey: key => key.Length > rootPrefix.Length && exclusions.IsMatch(key[rootPrefix.Length..]));
 
         await Task.WhenAll(localTask, remoteTask).ConfigureAwait(false);
         var remote = FolderSyncSnapshot.FromRemote(job.Prefix, await remoteTask.ConfigureAwait(false));
@@ -362,7 +368,8 @@ public static class FolderSyncSnapshot
         string rootDirectory,
         bool calculateHashes,
         int itemLimit,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IEnumerable<string>? exclusionPatterns = null)
     {
         if (!Path.IsPathFullyQualified(rootDirectory))
             throw new ArgumentException("本地文件夹必须使用绝对路径。", nameof(rootDirectory));
@@ -371,31 +378,48 @@ public static class FolderSyncSnapshot
         if (itemLimit < 1) throw new ArgumentOutOfRangeException(nameof(itemLimit));
 
         var result = new List<FolderSyncFile>();
+        var exclusions = new FolderSyncExclusions(exclusionPatterns);
+        var pending = new Stack<string>();
+        pending.Push(rootDirectory);
         var options = new EnumerationOptions
         {
-            RecurseSubdirectories = true,
+            RecurseSubdirectories = false,
             IgnoreInaccessible = false,
             AttributesToSkip = FileAttributes.ReparsePoint,
             ReturnSpecialDirectories = false
         };
-        foreach (var path in Directory.EnumerateFiles(rootDirectory, "*", options))
+        while (pending.Count > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (result.Count >= itemLimit)
-                throw new InvalidOperationException($"本地文件数量达到保护上限 {itemLimit:N0}，已停止分析。");
-            var info = new FileInfo(path);
-            string? checksum = null;
-            if (calculateHashes)
+            var directory = pending.Pop();
+            foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos("*", options))
             {
-                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
-                checksum = Convert.ToHexString(await MD5.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+                cancellationToken.ThrowIfCancellationRequested();
+                var relative = FolderSyncPath.NormalizeRelative(Path.GetRelativePath(rootDirectory, entry.FullName));
+                if (entry is DirectoryInfo)
+                {
+                    if (!exclusions.CanPruneDirectory(relative)) pending.Push(entry.FullName);
+                    continue;
+                }
+                if (exclusions.IsMatch(relative)) continue;
+                if (result.Count >= itemLimit)
+                    throw new InvalidOperationException($"本地文件数量达到保护上限 {itemLimit:N0}，已停止分析。");
+                var info = (FileInfo)entry;
+                var length = info.Length;
+                var modified = info.LastWriteTimeUtc;
+                var created = info.CreationTimeUtc;
+                string? checksum = null;
+                if (calculateHashes)
+                {
+                    await using var stream = new FileStream(info.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    checksum = Convert.ToHexString(await MD5.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
+                    info.Refresh();
+                    if (!info.Exists || info.Length != length || stream.Length != length ||
+                        info.LastWriteTimeUtc != modified || info.CreationTimeUtc != created)
+                        throw new IOException($"分析期间本地文件发生变化，请重新分析：{relative}");
+                }
+                result.Add(new FolderSyncFile(relative, length, modified, checksum));
             }
-            result.Add(new FolderSyncFile(
-                FolderSyncPath.NormalizeRelative(Path.GetRelativePath(rootDirectory, path)),
-                info.Length,
-                info.LastWriteTimeUtc,
-                checksum));
         }
         return result;
     }
@@ -443,24 +467,52 @@ public static class FolderSyncPath
 
 public static class FolderSyncGlobMatcher
 {
-    public static bool IsMatch(string relativePath, IEnumerable<string>? patterns)
+    public static bool IsMatch(string relativePath, IEnumerable<string>? patterns) =>
+        new FolderSyncExclusions(patterns).IsMatch(relativePath);
+}
+
+// Compile once per scan/plan, not once for every file × every pattern.
+internal sealed class FolderSyncExclusions
+{
+    private readonly Regex[] _patterns;
+    private readonly Regex[] _subtrees;
+    private readonly bool _excludeAll;
+
+    public FolderSyncExclusions(IEnumerable<string>? patterns)
     {
-        relativePath = FolderSyncPath.NormalizeRelative(relativePath);
-        foreach (var rawPattern in patterns ?? Array.Empty<string>())
-        {
-            foreach (var pattern in rawPattern.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                if (Regex.IsMatch(relativePath, ToRegex(pattern), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-                    return true;
-            }
-        }
-        return false;
+        var normalized = (patterns ?? []).SelectMany(value => value.Split(';',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Select(value => value.Replace('\\', '/').Trim('/')).ToArray();
+        _patterns = normalized.Select(Compile).ToArray();
+        _excludeAll = normalized.Contains("**", StringComparer.Ordinal);
+        // Only a trailing /** proves every descendant is excluded. A plain dir/*
+        // does not exclude grandchildren and must not suppress their discovery.
+        _subtrees = normalized.Where(value => value.EndsWith("/**", StringComparison.Ordinal))
+            .Select(value => Compile(value[..^3])).ToArray();
     }
 
-    private static string ToRegex(string pattern)
+    public bool IsMatch(string relativePath)
     {
-        pattern = pattern.Replace('\\', '/').Trim('/');
-        var result = new System.Text.StringBuilder("^");
+        relativePath = FolderSyncPath.NormalizeRelative(relativePath);
+        return _patterns.Any(pattern => pattern.IsMatch(relativePath));
+    }
+
+    public bool CanPruneDirectory(string relativePath)
+    {
+        var path = FolderSyncPath.NormalizeRelative(relativePath);
+        if (_excludeAll) return true;
+        while (true)
+        {
+            if (_subtrees.Any(pattern => pattern.IsMatch(path))) return true;
+            var slash = path.LastIndexOf('/');
+            if (slash < 0) return false;
+            path = path[..slash];
+        }
+    }
+
+    private static Regex Compile(string pattern)
+    {
+        var result = new StringBuilder("^");
         for (var index = 0; index < pattern.Length; index++)
         {
             var current = pattern[index];
@@ -474,6 +526,6 @@ public static class FolderSyncGlobMatcher
             else result.Append(Regex.Escape(current.ToString()));
         }
         result.Append('$');
-        return result.ToString();
+        return new Regex(result.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     }
 }
