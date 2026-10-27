@@ -499,11 +499,15 @@ internal sealed partial class MainForm : Form
         _objectMenu.Items.Add("查看 / 恢复历史版本...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowObjectVersionsAsync(true));
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add(BuildObjectCdnContextMenu());
+        _objectMenu.Items.Add(new ToolStripSeparator());
+        var preview = _objectMenu.Items.Add("内容预览 / 编辑...", UiIcons.Create(UiIconKind.Properties, 16),
+            async (_, _) => await RunUiCommandAsync("对象预览", PreviewSelectedObjectAsync));
         _objectMenu.Opening += (_, _) =>
         {
             var entries = SelectedEntries();
             var any = entries.Count > 0;
             var oneFile = entries.Count == 1 && !entries[0].IsDirectory;
+            preview.Enabled = oneFile;
             var capabilities = _currentProfile is null
                 ? null
                 : S3ProviderCapabilityRegistry.For(_currentProfile.ServiceType).Object;

@@ -201,6 +201,9 @@ public sealed partial class S3StorageService : IS3StorageService
             isTruncated);
     }
 
+    internal static ServerSideEncryptionMethod? RequiredUploadEncryption(TransferExecutionOptions options) =>
+        options.RequireSseS3Encryption ? ServerSideEncryptionMethod.AES256 : null;
+
     public async Task UploadFileAsync(
         ConnectionProfile profile,
         string bucket,
@@ -228,7 +231,10 @@ public sealed partial class S3StorageService : IS3StorageService
         var file = new FileInfo(localPath);
         if (!file.Exists)
             throw new FileNotFoundException("上传源文件不存在。", localPath);
-        if (!transferContext.Options.AllowDestinationOverwrite &&
+        if (transferContext.Options.RequireSseS3Encryption && profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO))
+            throw new TransferExecutionException(new TransferFailureInfo(
+                "此服务商尚无可靠的显式 AES256 保留路径；保留本地编辑，不执行替换。", TransferFailureCategory.Validation));
+        if ((!transferContext.Options.AllowDestinationOverwrite || transferContext.Options.ExpectedDestinationETag is not null) &&
             profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO) &&
             !(profile.ServiceType == S3ServiceType.CloudflareR2 && file.Length < transferContext.Options.MultipartThresholdBytes))
             throw new TransferExecutionException(new TransferFailureInfo(
@@ -263,6 +269,8 @@ public sealed partial class S3StorageService : IS3StorageService
                     BucketName = bucket,
                     Key = key,
                     IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
+                    IfMatch = transferContext.Options.ExpectedDestinationETag,
+                    ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
                     InputStream = throttled,
                     AutoCloseStream = false,
                     TagSet = []
@@ -479,7 +487,10 @@ public sealed partial class S3StorageService : IS3StorageService
                 while (true)
                 {
                     if (maximumDownloadBytes > 0 && completed >= maximumDownloadBytes)
+                    {
+                        await VerifyBoundedDownloadEndAsync(response.ResponseStream, cancellationToken).ConfigureAwait(false);
                         break;
+                    }
                     var readBuffer = maximumDownloadBytes > 0
                         ? Math.Min(buffer.Length, checked((int)(maximumDownloadBytes - completed)))
                         : buffer.Length;
@@ -924,6 +935,7 @@ public sealed partial class S3StorageService : IS3StorageService
             {
                 BucketName = bucket,
                 Key = key,
+                ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
                 TagSet = []
             };
             var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
@@ -1044,6 +1056,7 @@ public sealed partial class S3StorageService : IS3StorageService
         {
             BucketName = bucket,
             IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
+            IfMatch = transferContext.Options.ExpectedDestinationETag,
             Key = key,
             UploadId = uploadId,
             PartETags = completedParts.Values

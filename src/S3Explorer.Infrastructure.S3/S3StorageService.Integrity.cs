@@ -8,6 +8,13 @@ namespace S3Explorer.Infrastructure.S3;
 
 public sealed partial class S3StorageService
 {
+    internal static async Task VerifyBoundedDownloadEndAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        if (await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
+            throw new TransferExecutionException(new TransferFailureInfo(
+                "响应超过预览下载上限，拒绝把截断内容作为完整对象。", TransferFailureCategory.Validation, Retryable: false));
+    }
+
     internal static async Task<GetObjectMetadataResponse> GetDownloadMetadataAsync(
         IAmazonS3 client, S3ServiceType provider, string bucket, string key, string? version,
         CancellationToken cancellationToken)

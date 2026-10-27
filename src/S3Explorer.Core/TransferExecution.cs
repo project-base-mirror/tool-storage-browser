@@ -10,9 +10,14 @@ public sealed record TransferExecutionOptions
     /// <summary>Optional hard upper bound for a single download. Zero means unlimited.</summary>
     public long MaximumDownloadBytes { get; init; }
     public bool AllowDestinationOverwrite { get; init; } = true;
+    public string? ExpectedDestinationETag { get; init; }
+    public bool RequireSseS3Encryption { get; init; }
 
     public void Validate()
     {
+        if (ExpectedDestinationETag is not null &&
+            (string.IsNullOrWhiteSpace(ExpectedDestinationETag) || !AllowDestinationOverwrite))
+            throw new ArgumentException("条件替换必须提供非空 ETag，且不能同时要求目标不存在。", nameof(ExpectedDestinationETag));
         if (MultipartThresholdBytes < 5L * 1024 * 1024)
             throw new ArgumentOutOfRangeException(nameof(MultipartThresholdBytes));
         if (PartSizeBytes < 5L * 1024 * 1024 || PartSizeBytes > 5L * 1024 * 1024 * 1024)

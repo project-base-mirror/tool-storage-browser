@@ -14,6 +14,11 @@ public sealed partial class S3StorageService
     {
         using var client = _factory.Create(profile);
         var response = await client.GetObjectMetadataAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+        return CreateObjectProperties(bucket, key, response);
+    }
+
+    internal static ObjectProperties CreateObjectProperties(string bucket, string key, GetObjectMetadataResponse response)
+    {
         var metadata = ObjectMetadataValidator.Validate(response.Metadata.Keys.ToDictionary(
             name => name,
             name => response.Metadata[name],
@@ -34,7 +39,14 @@ public sealed partial class S3StorageService
             NullIfWhiteSpace(response.Headers.ContentDisposition),
             response.Headers.Expires is not { } expiresUtc
                 ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(expiresUtc, DateTimeKind.Utc)));
+                : new DateTimeOffset(DateTime.SpecifyKind(expiresUtc, DateTimeKind.Utc)))
+        {
+            ServerSideEncryptionMethod = response.ServerSideEncryptionMethod?.Value,
+            EncryptionKeyId = response.ServerSideEncryptionKeyManagementServiceKeyId,
+            CustomerEncryptionMethod = response.ServerSideEncryptionCustomerMethod,
+            ObjectLockMode = response.ObjectLockMode?.Value,
+            ObjectLockLegalHoldStatus = response.ObjectLockLegalHoldStatus?.Value
+        };
     }
 
     public async Task ReplaceObjectMetadataAsync(

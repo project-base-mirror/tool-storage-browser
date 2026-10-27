@@ -71,7 +71,14 @@ public sealed record ObjectProperties(
     string? CacheControl = null,
     string? ContentEncoding = null,
     string? ContentDisposition = null,
-    DateTimeOffset? ExpiresUtc = null);
+    DateTimeOffset? ExpiresUtc = null)
+{
+    public string? ServerSideEncryptionMethod { get; init; }
+    public string? EncryptionKeyId { get; init; }
+    public string? CustomerEncryptionMethod { get; init; }
+    public string? ObjectLockMode { get; init; }
+    public string? ObjectLockLegalHoldStatus { get; init; }
+}
 
 public sealed record TransferProgress(long TransferredBytes, long TotalBytes)
 {
