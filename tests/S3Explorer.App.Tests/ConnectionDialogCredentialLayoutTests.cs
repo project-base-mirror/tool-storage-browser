@@ -282,6 +282,168 @@ public sealed class ConnectionDialogCredentialLayoutTests
     }
 
     [Fact]
+    public void R2_has_its_own_account_type_and_category_templates_never_leak()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ConnectionDialog(null!, ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2));
+            dialog.Show();
+            Application.DoEvents();
+            var account = Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox"));
+            var provider = Assert.IsType<ComboBox>(Find(dialog, "ProviderComboBox"));
+            var endpoint = Assert.IsType<TextBox>(Find(dialog, "EndpointTextBox"));
+            Assert.Equal("Cloudflare R2", account.Text);
+            Assert.Equal("Cloudflare R2", provider.Text);
+            Assert.Single(provider.Items);
+            Assert.False(provider.Enabled);
+            Assert.True(endpoint.Visible);
+            Assert.False(Find(dialog, "RegionComboBox").Visible);
+            Assert.Equal(S3ServiceType.CloudflareR2, ReadDraft(dialog).ServiceType);
+            foreach (var category in Enum.GetValues<S3AccountCategory>())
+            {
+                SelectByText(account, S3ProviderCatalog.CategoryDisplayName(category));
+                Application.DoEvents();
+                Assert.Equal(S3ProviderCatalog.ForCategory(category).Select(item => item.DisplayName),
+                    provider.Items.Cast<object>().Select(item => item.ToString()));
+                Assert.Equal(category, S3ProviderCatalog.Get(ReadDraft(dialog).ServiceType).Category);
+            }
+        });
+    }
+
+    [Fact]
+    public void Custom_endpoint_survives_provider_and_account_switches_and_is_saved()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ConnectionDialog(null!, ConnectionProfile.CreatePreset(S3ServiceType.Custom));
+            dialog.Show();
+            var account = Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox"));
+            var provider = Assert.IsType<ComboBox>(Find(dialog, "ProviderComboBox"));
+            var endpoint = Assert.IsType<TextBox>(Find(dialog, "EndpointTextBox"));
+            const string custom = "https://my-account.r2.cloudflarestorage.com";
+            endpoint.Text = custom;
+            SelectByText(provider, "MinIO");
+            Application.DoEvents();
+            Assert.Equal(custom, endpoint.Text);
+            SelectByText(account, "Cloudflare R2");
+            Application.DoEvents();
+            Assert.Equal(custom, endpoint.Text);
+            Assert.Equal(S3ServiceType.CloudflareR2, ReadDraft(dialog).ServiceType);
+            SelectByText(account, "Amazon S3");
+            Application.DoEvents();
+            Assert.True(endpoint.Visible);
+            Assert.Equal(custom, ReadDraft(dialog).Endpoint);
+            SelectByText(account, "Google Cloud Storage");
+            Application.DoEvents();
+            Assert.Equal(custom, ReadDraft(dialog).Endpoint);
+            SelectByText(account, "S3 兼容存储");
+            Application.DoEvents();
+            Assert.Equal("MinIO", provider.Text);
+            Assert.Equal(custom, endpoint.Text);
+            Assert.Equal(custom, ReadDraft(dialog).Endpoint);
+        });
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("https://s3.example.com")]
+    [InlineData("http://s3.example.com/")]
+    public void Blank_or_template_default_endpoint_follows_new_template(string original)
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ConnectionDialog(null!, ConnectionProfile.CreatePreset(S3ServiceType.Custom));
+            dialog.Show();
+            var endpoint = Assert.IsType<TextBox>(Find(dialog, "EndpointTextBox"));
+            endpoint.Text = original;
+            SelectByText(Assert.IsType<ComboBox>(Find(dialog, "ProviderComboBox")), "MinIO");
+            Application.DoEvents();
+            Assert.Equal(ConnectionProfile.CreatePreset(S3ServiceType.MinIO).Endpoint, endpoint.Text);
+            SelectByText(Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox")), "Cloudflare R2");
+            Application.DoEvents();
+            Assert.Equal(ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2).Endpoint, endpoint.Text);
+        });
+    }
+
+    [Fact]
+    public void Custom_endpoint_preservation_does_not_mutate_profile_on_cancel()
+    {
+        RunSta(() =>
+        {
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.Custom) with { Endpoint = "https://storage.example.test/custom" };
+            using var dialog = new ConnectionDialog(null!, profile);
+            dialog.Show();
+            SelectByText(Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox")), "Cloudflare R2");
+            Application.DoEvents();
+            dialog.Close();
+            Assert.Equal(profile, dialog.Profile);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AwsCustomEndpointReopensWithoutChangingProviderOrCredential(bool withCredential)
+    {
+        RunSta(() =>
+        {
+            var awsKey = new CredentialProfile
+            {
+                Name = "AWS proxy key", Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.AccessKeyPair, AccessKeyId = "synthetic-access", Secret = "synthetic-secret"
+            };
+            var otherKey = awsKey with { Id = Guid.NewGuid(), Name = "Other S3 key", Provider = CredentialProviderKind.S3Compatible };
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+            {
+                Endpoint = "https://s3-proxy.example.test",
+                CredentialId = withCredential ? awsKey.Id : null,
+                AccessKey = withCredential ? awsKey.AccessKeyId : string.Empty,
+                SecretKey = withCredential ? awsKey.Secret : string.Empty
+            };
+            using var dialog = new ConnectionDialog(null!, profile, withCredential ? [awsKey, otherKey] : []);
+            dialog.Show();
+            Application.DoEvents();
+            Assert.Equal("Amazon S3", Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox")).Text);
+            var saved = ReadDraft(dialog);
+            Assert.Equal(profile.ServiceType, saved.ServiceType);
+            Assert.Equal(profile.Endpoint, saved.Endpoint);
+            Assert.Equal(profile.CredentialId, saved.CredentialId);
+            using var reopened = new ConnectionDialog(null!, saved, withCredential ? [awsKey, otherKey] : []);
+            Assert.Equal(profile.ServiceType, reopened.Profile.ServiceType);
+            Assert.Equal(profile.CredentialId, reopened.Profile.CredentialId);
+        });
+    }
+
+    [Fact]
+    public void Explicit_upload_signing_loads_and_survives_provider_round_trip()
+    {
+        RunSta(() =>
+        {
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.Custom) with
+            {
+                Endpoint = "https://test.r2.cloudflarestorage.com",
+                UploadSigningMode = UploadSigningMode.UnsignedPayload
+            };
+            using var dialog = new ConnectionDialog(null!, profile);
+            dialog.Show();
+            var signing = Assert.IsType<ComboBox>(Find(dialog, "UploadSigningComboBox"));
+            Assert.Contains("兼容", signing.Text, StringComparison.Ordinal);
+            Assert.Equal(UploadSigningMode.UnsignedPayload, ReadDraft(dialog).UploadSigningMode);
+            var account = Assert.IsType<ComboBox>(Find(dialog, "AccountTypeComboBox"));
+            SelectByText(account, "Cloudflare R2");
+            SelectByText(account, "S3 兼容存储");
+            Application.DoEvents();
+            Assert.Equal(UploadSigningMode.UnsignedPayload, ReadDraft(dialog).UploadSigningMode);
+            SelectByText(signing, "标准（AWS SDK 流式签名）");
+            Assert.Equal(UploadSigningMode.Streaming, ReadDraft(dialog).UploadSigningMode);
+        });
+    }
+
+    private static ConnectionProfile ReadDraft(ConnectionDialog dialog) =>
+        (ConnectionProfile)typeof(ConnectionDialog).GetMethod("ReadProfile",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(dialog, null)!;
+
+    [Fact]
     public void ConnectionTestResultIsDetailedCopyableAndInsideDialog()
     {
         RunSta(() =>

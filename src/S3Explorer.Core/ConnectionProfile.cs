@@ -20,6 +20,13 @@ public enum AddressingStyle
     PathStyle
 }
 
+public enum UploadSigningMode
+{
+    Auto = 0,
+    Streaming = 1,
+    UnsignedPayload = 2
+}
+
 public enum ConnectionHealthStatus
 {
     Unknown,
@@ -108,6 +115,8 @@ public sealed record ConnectionProfile
         _ => CredentialSource.ToString()
     };
     public AddressingStyle AddressingStyle { get; init; } = AddressingStyle.Auto;
+    /// <summary>Auto preserves provider defaults; UnsignedPayload uses HTTPS and an explicit content checksum.</summary>
+    public UploadSigningMode UploadSigningMode { get; init; } = UploadSigningMode.Auto;
     public bool UseHttps { get; init; } = true;
     public bool IgnoreCertificateErrors { get; init; }
     public string CustomHostHeader { get; init; } = string.Empty;
@@ -170,6 +179,10 @@ public sealed record ConnectionProfile
         if (!string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment))
             throw new ArgumentException("Endpoint 不能包含查询参数或片段。", nameof(Endpoint));
         EndpointCompatibility.ValidateForService(ServiceType, endpoint);
+        if (!Enum.IsDefined(UploadSigningMode))
+            throw new ArgumentOutOfRangeException(nameof(UploadSigningMode), "上传签名模式无效。");
+        if (UploadSigningMode == UploadSigningMode.UnsignedPayload && endpoint.Scheme != Uri.UriSchemeHttps)
+            throw new ArgumentException("UnsignedPayload 上传签名模式需要 HTTPS Endpoint。", nameof(Endpoint));
         if (string.IsNullOrWhiteSpace(EffectiveSignatureRegion))
             throw new ArgumentException("签名 Region 不能为空。", nameof(SignatureRegion));
         if (CredentialSource != CredentialSourceKind.StoredKeys && ServiceType != S3ServiceType.AmazonS3)

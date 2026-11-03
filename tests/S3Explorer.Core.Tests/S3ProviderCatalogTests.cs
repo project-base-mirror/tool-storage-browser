@@ -24,10 +24,24 @@ public sealed class S3ProviderCatalogTests
         var compatibleTypes = S3ProviderCatalog.CompatibleProviders.Select(item => item.ServiceType).ToHashSet();
 
         Assert.Contains(S3ServiceType.MinIO, compatibleTypes);
-        Assert.Contains(S3ServiceType.CloudflareR2, compatibleTypes);
+        Assert.DoesNotContain(S3ServiceType.CloudflareR2, compatibleTypes);
         Assert.Contains(S3ServiceType.Custom, compatibleTypes);
         Assert.DoesNotContain(S3ServiceType.AmazonS3, compatibleTypes);
         Assert.DoesNotContain(S3ServiceType.GoogleCloudStorage, compatibleTypes);
+    }
+
+    [Fact]
+    public void Each_account_category_has_matching_templates_and_a_valid_default()
+    {
+        foreach (var category in Enum.GetValues<S3AccountCategory>())
+        {
+            var templates = S3ProviderCatalog.ForCategory(category);
+            Assert.NotEmpty(templates);
+            Assert.All(templates, template => Assert.Equal(category, template.Category));
+            Assert.Contains(templates, template => template.ServiceType == S3ProviderCatalog.DefaultServiceType(category));
+        }
+        Assert.Equal(S3ServiceType.CloudflareR2, Assert.Single(S3ProviderCatalog.ForCategory(S3AccountCategory.CloudflareR2)).ServiceType);
+        Assert.Equal("Cloudflare R2", S3ProviderCatalog.CategoryDisplayName(S3AccountCategory.CloudflareR2));
     }
 
     [Fact]
@@ -81,6 +95,17 @@ public sealed class S3ProviderCatalogTests
         Assert.Equal(S3ServiceType.Custom, repaired.ServiceType);
         Assert.Equal(legacy.Endpoint, repaired.Endpoint);
         Assert.Equal("auto", repaired.Region);
+    }
+
+    [Fact]
+    public void VaultBackedAwsProxyProfileIsNotReclassified()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+        {
+            Endpoint = "https://s3-proxy.example.test", CredentialId = Guid.NewGuid(),
+            AccessKey = "synthetic-access", SecretKey = "synthetic-secret"
+        };
+        Assert.Equal(profile, S3ProviderCatalog.RepairLegacyServiceType(profile));
     }
 
     [Theory]

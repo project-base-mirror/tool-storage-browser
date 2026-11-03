@@ -10,6 +10,7 @@ internal sealed class CredentialCenterDialog : Form
     private readonly IS3StorageService? _storage;
     private readonly Func<CredentialProfile, PermissionCheckReport, CancellationToken, Task>? _persistCheck;
     private readonly List<CredentialProfile> _credentials;
+    private readonly ExplorerConfiguration _originalConfiguration;
     private readonly DataGridView _grid;
     private readonly Button _save = new()
     {
@@ -41,6 +42,7 @@ internal sealed class CredentialCenterDialog : Form
     private bool _accepting;
 
     public IReadOnlyList<CredentialProfile> Credentials { get; private set; }
+    public CredentialChangePlan? ChangePlan { get; private set; }
 
     public CredentialCenterDialog(
         IReadOnlyList<ConnectionProfile> storageProfiles,
@@ -57,6 +59,9 @@ internal sealed class CredentialCenterDialog : Form
         _persistCheck = persistCheck;
         _credentials = [.. credentials];
         Credentials = credentials;
+        _originalConfiguration = new ExplorerConfiguration(
+            new ConnectionProfileConfiguration(storageProfiles, _connectionGroups),
+            cdnConfiguration, credentials);
         Name = "CredentialCenterDialog";
         Text = "凭据中心";
         StartPosition = FormStartPosition.CenterParent;
@@ -231,12 +236,16 @@ internal sealed class CredentialCenterDialog : Form
     {
         try
         {
-            var credentials = _credentials.ToArray();
-            new ExplorerConfiguration(
-                new ConnectionProfileConfiguration(_storageProfiles, _connectionGroups),
-                _cdnConfiguration,
-                credentials).Validate();
-            Credentials = credentials;
+            if (!TryPrepareChanges(impacts => MessageBox.Show(
+                    this,
+                    "修改凭据提供方或类型后，以下引用将不再兼容：\n\n" +
+                    string.Join(Environment.NewLine, impacts.Select(value => value.Display)) +
+                    "\n\n是否保存凭据更改，并仅清除以上引用？凭据本身不会删除；相关连接或控制面需要重新选择兼容凭据。",
+                    "确认清除不兼容引用",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes))
+                return;
             _accepting = true;
             DialogResult = DialogResult.OK;
             Close();
@@ -245,6 +254,20 @@ internal sealed class CredentialCenterDialog : Form
         {
             MessageBox.Show(this, exception.Message, "凭据校验失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    internal bool TryPrepareChanges(Func<IReadOnlyList<CredentialReferenceImpact>, bool> confirm)
+    {
+        ArgumentNullException.ThrowIfNull(confirm);
+        ChangePlan = null;
+        Credentials = _originalConfiguration.CredentialVault;
+        var credentials = _credentials.ToArray();
+        var plan = CredentialChangePlan.Create(_originalConfiguration, credentials);
+        if (plan.IncompatibleReferences.Count > 0 && !confirm(plan.IncompatibleReferences))
+            return false;
+        ChangePlan = plan;
+        Credentials = credentials;
+        return true;
     }
 
     private void CredentialCenterFormClosing(object? sender, FormClosingEventArgs args)

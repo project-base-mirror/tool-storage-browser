@@ -4,7 +4,8 @@ public enum S3AccountCategory
 {
     AmazonS3,
     S3Compatible,
-    GoogleCloudStorage
+    GoogleCloudStorage,
+    CloudflareR2
 }
 
 public enum RegionInputMode
@@ -41,7 +42,7 @@ public static class S3ProviderCatalog
                 S3ServiceType.MinIO, S3AccountCategory.S3Compatible, "MinIO",
                 RegionInputMode.Hidden, "us-east-1", "http://127.0.0.1:9000", AddressingStyle.PathStyle, false),
             new S3ProviderDefinition(
-                S3ServiceType.CloudflareR2, S3AccountCategory.S3Compatible, "Cloudflare R2",
+                S3ServiceType.CloudflareR2, S3AccountCategory.CloudflareR2, "Cloudflare R2",
                 RegionInputMode.Hidden, "auto", "https://<account-id>.r2.cloudflarestorage.com", AddressingStyle.PathStyle),
             new S3ProviderDefinition(
                 S3ServiceType.BackblazeB2, S3AccountCategory.S3Compatible, "Backblaze B2",
@@ -74,6 +75,9 @@ public static class S3ProviderCatalog
     public static IReadOnlyList<S3ProviderDefinition> CompatibleProviders { get; } =
         All.Where(item => item.Category == S3AccountCategory.S3Compatible).ToArray();
 
+    public static IReadOnlyList<S3ProviderDefinition> ForCategory(S3AccountCategory category) =>
+        All.Where(item => item.Category == category).ToArray();
+
     public static S3ProviderDefinition Get(S3ServiceType serviceType) =>
         Definitions.TryGetValue(serviceType, out var definition)
             ? definition
@@ -83,6 +87,7 @@ public static class S3ProviderCatalog
     {
         S3AccountCategory.AmazonS3 => S3ServiceType.AmazonS3,
         S3AccountCategory.GoogleCloudStorage => S3ServiceType.GoogleCloudStorage,
+        S3AccountCategory.CloudflareR2 => S3ServiceType.CloudflareR2,
         _ => S3ServiceType.Custom
     };
 
@@ -91,6 +96,7 @@ public static class S3ProviderCatalog
         S3AccountCategory.AmazonS3 => "Amazon S3",
         S3AccountCategory.S3Compatible => "S3 兼容存储",
         S3AccountCategory.GoogleCloudStorage => "Google Cloud Storage",
+        S3AccountCategory.CloudflareR2 => "Cloudflare R2",
         _ => category.ToString()
     };
 
@@ -110,7 +116,8 @@ public static class S3ProviderCatalog
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        if (profile.ServiceType != S3ServiceType.AmazonS3 ||
+        if (profile.CredentialId is not null ||
+            profile.ServiceType != S3ServiceType.AmazonS3 ||
             profile.CredentialSource != CredentialSourceKind.StoredKeys ||
             !Uri.TryCreate(profile.Endpoint?.Trim(), UriKind.Absolute, out var endpoint) ||
             IsAmazonEndpoint(endpoint.Host))

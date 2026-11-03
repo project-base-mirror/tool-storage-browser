@@ -35,10 +35,10 @@ internal sealed partial class MainForm
 
         try
         {
-            var updated = await _configurationStore.UpdateAsync(current => current with
-            {
-                CredentialVault = dialog.Credentials.ToArray()
-            });
+            var plan = dialog.ChangePlan
+                ?? throw new InvalidOperationException("凭据更改尚未确认。");
+            var updated = await _configurationStore.UpdateAsync(current =>
+                plan.Apply(current, clearIncompatibleReferences: true));
             _profiles = updated.Storage.Profiles;
             _profileGroups = updated.Storage.Groups;
             _cdnConfiguration = updated.Cdn;

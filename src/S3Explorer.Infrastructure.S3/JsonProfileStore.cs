@@ -117,6 +117,7 @@ public sealed class JsonProfileStore : IProfileStore, IRecoveryAwareStore
         public string ProtectedAwsExternalId { get; set; } = string.Empty;
         public int AwsSessionDurationSeconds { get; set; } = 3600;
         public string AwsWebIdentityTokenFile { get; set; } = string.Empty;
+        public UploadSigningMode UploadSigningMode { get; set; } = UploadSigningMode.Auto;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
@@ -175,6 +176,7 @@ public sealed class JsonProfileStore : IProfileStore, IRecoveryAwareStore
             AwsWebIdentityTokenFile = source.CredentialSource == CredentialSourceKind.AwsWebIdentity
                 ? (source.AwsWebIdentityTokenFile ?? string.Empty).Trim()
                 : string.Empty,
+            UploadSigningMode = source.UploadSigningMode,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
             IgnoreCertificateErrors = source.IgnoreCertificateErrors,
@@ -214,6 +216,7 @@ public sealed class JsonProfileStore : IProfileStore, IRecoveryAwareStore
             AwsExternalId = protector.Unprotect(ProtectedAwsExternalId),
             AwsSessionDurationSeconds = AwsSessionDurationSeconds <= 0 ? 3600 : AwsSessionDurationSeconds,
             AwsWebIdentityTokenFile = AwsWebIdentityTokenFile ?? string.Empty,
+            UploadSigningMode = UploadSigningMode,
             AddressingStyle = AddressingStyle,
             UseHttps = UseHttps,
             IgnoreCertificateErrors = IgnoreCertificateErrors,

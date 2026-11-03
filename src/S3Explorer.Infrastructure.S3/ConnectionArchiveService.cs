@@ -292,7 +292,11 @@ public sealed class ConnectionArchiveService
                 : payload.CdnCredentials.Count) != (envelope.Version >= 4 ? envelope.CredentialCount : envelope.CdnCredentialCount))
             throw new InvalidDataException("连接包中的 CDN 配置或凭据数量不一致。");
 
-        var profiles = payload.Profiles.Select(profile => profile.ToRuntime()).ToArray();
+        var profiles = payload.Profiles.Select(profile =>
+        {
+            var runtime = profile.ToRuntime();
+            return envelope.Version < 4 ? S3ProviderCatalog.RepairLegacyServiceType(runtime) : runtime;
+        }).ToArray();
         CdnConfiguration cdnConfiguration;
         IReadOnlyList<CredentialProfile> importedCredentials;
         if (envelope.Version >= 5)
@@ -979,6 +983,7 @@ public sealed class ConnectionArchiveService
             string.Equals(left.AwsRoleSourceIdentity?.Trim(), right.AwsRoleSourceIdentity?.Trim(), StringComparison.Ordinal) &&
             left.AwsSessionDurationSeconds == right.AwsSessionDurationSeconds &&
             string.Equals(left.AwsWebIdentityTokenFile?.Trim(), right.AwsWebIdentityTokenFile?.Trim(), StringComparison.Ordinal) &&
+            left.UploadSigningMode == right.UploadSigningMode &&
             left.AddressingStyle == right.AddressingStyle &&
             left.UseHttps == right.UseHttps &&
             left.IgnoreCertificateErrors == right.IgnoreCertificateErrors &&
@@ -1471,6 +1476,7 @@ public sealed class ConnectionArchiveService
         public string? AwsExternalId { get; set; }
         public int AwsSessionDurationSeconds { get; set; } = 3600;
         public string AwsWebIdentityTokenFile { get; set; } = string.Empty;
+        public UploadSigningMode UploadSigningMode { get; set; } = UploadSigningMode.Auto;
         public AddressingStyle AddressingStyle { get; set; }
         public bool UseHttps { get; set; }
         public bool IgnoreCertificateErrors { get; set; }
@@ -1520,6 +1526,7 @@ public sealed class ConnectionArchiveService
             AwsWebIdentityTokenFile = source.CredentialSource == CredentialSourceKind.AwsWebIdentity
                 ? (source.AwsWebIdentityTokenFile ?? string.Empty).Trim()
                 : string.Empty,
+            UploadSigningMode = source.UploadSigningMode,
             AddressingStyle = source.AddressingStyle,
             UseHttps = source.UseHttps,
             IgnoreCertificateErrors = source.IgnoreCertificateErrors,
@@ -1534,42 +1541,42 @@ public sealed class ConnectionArchiveService
             ExternalBuckets = source.ExternalBuckets.ToList()
         };
 
-        public ConnectionProfile ToRuntime() =>
-            S3ProviderCatalog.RepairLegacyServiceType(new ConnectionProfile
-            {
-                Id = Id,
-                Name = Name,
-                ServiceType = ServiceType,
-                Endpoint = Endpoint,
-                Region = Region,
-                SignatureRegion = SignatureRegion,
-                AccessKey = AccessKey ?? string.Empty,
-                SecretKey = SecretKey ?? string.Empty,
-                SessionToken = SessionToken ?? string.Empty,
-                CredentialId = CredentialId,
-                AwsExternalIdCredentialId = AwsExternalIdCredentialId,
-                CredentialSource = CredentialSource,
-                AwsProfileName = AwsProfileName ?? string.Empty,
-                AwsSourceProfileName = AwsSourceProfileName ?? string.Empty,
-                AwsRoleArn = AwsRoleArn ?? string.Empty,
-                AwsRoleSessionName = AwsRoleSessionName ?? string.Empty,
-                AwsRoleSourceIdentity = AwsRoleSourceIdentity ?? string.Empty,
-                AwsExternalId = AwsExternalId ?? string.Empty,
-                AwsSessionDurationSeconds = AwsSessionDurationSeconds <= 0 ? 3600 : AwsSessionDurationSeconds,
-                AwsWebIdentityTokenFile = AwsWebIdentityTokenFile ?? string.Empty,
-                AddressingStyle = AddressingStyle,
-                UseHttps = UseHttps,
-                IgnoreCertificateErrors = IgnoreCertificateErrors,
-                CustomHostHeader = CustomHostHeader,
-                FollowTemporaryRedirects = FollowTemporaryRedirects,
-                EnableMultiObjectDelete = EnableMultiObjectDelete,
-                EnableMultipartCopy = EnableMultipartCopy,
-                DefaultStorageClass = DefaultStorageClass,
-                RequestTimeoutSeconds = RequestTimeoutSeconds,
-                ConnectionTimeoutSeconds = ConnectionTimeoutSeconds,
-                DefaultBucket = DefaultBucket,
-                ExternalBuckets = ExternalBuckets ?? []
-            });
+        public ConnectionProfile ToRuntime() => new()
+        {
+            Id = Id,
+            Name = Name,
+            ServiceType = ServiceType,
+            Endpoint = Endpoint,
+            Region = Region,
+            SignatureRegion = SignatureRegion,
+            AccessKey = AccessKey ?? string.Empty,
+            SecretKey = SecretKey ?? string.Empty,
+            SessionToken = SessionToken ?? string.Empty,
+            CredentialId = CredentialId,
+            AwsExternalIdCredentialId = AwsExternalIdCredentialId,
+            CredentialSource = CredentialSource,
+            AwsProfileName = AwsProfileName ?? string.Empty,
+            AwsSourceProfileName = AwsSourceProfileName ?? string.Empty,
+            AwsRoleArn = AwsRoleArn ?? string.Empty,
+            AwsRoleSessionName = AwsRoleSessionName ?? string.Empty,
+            AwsRoleSourceIdentity = AwsRoleSourceIdentity ?? string.Empty,
+            AwsExternalId = AwsExternalId ?? string.Empty,
+            AwsSessionDurationSeconds = AwsSessionDurationSeconds <= 0 ? 3600 : AwsSessionDurationSeconds,
+            AwsWebIdentityTokenFile = AwsWebIdentityTokenFile ?? string.Empty,
+            UploadSigningMode = UploadSigningMode,
+            AddressingStyle = AddressingStyle,
+            UseHttps = UseHttps,
+            IgnoreCertificateErrors = IgnoreCertificateErrors,
+            CustomHostHeader = CustomHostHeader,
+            FollowTemporaryRedirects = FollowTemporaryRedirects,
+            EnableMultiObjectDelete = EnableMultiObjectDelete,
+            EnableMultipartCopy = EnableMultipartCopy,
+            DefaultStorageClass = DefaultStorageClass,
+            RequestTimeoutSeconds = RequestTimeoutSeconds,
+            ConnectionTimeoutSeconds = ConnectionTimeoutSeconds,
+            DefaultBucket = DefaultBucket,
+            ExternalBuckets = ExternalBuckets ?? []
+        };
     }
 }
 

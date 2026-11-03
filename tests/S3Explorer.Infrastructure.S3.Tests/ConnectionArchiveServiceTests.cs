@@ -11,6 +11,42 @@ public sealed class ConnectionArchiveServiceTests
 {
     private readonly ConnectionArchiveService _service = new();
 
+    [Theory]
+    [InlineData(UploadSigningMode.Auto)]
+    [InlineData(UploadSigningMode.Streaming)]
+    [InlineData(UploadSigningMode.UnsignedPayload)]
+    public void UploadSigningModeSurvivesArchiveRoundTripAndLegacyOmission(UploadSigningMode mode)
+    {
+        var profile = CreateProfile() with { UploadSigningMode = mode };
+        var archive = _service.Export([profile]);
+        Assert.Equal(mode, Assert.Single(_service.Import(archive).Profiles).UploadSigningMode);
+        var document = JsonNode.Parse(archive)!.AsObject();
+        document["profiles"]![0]!.AsObject().Remove("uploadSigningMode");
+        var legacy = Encoding.UTF8.GetBytes(document.ToJsonString());
+        Assert.Equal(UploadSigningMode.Auto, Assert.Single(_service.Import(legacy).Profiles).UploadSigningMode);
+    }
+
+    [Fact]
+    public void ArchiveMergeDoesNotTreatDifferentUploadModesAsEquivalent()
+    {
+        var existing = CreateProfile() with { Name = "local", UploadSigningMode = UploadSigningMode.Auto };
+        var imported = existing with { Id = Guid.NewGuid(), Name = "imported", UploadSigningMode = UploadSigningMode.UnsignedPayload };
+        var merged = _service.Merge([existing], [imported], importCredentials: false, ConnectionImportConflictStrategy.Rename);
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(merged, item => item.UploadSigningMode == UploadSigningMode.UnsignedPayload);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(8)]
+    public void ArchiveRejectsInvalidUploadModes(int value)
+    {
+        var archive = _service.Export([CreateProfile()]);
+        var document = JsonNode.Parse(archive)!.AsObject();
+        document["profiles"]![0]!["uploadSigningMode"] = value;
+        Assert.Throws<InvalidDataException>(() => _service.Import(Encoding.UTF8.GetBytes(document.ToJsonString())));
+    }
+
     [Fact]
     public void CredentialFreeExportOmitsEveryCredentialValue()
     {
@@ -35,6 +71,7 @@ public sealed class ConnectionArchiveServiceTests
     public void PasswordProtectedExportCanMoveReadyToUseCredentials()
     {
         var (profile, credential) = CreateUnifiedProfile();
+        profile = profile with { UploadSigningMode = UploadSigningMode.UnsignedPayload };
         var archive = _service.Export([profile], includeCredentials: true, password: "portable-password", credentials: [credential]);
         var json = Encoding.UTF8.GetString(archive);
 
@@ -47,6 +84,7 @@ public sealed class ConnectionArchiveServiceTests
         Assert.Equal("access-value", imported.AccessKey);
         Assert.Equal("secret-value", imported.SecretKey);
         Assert.Equal("session-value", imported.SessionToken);
+        Assert.Equal(UploadSigningMode.UnsignedPayload, imported.UploadSigningMode);
         imported.Validate();
     }
 
@@ -378,11 +416,29 @@ public sealed class ConnectionArchiveServiceTests
             SecretKey = "secret-value"
         };
 
-        var imported = Assert.Single(_service.Import(_service.Export([legacy])).Profiles);
+        var document = JsonNode.Parse(_service.Export([legacy]))!.AsObject();
+        document["version"] = 3; // Endpoint-based repair belongs to legacy inline-credential formats only.
+        var imported = Assert.Single(_service.Import(Encoding.UTF8.GetBytes(document.ToJsonString())).Profiles);
 
         Assert.Equal(S3ServiceType.Custom, imported.ServiceType);
         Assert.Equal(legacy.Endpoint, imported.Endpoint);
         Assert.Equal("auto", imported.Region);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CurrentArchivePreservesExplicitAwsProviderAndCustomEndpoint(bool includeCredentials)
+    {
+        var (source, key) = CreateUnifiedProfile();
+        var credential = key with { Provider = CredentialProviderKind.AmazonWebServices };
+        var profile = source with { ServiceType = S3ServiceType.AmazonS3, Endpoint = "https://s3-proxy.example.test" };
+        var bytes = _service.Export([profile], includeCredentials, "portable-password", credentials: [credential]);
+        var imported = Assert.Single(_service.Import(bytes, "portable-password").Profiles);
+        Assert.Equal(S3ServiceType.AmazonS3, imported.ServiceType);
+        Assert.Equal(profile.Endpoint, imported.Endpoint);
+        Assert.Equal(includeCredentials ? credential.Id : (Guid?)null, imported.CredentialId);
+        if (includeCredentials) Assert.Equal(credential.Secret, imported.SecretKey);
     }
 
     [Fact]

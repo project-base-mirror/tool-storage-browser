@@ -26,7 +26,11 @@ S3 Explorer 使用统一 Credential Vault 管理对象存储、AWS 外部 ID 和
 
 从顶级“凭据 → 凭据中心”打开独立凭据中心。可以新增、查看、编辑和删除凭据，并在对象存储连接或 CDN 配置中选择已有凭据。删除仍被连接或 CDN Profile 引用的凭据会被阻止。CDN 配置与 Bucket/前缀关联仍保留在“CDN / 分发 → CDN 配置中心”，不会混入凭据窗口。
 
-保存配置时会校验引用关系、提供方和凭据类型的一致性。Alibaba CDN 控制面只接受 Alibaba Cloud AccessKey；通用 HTTP 刷新端点的控制面只接受 Generic HTTP Bearer Token 或自定义 Header。CDN 内容认证在 CDN Profile 编辑器内单独设置。修改凭据类型导致已有控制面引用不再有效时，保存会失败并保留原配置。
+保存配置时会校验引用关系、提供方和凭据类型的一致性。Alibaba CDN 控制面只接受 Alibaba Cloud AccessKey；通用 HTTP 刷新端点的控制面只接受 Generic HTTP Bearer Token 或自定义 Header。CDN 内容认证在 CDN Profile 编辑器内单独设置。
+
+修改提供方或凭据类型导致已有引用不兼容时，“保存更改”会列出受影响的对象存储连接、AWS AssumeRole External ID 和 CDN 控制面，默认不确认。选择“是”才会在一次原子保存中更新凭据并清除列出的不兼容引用，不会删除凭据、连接或 CDN Profile。取消确认不写配置，仍可继续编辑或放弃草稿。仍然兼容的引用、CDN 内容认证、关联、Endpoint 等设置保持不变；被清除引用的连接或控制面需要重新选择兼容凭据。仅更名、轮换 Secret 或其他仍然兼容的更改不会触发清除。
+
+保存时重新读取最新配置并检查已确认的引用。如果其他窗口或 CLI 在此期间新增了不兼容引用、修改了受影响连接/CDN 配置，或更改/删除了正在编辑的凭据，本次保存会整体中止，要求重新打开后查看并确认，不会扩大清除范围。其他凭据的并发新增和修改会保留。清除存储引用也会清除内存中解析出的 Access Key、Secret Key 和 Session Token；清除 External ID 引用也会清除解析出的 External ID。所有写入在替换配置和备份前，都会使用新凭据重新解析并校验连接；例如已被 AssumeRole 引用的 External ID 改成过短或含空格的值，会在写盘前拒绝，不会出现提示保存失败却已写入坏配置的情况。
 
 凭据中心提供“检查关联权限”。默认检查是无副作用的：对象存储检查列举、对象属性，并且仅在前 100 个对象中找到不超过 64 KiB 的文件时验证内容下载；找不到小文件就保持“无法确定”，不会为了权限验证下载大文件。写入、删除和 ACL 权限必须通过显式探针。CDN 这里只检查控制面；内容认证由 CDN 配置中心使用实际 Bucket/Prefix 关联对象检查。
 
@@ -42,10 +46,22 @@ S3 Explorer 使用统一 Credential Vault 管理对象存储、AWS 外部 ID 和
 s3explorer-cli credential list
 s3explorer-cli credential show <name-or-id>
 s3explorer-cli credential add --name <name> --provider <provider> --kind <kind> --secret-env <ENV_NAME> [--access-key-id <id>] [--session-token-env <ENV_NAME>] [--header <name>]
+s3explorer-cli credential update <name-or-id> [--name <name>] [--provider <provider>] [--kind <kind>] [--secret-env <ENV_NAME>] [--access-key-id <id>] [--session-token-env <ENV_NAME>] [--header <name>] [--clear-incompatible-references --yes]
 s3explorer-cli credential delete <name-or-id> --yes
 ```
 
-`credential add` 只从环境变量读取秘密，避免 Secret 出现在命令行历史中。对象存储连接使用 `profile add --credential <name-or-id>`；AWS AssumeRole 的 External ID 使用独立的 `SecretValue` 凭据并通过 `--external-id-credential` 引用。
+`credential add` 和 `credential update` 只从环境变量读取新的秘密，避免 Secret 出现在命令行历史中。`update` 保留未指定的字段和原凭据 ID；改变类型时清除不再适用的 Access Key、Session Token 或 Header 字段，并校验新类型所需字段。缺失/空环境变量会阻止保存，不会把旧秘密意外替换为空。对象存储连接使用 `profile add --credential <name-or-id>`；AWS AssumeRole 的 External ID 使用独立的 `SecretValue` 凭据并通过 `--external-id-credential` 引用。
+
+CLI 更新遇到不兼容引用时会列出名称和 ID，并拒绝写入。确认影响后重试时必须同时提供 `--clear-incompatible-references --yes`；单独 `--yes` 不授权清除引用。CLI 与桌面端使用同一套原子更新与并发复核规则。JSON 成功结果包含安全的 `credential` 概要和实际清除的 `clearedReferences`，不含秘密值。
+
+```text
+# 先查看类型更改影响（如有引用，不会保存）
+s3explorer-cli credential update r2-key --kind bearer-token
+# 确认清除列出的不兼容引用后再保存；凭据 ID 保持不变
+s3explorer-cli credential update r2-key --kind bearer-token --clear-incompatible-references --yes
+# 兼容的名称/Secret 更新不需要清除标志
+s3explorer-cli credential update r2-key --name r2-new-name --secret-env R2_NEW_SECRET
+```
 
 权限检查：
 

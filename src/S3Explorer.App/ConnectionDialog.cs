@@ -13,7 +13,8 @@ internal sealed class ConnectionDialog : Form
         string Endpoint,
         string Region,
         bool UseHttps,
-        AddressingStyle AddressingStyle);
+        AddressingStyle AddressingStyle,
+        UploadSigningMode UploadSigningMode);
 
     private readonly IS3StorageService _storage;
     private readonly TextBox _name = new();
@@ -77,6 +78,7 @@ internal sealed class ConnectionDialog : Form
     private readonly CheckBox _followRedirects = new() { Text = "处理临时重定向", Checked = true, AutoSize = true };
     private readonly CheckBox _multiDelete = new() { Text = "Multi-Object Delete", Checked = true, AutoSize = true };
     private readonly CheckBox _multipartCopy = new() { Text = "Multipart Copy", Checked = true, AutoSize = true };
+    private readonly ComboBox _uploadSigning = new() { Name = "UploadSigningComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _storageClass = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _defaultBucket = new();
     private readonly TextBox _externalBuckets = new()
@@ -122,6 +124,7 @@ internal sealed class ConnectionDialog : Form
     private readonly List<CredentialProfile> _credentials;
     private readonly Func<CredentialProfile, Task<IReadOnlyList<CredentialProfile>>>? _saveNewCredentialAsync;
     private readonly Dictionary<S3ServiceType, ConnectionDraft> _connectionDrafts = [];
+    private readonly Dictionary<S3AccountCategory, S3ServiceType> _selectedProviders = [];
     private readonly Guid _id;
     private bool _loading;
     private bool _applyingSelection;
@@ -139,8 +142,11 @@ internal sealed class ConnectionDialog : Form
         _credentials = credentials?.ToList() ?? [];
         _saveNewCredentialAsync = saveNewCredentialAsync;
         _newCredential.Enabled = _newAwsExternalIdCredential.Enabled = saveNewCredentialAsync is not null;
-        Profile = S3ProviderCatalog.RepairLegacyServiceType(
-            profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
+        Profile = profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3);
+        // Only legacy inline-key profiles need the old endpoint-based type repair.
+        // A current vault-backed or credential-free profile keeps its explicit provider.
+        if (Profile.CredentialId is null && Profile.HasStoredCredentials)
+            Profile = S3ProviderCatalog.RepairLegacyServiceType(Profile);
         _id = Profile.Id;
 
         Text = profile is null ? "新建对象存储连接" : "编辑对象存储连接";
@@ -153,9 +159,11 @@ internal sealed class ConnectionDialog : Form
         _accountType.Items.AddRange(Enum.GetValues<S3AccountCategory>()
             .Select(category => (object)new Choice<S3AccountCategory>(category, S3ProviderCatalog.CategoryDisplayName(category)))
             .ToArray());
-        _provider.Items.AddRange(S3ProviderCatalog.CompatibleProviders
-            .Select(definition => (object)new Choice<S3ServiceType>(definition.ServiceType, definition.DisplayName))
-            .ToArray());
+        _uploadSigning.Items.AddRange([
+            new Choice<UploadSigningMode>(UploadSigningMode.Auto, "自动（使用服务商默认方式）"),
+            new Choice<UploadSigningMode>(UploadSigningMode.Streaming, "标准（AWS SDK 流式签名）"),
+            new Choice<UploadSigningMode>(UploadSigningMode.UnsignedPayload, "兼容（非流式，仅 HTTPS）")
+        ]);
         _storageClass.Items.AddRange(["STANDARD", "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE"]);
         _region.Items.AddRange(["auto", "us-east-1", "us-west-1", "us-west-2", "us-west-004", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1", "ap-guangzhou", "oss-cn-hangzhou"]);
         _credentialSource.Items.AddRange([
@@ -283,6 +291,8 @@ internal sealed class ConnectionDialog : Form
         var compatibility = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         compatibility.Controls.AddRange([_followRedirects, _multiDelete, _multipartCopy]);
         AddField(advanced, ref advancedRow, FieldLabel("兼容性："), compatibility);
+        AddField(advanced, ref advancedRow, FieldLabel("上传签名方式："), _uploadSigning);
+        AddHint(advanced, ref advancedRow, "自动保留服务商默认行为；通用 S3 的 R2 等端点可选兼容方式。内容校验保持启用。");
         AddField(advanced, ref advancedRow, FieldLabel("默认存储类型："), _storageClass);
         AddField(advanced, ref advancedRow, FieldLabel("连接超时（秒）："), _connectionTimeout);
         AddField(advanced, ref advancedRow, FieldLabel("请求超时（秒）："), _timeout);
@@ -406,7 +416,7 @@ internal sealed class ConnectionDialog : Form
         {
             var definition = S3ProviderCatalog.Get(profile.ServiceType);
             SelectChoice(_accountType, definition.Category);
-            SelectChoice(_provider, profile.ServiceType);
+            PopulateProviderChoices(definition.Category, profile.ServiceType);
             _name.Text = profile.Name;
             _endpoint.Text = profile.Endpoint;
             _region.Text = string.IsNullOrWhiteSpace(profile.Region) ? definition.DefaultRegion : profile.Region;
@@ -430,6 +440,7 @@ internal sealed class ConnectionDialog : Form
             _followRedirects.Checked = profile.FollowTemporaryRedirects;
             _multiDelete.Checked = profile.EnableMultiObjectDelete;
             _multipartCopy.Checked = profile.EnableMultipartCopy;
+            SelectChoice(_uploadSigning, profile.UploadSigningMode);
             _storageClass.SelectedItem = profile.DefaultStorageClass;
             if (_storageClass.SelectedIndex < 0) _storageClass.SelectedIndex = 0;
             _connectionTimeout.Value = Math.Clamp(profile.ConnectionTimeoutSeconds, 1, 120);
@@ -452,25 +463,27 @@ internal sealed class ConnectionDialog : Form
         _applyingSelection = true;
         try
         {
-            if (applyPreset && _activeServiceType is { } previousServiceType)
-                _connectionDrafts[previousServiceType] = CaptureConnectionDraft();
-
-            var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
-            _providerLabel.Visible = _provider.Visible = category == S3AccountCategory.S3Compatible;
-
-            var serviceType = category == S3AccountCategory.S3Compatible
-                ? SelectedValue(_provider, S3ServiceType.Custom)
-                : S3ProviderCatalog.DefaultServiceType(category);
-            if (category == S3AccountCategory.S3Compatible && _provider.SelectedIndex < 0)
+            var previousDraft = CaptureConnectionDraft();
+            var previousType = _activeServiceType;
+            if (applyPreset && previousType is { } previousServiceType)
             {
-                SelectChoice(_provider, S3ServiceType.Custom);
-                serviceType = S3ServiceType.Custom;
+                _connectionDrafts[previousServiceType] = previousDraft;
+                _selectedProviders[S3ProviderCatalog.Get(previousServiceType).Category] = previousServiceType;
             }
 
+            var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
+            var selectedProvider = SelectedValue(_provider, S3ProviderCatalog.DefaultServiceType(category));
+            if (S3ProviderCatalog.Get(selectedProvider).Category != category || _provider.Items.Count == 0)
+            {
+                selectedProvider = _selectedProviders.GetValueOrDefault(category, S3ProviderCatalog.DefaultServiceType(category));
+                PopulateProviderChoices(category, selectedProvider);
+            }
+            var serviceType = SelectedValue(_provider, S3ProviderCatalog.DefaultServiceType(category));
             var definition = S3ProviderCatalog.Get(serviceType);
-            var endpointVisible = category == S3AccountCategory.S3Compatible;
-            _endpointLabel.Visible = _endpoint.Visible = endpointVisible;
-            _https.Enabled = endpointVisible;
+            _provider.Enabled = _provider.Items.Count > 1;
+            // Keep every endpoint visible, including custom AWS endpoints carried across categories.
+            _endpointLabel.Visible = _endpoint.Visible = true;
+            _https.Enabled = true;
             var regionVisible = definition.RegionInput != RegionInputMode.Hidden;
             _regionLabel.Visible = _region.Visible = regionVisible;
             _regionLabel.Text = definition.RegionInput == RegionInputMode.Optional
@@ -494,11 +507,14 @@ internal sealed class ConnectionDialog : Form
                     ApplyConnectionDraft(draft);
                 else
                     ApplyConnectionPreset(serviceType);
+                if (previousType is { } oldType && IsCustomEndpoint(previousDraft.Endpoint, oldType))
+                {
+                    // The endpoint belongs to the connection, not to the provider template.
+                    // Do not replace an address the user already entered, even with a cached draft.
+                    _endpoint.Text = previousDraft.Endpoint;
+                    _https.Checked = previousDraft.UseHttps;
+                }
                 ClearConnectionTestResult();
-            }
-            else if (!endpointVisible)
-            {
-                _https.Checked = true;
             }
 
             _activeServiceType = serviceType;
@@ -514,6 +530,27 @@ internal sealed class ConnectionDialog : Form
         }
     }
 
+    private void PopulateProviderChoices(S3AccountCategory category, S3ServiceType selected)
+    {
+        _provider.Items.Clear();
+        _provider.Items.AddRange(S3ProviderCatalog.ForCategory(category)
+            .Select(definition => (object)new Choice<S3ServiceType>(definition.ServiceType, definition.DisplayName))
+            .ToArray());
+        SelectChoice(_provider, selected);
+        if (_provider.SelectedIndex < 0) SelectChoice(_provider, S3ProviderCatalog.DefaultServiceType(category));
+    }
+
+    private static bool IsCustomEndpoint(string endpoint, S3ServiceType serviceType)
+    {
+        var value = endpoint.Trim().TrimEnd('/');
+        if (value.Length == 0) return false;
+        var defaultEndpoint = S3ProviderCatalog.Get(serviceType).DefaultEndpoint.TrimEnd('/');
+        // Changing only HTTPS on a template address does not turn it into a user endpoint.
+        static string WithoutScheme(string address) => address.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? address[8..] : address.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ? address[7..] : address;
+        return !string.Equals(WithoutScheme(value), WithoutScheme(defaultEndpoint), StringComparison.OrdinalIgnoreCase);
+    }
+
     private void ApplyConnectionPreset(S3ServiceType serviceType)
     {
         var preset = ConnectionProfile.CreatePreset(serviceType);
@@ -523,6 +560,7 @@ internal sealed class ConnectionDialog : Form
         _path.Checked = preset.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = preset.AddressingStyle == AddressingStyle.VirtualHosted;
         _auto.Checked = preset.AddressingStyle == AddressingStyle.Auto;
+        SelectChoice(_uploadSigning, preset.UploadSigningMode);
     }
 
     private ConnectionDraft CaptureConnectionDraft() => new(
@@ -530,7 +568,8 @@ internal sealed class ConnectionDialog : Form
         _region.Text,
         _https.Checked,
         _path.Checked ? AddressingStyle.PathStyle :
-            _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto);
+            _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto,
+        SelectedValue(_uploadSigning, UploadSigningMode.Auto));
 
     private void ApplyConnectionDraft(ConnectionDraft draft)
     {
@@ -540,6 +579,7 @@ internal sealed class ConnectionDialog : Form
         _path.Checked = draft.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = draft.AddressingStyle == AddressingStyle.VirtualHosted;
         _auto.Checked = draft.AddressingStyle == AddressingStyle.Auto;
+        SelectChoice(_uploadSigning, draft.UploadSigningMode);
     }
 
     private void UpdateCredentialSourceVisibility()
@@ -673,7 +713,7 @@ internal sealed class ConnectionDialog : Form
 
     private void ApplyHttpsToEndpoint()
     {
-        if (_loading || !_https.Enabled || !Uri.TryCreate(_endpoint.Text.Trim(), UriKind.Absolute, out var uri)) return;
+        if (_loading || _applyingSelection || !_https.Enabled || !Uri.TryCreate(_endpoint.Text.Trim(), UriKind.Absolute, out var uri)) return;
         var targetScheme = _https.Checked ? Uri.UriSchemeHttps : Uri.UriSchemeHttp;
         if (string.Equals(uri.Scheme, targetScheme, StringComparison.OrdinalIgnoreCase)) return;
         var builder = new UriBuilder(uri) { Scheme = targetScheme, Port = -1 };
@@ -682,10 +722,7 @@ internal sealed class ConnectionDialog : Form
 
     private ConnectionProfile ReadProfile()
     {
-        var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
-        var serviceType = category == S3AccountCategory.S3Compatible
-            ? SelectedValue(_provider, S3ServiceType.Custom)
-            : S3ProviderCatalog.DefaultServiceType(category);
+        var serviceType = SelectedServiceType();
         var definition = S3ProviderCatalog.Get(serviceType);
         var region = definition.RegionInput == RegionInputMode.Hidden
             ? definition.DefaultRegion
@@ -693,9 +730,7 @@ internal sealed class ConnectionDialog : Form
         if (region.Length == 0)
             region = definition.DefaultRegion;
         var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, region);
-        var endpoint = category == S3AccountCategory.S3Compatible
-            ? _endpoint.Text.Trim()
-            : definition.DefaultEndpoint;
+        var endpoint = _endpoint.Text.Trim();
         var externalBuckets = _externalBuckets.Lines
             .Select(bucket => bucket.Trim())
             .Where(bucket => bucket.Length > 0)
@@ -763,6 +798,7 @@ internal sealed class ConnectionDialog : Form
             FollowTemporaryRedirects = _followRedirects.Checked,
             EnableMultiObjectDelete = _multiDelete.Checked,
             EnableMultipartCopy = _multipartCopy.Checked,
+            UploadSigningMode = SelectedValue(_uploadSigning, UploadSigningMode.Auto),
             DefaultStorageClass = _storageClass.Text,
             ConnectionTimeoutSeconds = (int)_connectionTimeout.Value,
             RequestTimeoutSeconds = (int)_timeout.Value
@@ -905,9 +941,7 @@ internal sealed class ConnectionDialog : Form
     private S3ServiceType SelectedServiceType()
     {
         var category = SelectedValue(_accountType, S3AccountCategory.AmazonS3);
-        return category == S3AccountCategory.S3Compatible
-            ? SelectedValue(_provider, S3ServiceType.Custom)
-            : S3ProviderCatalog.DefaultServiceType(category);
+        return SelectedValue(_provider, S3ProviderCatalog.DefaultServiceType(category));
     }
 }
 

@@ -21,7 +21,7 @@ S3 Explorer 是一个面向 Windows 10/11 x64 的原生 S3 对象存储管理工
 - 单实例托盘驻留：重复启动只恢复已有窗口；关闭或最小化主窗口后继续传输，显式退出仍安全暂停并保存队列。驻留动作本身不弹系统气泡，完成与失败结果使用无焦点应用通知合并显示，避免 Windows 隐私占位和批量任务刷屏。
 - 文件夹单向镜像同步：保存任务、分析新增/更改/删除、排除规则、可选哈希比较，并将操作加入可恢复传输队列。
 - 独立 `s3explorer-cli`：连接、Bucket、对象、同步、增量发布、远程验证和 CDN 自动化，支持稳定 JSON 输出、取消与自动化隔离数据目录。
-- 简化的账户创建：Amazon S3、S3 兼容存储、Google Cloud Storage 三类入口，兼容服务使用模板；无须 Region 的服务自动隐藏该参数。
+- 简化的账户创建：Amazon S3、Cloudflare R2、S3 兼容存储、Google Cloud Storage 四类入口，服务商模板随账户类型切换；切换保留已填写的自定义 Endpoint，无须 Region 的服务自动隐藏该参数。
 - 统一 Credential Vault：对象存储、AWS External ID 与 CDN 控制面凭据共享安全引用；CDN 内容认证内联在对应 Profile 中。连接包 v6 安全迁移两类秘密与非秘密控制资源 ID，等价配置复用且重复导入不生成副本。
 - 连接复制、健康状态、最近检查与最近成功时间。
 - 独立 CDN / 内容分发配置：按连接、Bucket 和最长前缀映射交付域名，支持复制/打开 CDN URL、Range 下载测试、HTTPS 证书诊断、持久任务、通用 HTTP，以及阿里云、腾讯云和 Cloudflare 原生控制面。
@@ -217,11 +217,26 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 验证账户树交互时请使用隔离的自动化数据目录（见上方 GUI 自动化章节），不要用会从正式配置复制数据的普通 Debug 启动。相关回归测试使用临时文件、假凭据和假存储服务：`ConnectionProfileConfigurationTests`、`ProfileStoreTests` 和 `MainFormInteractionTests`（界面测试需在 Windows 运行）。
 
-## Cloudflare R2 上传
+## S3 上传签名与 Cloudflare R2
 
-连接类型请选择 `CloudflareR2`（CLI 新建连接可用 `--type r2`），使用 HTTPS S3 API Endpoint 和 `auto` 签名 Region。单文件、目录批量、分片上传与空目录标记共用 R2 兼容策略：禁用 R2 尚不支持的 Streaming SigV4 / AWS chunked 请求体，并保留 SigV4 请求认证。
+上传签名可以在连接配置中独立选择，不依赖服务类型或 Endpoint 域名猜测。支持三个模式：
 
-R2 请求显式发送 `Content-MD5`：发送前以有界内存预读文件或当前分片计算校验，随后重置流位置。这样既兼容 R2，也保留服务端内容校验；不会全局关闭 AWS、MinIO 或其他服务的校验。预读会增加一次本地磁盘读取。CLI `upload --verify` 仍可额外下载并验证大小与 SHA-256。
+- `Auto`（默认）：保留原来的兼容策略。`CloudflareR2` 使用非流式 `UNSIGNED-PAYLOAD`，AWS、MinIO 与其他类型保持 AWS SDK 默认签名和校验。旧配置缺少该字段时仍为 `Auto`。
+- `Streaming`：显式使用 SDK 默认上传签名与校验，包含 R2 类型。R2 目前不支持 Streaming SigV4，通常不应为 R2 选择此模式。
+- `UnsignedPayload`：通过 HTTPS 使用非流式 `UNSIGNED-PAYLOAD`，保留 SigV4 请求认证并发送显式 `Content-MD5`。任何服务类型都可选择，用于不支持 Streaming SigV4 的 S3-compatible 服务；HTTP Endpoint 会被拒绝。
+
+Cloudflare R2 建议选择独立的 `Cloudflare R2` 类型（CLI `--type r2`），配置 HTTPS S3 API Endpoint 与 `auto` 签名 Region，保持 `Auto` 即可。已有 `Custom / S3 Compatible` 连接也可不改变类型或凭据，直接选择 `UnsignedPayload`：
+
+    s3explorer-cli profile update "existing-r2" --upload-signing unsigned-payload
+    s3explorer-cli profile show "existing-r2" --output json
+
+新建自定义连接时可指定：
+
+    s3explorer-cli profile add --name "custom-r2" --type compatible --endpoint "https://<account-id>.r2.cloudflarestorage.com" --credential "r2-key" --upload-signing unsigned-payload
+
+`profile list/show` 会显示保存的上传签名模式；使用 `profile update <name-or-id> --upload-signing auto` 可恢复默认。该更新命令只修改上传签名，不改变连接 ID、服务类型、Endpoint 或凭据。模式跟随连接保存在统一配置与连接导入导出包中。
+
+单文件、目录批量、分片上传与空目录标记共用该策略。非流式模式在发送前以有界内存预读文件或当前分片计算 `Content-MD5`，随后重置流位置，因此会增加一次本地磁盘读取。仅替换 SDK 的流式 checksum 生成方式，不取消服务端内容校验，也不会全局关闭 AWS、MinIO 或其他连接的校验。CLI `upload --verify` 仍可额外下载并验证大小与 SHA-256。
 
 旧版出现 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD not implemented` 而列目录正常，原因是上传请求体签名模式不兼容，并不表示 R2 不支持上传或 multipart。参考 [Cloudflare .NET SDK 指引](https://developers.cloudflare.com/r2/examples/aws/aws-sdk-net/#upload-and-retrieve-objects) 与 [R2 S3 API 兼容表](https://developers.cloudflare.com/r2/api/s3/api/)。自动化协议测试使用假凭据和本地 HTTP handler 验证 SDK 实际生成的头、请求体和分片边界，不能替代真实 R2 账户验收。
 

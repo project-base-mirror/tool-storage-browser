@@ -8,9 +8,11 @@ namespace S3Explorer.Cli.Tests;
 public sealed class UploadPathTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task R2SingleAndDirectoryUploadKeepProfileAndVerifyEveryFile(bool directory)
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, false)]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, true)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload, false)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload, true)]
+    public async Task SingleAndDirectoryUploadKeepSigningModeAndVerifyEveryFile(S3ServiceType type, UploadSigningMode mode, bool directory)
     {
         var root = Path.Combine(Path.GetTempPath(), "s3-cli-upload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(root, "nested"));
@@ -20,9 +22,9 @@ public sealed class UploadPathTests
             var first = Path.Combine(root, "single.txt");
             await File.WriteAllTextAsync(first, "isolated first", token);
             await File.WriteAllTextAsync(Path.Combine(root, "nested", "二 + %.txt"), "isolated second", token);
-            var profile = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with
+            var profile = ConnectionProfile.CreatePreset(type) with
             {
-                Name = "r2-test", Endpoint = "https://storage.example.test", AccessKey = "fake-access", SecretKey = "fake-secret"
+                UploadSigningMode = mode, Name = "r2-test", Endpoint = "https://storage.example.test", AccessKey = "fake-access", SecretKey = "fake-secret"
             };
             var service = DispatchProxy.Create<IS3StorageService, UploadStorage>();
             var recorder = (UploadStorage)(object)service;

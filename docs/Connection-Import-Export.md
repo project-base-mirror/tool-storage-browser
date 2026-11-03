@@ -64,3 +64,9 @@ S3 Explorer 0.5.2 起使用 `.s3connections` 连接包在不同 Windows 设备�
 - AWS shared/SSO profile、环境变量、容器角色、实例角色、默认链、AssumeRole 和 Web Identity 已进入连接包格式；External ID 仅在含密码凭据包中迁移，其余只携带非敏感来源引用。
 - CDN 普通配置、内联内容认证与统一控制面凭据在载荷中保持逻辑分离；Cloudflare Zone ID 等非秘密资源标识始终随 Profile 迁移。无凭据包不包含任何 Secret，导入器也会按 v1-v6 的实际载荷拒绝伪装成无凭据包的秘密或凭据引用；含凭据包则加密整个载荷。
 - 账户分组不随连接包导出；目标分组由导入预览选择，删除分组不会删除连接。
+
+## 上传签名模式
+
+连接包会保留每个连接的 `uploadSigningMode`（`auto`、`streaming`、`unsignedPayload`）。此字段独立于服务类型，导入、复制与合并时不会因其他字段相同而丢失；模式不同的连接不视为等价连接。旧连接包与旧配置省略此字段时按 `Auto` 读取，保持 R2 非流式、其他服务 SDK 默认的原有行为。
+
+显式 `UnsignedPayload` 只允许 HTTPS Endpoint，并使用 SigV4 请求认证和 `Content-MD5` 内容校验。未知枚举值或 HTTP 上的显式非流式配置会被验证拒绝。老版本应用不认识新增字段，回存或再次导出时可能丢失显式选择；需要自定义非流式签名时，请在支持该设置的版本间迁移。

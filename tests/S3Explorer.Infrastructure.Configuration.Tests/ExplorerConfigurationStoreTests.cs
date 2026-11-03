@@ -12,6 +12,81 @@ namespace S3Explorer.Infrastructure.Configuration.Tests;
 [SupportedOSPlatform("windows")]
 public sealed class ExplorerConfigurationStoreTests
 {
+    [Theory]
+    [InlineData(UploadSigningMode.Auto)]
+    [InlineData(UploadSigningMode.Streaming)]
+    [InlineData(UploadSigningMode.UnsignedPayload)]
+    public async Task UploadSigningModeSurvivesEncryptedConfigurationAndLegacyOmission(UploadSigningMode mode)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var protector = new FakeProtector();
+            var store = await ExplorerConfigurationStore.OpenAsync(root, protector, token);
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+            {
+                Name = "signing", CredentialSource = CredentialSourceKind.AwsEnvironmentVariables,
+                UploadSigningMode = mode
+            };
+            await store.SaveAsync(new ExplorerConfiguration(new ConnectionProfileConfiguration([profile], []), CdnConfiguration.Empty, []), token);
+            var reopened = await ExplorerConfigurationStore.OpenAsync(root, protector, token);
+            Assert.Equal(mode, Assert.Single((await reopened.LoadAsync(token)).Storage.Profiles).UploadSigningMode);
+            var envelope = JsonNode.Parse(await File.ReadAllTextAsync(store.Path, token))!.AsObject();
+            var payload = JsonNode.Parse(protector.Unprotect(envelope["encryptedPayload"]!.GetValue<string>()))!.AsObject();
+            payload["storage"]!["profiles"]![0]!.AsObject().Remove("uploadSigningMode");
+            envelope["encryptedPayload"] = protector.Protect(payload.ToJsonString());
+            await File.WriteAllTextAsync(store.Path, envelope.ToJsonString(), token);
+            reopened = await ExplorerConfigurationStore.OpenAsync(root, protector, token);
+            Assert.Equal(UploadSigningMode.Auto, Assert.Single((await reopened.LoadAsync(token)).Storage.Profiles).UploadSigningMode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("a", false)]
+    [InlineData("bad value", false)]
+    [InlineData("a", true)]
+    [InlineData("bad value", true)]
+    public async Task InvalidExternalIdEditDoesNotReplaceConfigurationOrBackup(string invalidSecret, bool atomicUpdate)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var store = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var credential = new CredentialProfile
+            {
+                Name = "external-id", Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.SecretValue, Secret = "valid-external-id"
+            };
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with
+            {
+                Name = "role", CredentialSource = CredentialSourceKind.AwsAssumeRole,
+                AwsSourceProfileName = "base", AwsRoleArn = "arn:aws:iam::123456789012:role/test", AwsRoleSessionName = "test-session",
+                AwsExternalIdCredentialId = credential.Id, AwsExternalId = credential.Secret
+            };
+            await store.SaveAsync(new(new([profile], []), CdnConfiguration.Empty, [credential]), token);
+            var before = await File.ReadAllBytesAsync(store.Path, token);
+            var backupBefore = await File.ReadAllBytesAsync(store.Path + ".bak", token);
+            var loaded = await store.LoadAsync(token);
+            var changed = credential with { Secret = invalidSecret };
+            if (atomicUpdate)
+                await Assert.ThrowsAsync<ArgumentException>(() => store.UpdateAsync(
+                    current => current with { CredentialVault = new[] { changed } }, token));
+            else
+                await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(
+                    loaded with { CredentialVault = new[] { changed } }, token));
+            Assert.Equal(before, await File.ReadAllBytesAsync(store.Path, token));
+            Assert.Equal(backupBefore, await File.ReadAllBytesAsync(store.Path + ".bak", token));
+            var reopened = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var unchanged = await reopened.LoadAsync(token);
+            Assert.Equal(credential, Assert.Single(unchanged.CredentialVault));
+            Assert.Equal("valid-external-id", Assert.Single(unchanged.Storage.Profiles).AwsExternalId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public async Task EmptyConfigurationCreatesEncryptedCanonicalFile()
     {

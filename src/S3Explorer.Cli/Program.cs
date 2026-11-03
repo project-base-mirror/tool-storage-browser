@@ -91,6 +91,8 @@ internal static class Program
             {
                 "credential" or "credentials" => await RunCredentialAsync(
                     verb, parsed, configurationStore, json, operationCancellation.Token),
+                "profile" or "profiles" when verb == "update" => await UpdateProfileSigningAsync(
+                    parsed, configurationStore, json, operationCancellation.Token),
                 "profile" or "profiles" => await RunProfileAsync(
                     verb, parsed, profiles, credentials, json, operationCancellation.Token),
                 "connection" => await RunConnectionAsync(verb, parsed, profiles, storage, json, operationCancellation.Token),
@@ -180,6 +182,8 @@ internal static class Program
             ("credential" or "credentials", "list" or "show") => [],
             ("credential" or "credentials", "add") =>
             ["name", "provider", "kind", "access-key-id", "secret-env", "session-token-env", "header"],
+            ("credential" or "credentials", "update") =>
+            ["name", "provider", "kind", "access-key-id", "secret-env", "session-token-env", "header", "clear-incompatible-references", "yes"],
             ("credential" or "credentials", "delete") => ["yes"],
             ("profile" or "profiles", "list" or "show" or "groups") => [],
             ("profile" or "profiles", "add") =>
@@ -187,8 +191,9 @@ internal static class Program
                 "name", "type", "endpoint", "region", "credential-source", "aws-profile", "credential",
                 "source-profile", "role-arn", "role-session-name", "source-identity",
                 "external-id-credential", "session-duration", "web-identity-token-file", "group",
-                "default-bucket", "path-style", "ignore-certificate-errors"
+                "default-bucket", "path-style", "ignore-certificate-errors", "upload-signing"
             ],
+            ("profile" or "profiles", "update") => ["upload-signing"],
             ("profile" or "profiles", "delete") => ["yes"],
             ("profile" or "profiles", "group-add") => ["name"],
             ("profile" or "profiles", "group-delete") => ["yes"],
@@ -293,6 +298,18 @@ internal static class Program
                 WriteSuccess(json, CredentialView(candidate), $"已添加凭据：{candidate.Name} ({candidate.Id})");
                 return 0;
 
+            case "update":
+                var changed = await CredentialUpdateCommand.RunAsync(
+                    args, store, ParseCredentialProvider, ParseCredentialKind, cancellationToken);
+                WriteSuccess(json, new
+                {
+                    credential = CredentialView(changed.Credential),
+                    clearedReferences = changed.ClearedReferences
+                }, $"已更新凭据：{changed.Credential.Name} ({changed.Credential.Id})" +
+                    (changed.ClearedReferences.Count == 0 ? string.Empty :
+                        "\n已清除不兼容引用：\n" + string.Join(Environment.NewLine, changed.ClearedReferences.Select(value => value.Display))));
+                return 0;
+
             case "delete":
                 RequireConfirmation(args, "删除凭据必须提供 --yes。");
                 var deleteTarget = RequirePositional(args, 2, "credential delete <name-or-id> --yes");
@@ -319,11 +336,41 @@ internal static class Program
                 return 0;
 
             default:
-                throw new CliUsageException("用法：credential list | show | add | delete");
+                throw new CliUsageException("用法：credential list | show | add | update | delete");
         }
     }
 
-    private static async Task<int> RunProfileAsync(
+    internal static async Task<int> UpdateProfileSigningAsync(
+        CliArguments args,
+        IExplorerConfigurationStore store,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var target = RequirePositional(args, 2, "profile update <name-or-id> --upload-signing <auto|streaming|unsigned-payload>");
+        var mode = ParseUploadSigningMode(args.Require("upload-signing"));
+        Guid updatedId = default;
+        var saved = await store.UpdateAsync(current =>
+        {
+            var existing = ResolveProfile(current.Storage.Profiles, target);
+            var updated = existing with { UploadSigningMode = mode };
+            updated.ValidateConfiguration();
+            updatedId = updated.Id;
+            return current with
+            {
+                Storage = current.Storage with
+                {
+                    Profiles = current.Storage.Profiles
+                        .Select(profile => profile.Id == updated.Id ? updated : profile).ToArray()
+                }
+            };
+        }, cancellationToken);
+        var result = saved.Storage.Profiles.Single(profile => profile.Id == updatedId);
+        WriteSuccess(json, ProfileView(result, GroupName(saved.Storage.Groups, result.GroupId)),
+            $"已更新连接：{result.Name}，上传签名：{FormatUploadSigningMode(result.UploadSigningMode)}");
+        return 0;
+    }
+
+    internal static async Task<int> RunProfileAsync(
         string verb,
         CliArguments args,
         IProfileStore store,
@@ -345,14 +392,14 @@ internal static class Program
                         .OrderBy(item => item.GroupId is null ? int.MaxValue : groups.First(group => group.Id == item.GroupId).SortOrder)
                         .ThenBy(item => item.SortOrder)
                         .Select(item =>
-                            $"{item.Name}\t{GroupName(groups, item.GroupId) ?? "未分组"}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.CredentialSourceDisplayName}\t{item.Endpoint}\t{item.Id}")));
+                            $"{item.Name}\t{GroupName(groups, item.GroupId) ?? "未分组"}\t{S3ProviderCatalog.Get(item.ServiceType).DisplayName}\t{item.CredentialSourceDisplayName}\t{item.Endpoint}\t{FormatUploadSigningMode(item.UploadSigningMode)}\t{item.Id}")));
                 return 0;
 
             case "show":
                 var shown = ResolveProfile(profiles, RequirePositional(args, 2, "profile show <name-or-id>"));
                 WriteSuccess(json, ProfileView(shown, GroupName(groups, shown.GroupId)),
                     $"名称: {shown.Name}\n类型: {S3ProviderCatalog.Get(shown.ServiceType).DisplayName}\nEndpoint: {shown.Endpoint}\nRegion: {shown.EffectiveSignatureRegion}\n凭据来源: {shown.CredentialSourceDisplayName}" +
-                    $"\n分组: {GroupName(groups, shown.GroupId) ?? "未分组"}" +
+                    $"\n上传签名: {FormatUploadSigningMode(shown.UploadSigningMode)}\n分组: {GroupName(groups, shown.GroupId) ?? "未分组"}" +
                     (shown.CredentialSource == CredentialSourceKind.StoredKeys ? $"\nAccess Key: {Mask(shown.AccessKey)}" : string.Empty) +
                     (shown.CredentialSource == CredentialSourceKind.AwsAssumeRole
                         ? $"\n源身份: {shown.AwsSourceProfileName}{(string.IsNullOrWhiteSpace(shown.AwsRoleSourceIdentity) ? string.Empty : $" / {shown.AwsRoleSourceIdentity}")}\n目标 Role: {shown.AwsRoleArn}\nExternal ID: {(string.IsNullOrWhiteSpace(shown.AwsExternalId) ? "未配置" : "已配置")}" : string.Empty) +
@@ -425,6 +472,7 @@ internal static class Program
                         : string.Empty,
                     DefaultBucket = args.Optional("default-bucket") ?? string.Empty,
                     AddressingStyle = args.Flag("path-style") ? AddressingStyle.PathStyle : preset.AddressingStyle,
+                    UploadSigningMode = ParseUploadSigningMode(args.Optional("upload-signing") ?? "auto"),
                     IgnoreCertificateErrors = args.Flag("ignore-certificate-errors")
                 };
                 profile.Validate();
@@ -480,7 +528,7 @@ internal static class Program
                 return 0;
 
             default:
-                throw new CliUsageException("用法：profile list | show | add | delete | groups | group-add | group-delete | move");
+                throw new CliUsageException("用法：profile list | show | add | update | delete | groups | group-add | group-delete | move");
         }
     }
 
@@ -1128,6 +1176,22 @@ internal static class Program
         _ => throw new CliUsageException($"不支持的连接类型：{value}")
     };
 
+    internal static UploadSigningMode ParseUploadSigningMode(string value) => value.Trim().ToLowerInvariant() switch
+    {
+        "auto" => UploadSigningMode.Auto,
+        "streaming" => UploadSigningMode.Streaming,
+        "unsigned-payload" => UploadSigningMode.UnsignedPayload,
+        _ => throw new CliUsageException($"不支持的上传签名模式：{value}。可选 auto|streaming|unsigned-payload。")
+    };
+
+    private static string FormatUploadSigningMode(UploadSigningMode mode) => mode switch
+    {
+        UploadSigningMode.Auto => "auto",
+        UploadSigningMode.Streaming => "streaming",
+        UploadSigningMode.UnsignedPayload => "unsigned-payload",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode))
+    };
+
     private static CredentialSourceKind ParseCredentialSource(string value) => value.Trim().ToLowerInvariant() switch
     {
         "stored" or "keys" or "saved" => CredentialSourceKind.StoredKeys,
@@ -1217,6 +1281,7 @@ internal static class Program
         type = S3ProviderCatalog.Get(profile.ServiceType).DisplayName,
         profile.Endpoint,
         region = profile.EffectiveSignatureRegion,
+        uploadSigningMode = FormatUploadSigningMode(profile.UploadSigningMode),
         credentialSource = profile.CredentialSourceDisplayName,
         group = groupName,
         awsProfile = profile.CredentialSource is CredentialSourceKind.AwsSharedProfile or CredentialSourceKind.AwsSso ? profile.AwsProfileName : null,
@@ -1352,6 +1417,9 @@ internal static class Program
           s3explorer-cli credential add --name <name> --provider <aws|aliyun|tencent|cloudflare|backblaze|google|supabase|s3-compatible|generic-http>
               --kind <access-key-pair|bearer-token|custom-header|secret-value>
               --secret-env <ENV_NAME> [--access-key-id <id>] [--session-token-env <ENV_NAME>] [--header <name>]
+          s3explorer-cli credential update <name-or-id> [--name <name>] [--provider <provider>] [--kind <kind>]
+            [--secret-env <ENV_NAME>] [--access-key-id <id>] [--session-token-env <ENV_NAME>] [--header <name>]
+            [--clear-incompatible-references --yes]
           s3explorer-cli credential delete <name-or-id> --yes
           s3explorer-cli profiles list [--output json]
           s3explorer-cli profile show <name-or-id> [--output json]
@@ -1362,6 +1430,8 @@ internal static class Program
               [--aws-profile <name>] [--source-profile <name>] [--role-arn <arn>] [--role-session-name <name>]
               [--source-identity <value>] [--external-id-credential <name-or-id>] [--session-duration <seconds>]
               [--web-identity-token-file <absolute-path>] [--group <name-or-id>]
+              [--upload-signing <auto|streaming|unsigned-payload>]
+          s3explorer-cli profile update <name-or-id> --upload-signing <auto|streaming|unsigned-payload>
           s3explorer-cli profile delete <name-or-id> --yes
           s3explorer-cli profile groups
           s3explorer-cli profile group-add --name <name>
@@ -1438,12 +1508,12 @@ internal sealed class CliArguments
     {
         "json", "yes", "recursive", "delete", "hash", "new-only", "changed-only",
         "path-style", "ignore-certificate-errors", "non-interactive", "warmup", "dry-run",
-        "full", "include-manifest", "verify", "probe-write", "help"
+        "full", "include-manifest", "verify", "probe-write", "help", "clear-incompatible-references"
     };
     private static readonly HashSet<string> ValueOptions = new(StringComparer.OrdinalIgnoreCase)
     {
         "output", "data-dir", "timeout", "cancel-file", "log-file",
-        "profile", "bucket", "prefix", "name", "type", "endpoint", "region",
+        "profile", "bucket", "prefix", "name", "type", "endpoint", "region", "upload-signing",
         "storage-profile", "cdn-profile", "operation",
         "credential-source", "credential", "aws-profile", "provider", "kind", "access-key-id", "secret-env",
         "session-token-env", "header", "source-profile", "role-arn", "role-session-name",

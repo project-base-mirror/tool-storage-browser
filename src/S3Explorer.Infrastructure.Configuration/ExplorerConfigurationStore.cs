@@ -130,12 +130,16 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
         finally { _gate.Release(); }
     }
 
-    private async Task SaveCoreAsync(ExplorerConfiguration configuration, CancellationToken cancellationToken)
+    private async Task<ExplorerConfiguration> SaveCoreAsync(ExplorerConfiguration configuration, CancellationToken cancellationToken)
     {
         var persistent = configuration.ToPersistentSnapshot();
+        // Validate freshly resolved vault values before replacing either the file or its backup.
+        // Returning this same snapshot prevents post-commit validation failures in UpdateAsync.
+        var resolved = persistent.ResolveCredentialReferences();
         var json = JsonSerializer.Serialize(persistent, Options);
         var envelope = new Envelope(ExplorerConfiguration.CurrentSchema, _protector.Protect(json));
         await _file.SaveAsync(envelope, Options, ValidateEnvelope, cancellationToken).ConfigureAwait(false);
+        return resolved;
     }
 
     public async Task<ExplorerConfiguration> UpdateAsync(Func<ExplorerConfiguration, ExplorerConfiguration> update, CancellationToken cancellationToken = default)
@@ -150,8 +154,7 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
             {
                 var current = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
                 var next = update(current) ?? throw new InvalidOperationException("配置更新函数返回 null。");
-                await SaveCoreAsync(next, cancellationToken).ConfigureAwait(false);
-                return next.ResolveCredentialReferences();
+                return await SaveCoreAsync(next, cancellationToken).ConfigureAwait(false);
             }
             finally { semaphore.Release(); }
         }

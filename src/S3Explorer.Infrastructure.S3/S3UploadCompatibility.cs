@@ -8,15 +8,15 @@ internal static class S3UploadCompatibility
 {
     public static void ValidateEndpoint(ConnectionProfile? profile)
     {
-        if (profile?.ServiceType == S3ServiceType.CloudflareR2 && profile.NormalizedEndpoint.Scheme != Uri.UriSchemeHttps)
-            throw new InvalidOperationException("Cloudflare R2 上传需要 HTTPS Endpoint。");
+        if (UsesUnsignedPayload(profile) && profile!.NormalizedEndpoint.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidOperationException("UnsignedPayload 上传签名模式需要 HTTPS Endpoint。");
     }
 
     public static async Task PrepareAsync(ConnectionProfile? profile, PutObjectRequest request,
         Stream source, CancellationToken cancellationToken)
     {
-        if (profile?.ServiceType != S3ServiceType.CloudflareR2) return;
-        request.MD5Digest = await ContentMd5Async(profile, source, cancellationToken).ConfigureAwait(false);
+        if (!UsesUnsignedPayload(profile)) return;
+        request.MD5Digest = await ContentMd5Async(profile!, source, cancellationToken).ConfigureAwait(false);
         request.UseChunkEncoding = false;
         request.DisablePayloadSigning = true;
         request.DisableDefaultChecksumValidation = true;
@@ -25,21 +25,30 @@ internal static class S3UploadCompatibility
     public static async Task PrepareAsync(ConnectionProfile? profile, UploadPartRequest request,
         Stream source, CancellationToken cancellationToken)
     {
-        if (profile?.ServiceType != S3ServiceType.CloudflareR2) return;
-        request.MD5Digest = await ContentMd5Async(profile, source, cancellationToken).ConfigureAwait(false);
+        if (!UsesUnsignedPayload(profile)) return;
+        request.MD5Digest = await ContentMd5Async(profile!, source, cancellationToken).ConfigureAwait(false);
         request.UseChunkEncoding = false;
         request.DisablePayloadSigning = true;
         request.DisableDefaultChecksumValidation = true;
     }
 
+    private static bool UsesUnsignedPayload(ConnectionProfile? profile) => profile?.UploadSigningMode switch
+    {
+        null => false,
+        UploadSigningMode.Auto => profile.ServiceType == S3ServiceType.CloudflareR2,
+        UploadSigningMode.Streaming => false,
+        UploadSigningMode.UnsignedPayload => true,
+        _ => throw new ArgumentOutOfRangeException(nameof(profile.UploadSigningMode), "上传签名模式无效。")
+    };
+
     private static async Task<string> ContentMd5Async(ConnectionProfile profile, Stream source,
         CancellationToken cancellationToken)
     {
-        // R2 rejects the SDK's streaming SigV4 payload. Keep request authentication and
-        // HTTPS, and send a supported Content-MD5 instead of disabling integrity checks entirely.
+        // Some S3-compatible services reject streaming SigV4. Keep request authentication
+        // and HTTPS; explicit Content-MD5 replaces the SDK streaming checksum, not integrity checks.
         ValidateEndpoint(profile);
         if (!source.CanSeek)
-            throw new ArgumentException("R2 上传源必须支持定位，以便校验后重新读取。", nameof(source));
+            throw new ArgumentException("UnsignedPayload 上传源必须支持定位，以便校验后重新读取。", nameof(source));
         var position = source.Position;
         try
         {

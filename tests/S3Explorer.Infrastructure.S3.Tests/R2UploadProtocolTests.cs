@@ -12,10 +12,17 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 public sealed class R2UploadProtocolTests
 {
     [Theory]
-    [InlineData(0)]
-    [InlineData(137)]
-    [InlineData(11 * 1024 * 1024)]
-    public async Task R2UploadsUseUnsignedPayloadAndExplicitChecksumsOnActualSdkRequests(int length)
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 0)]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 137)]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 11 * 1024 * 1024)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload, 0)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload, 137)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload, 11 * 1024 * 1024)]
+    [InlineData(S3ServiceType.MinIO, UploadSigningMode.UnsignedPayload, 137)]
+    [InlineData(S3ServiceType.AmazonS3, UploadSigningMode.UnsignedPayload, 137)]
+    [InlineData(S3ServiceType.AmazonS3, UploadSigningMode.UnsignedPayload, 11 * 1024 * 1024)]
+    public async Task UnsignedUploadsKeepAuthenticationAndExplicitChecksumsOnActualSdkRequests(
+        S3ServiceType type, UploadSigningMode mode, int length)
     {
         var token = TestContext.Current.CancellationToken;
         var path = Path.GetTempFileName();
@@ -26,7 +33,7 @@ public sealed class R2UploadProtocolTests
             await File.WriteAllBytesAsync(path, bytes, token);
             using var recording = new RecordingHttpFactory();
             var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
-            await service.UploadFileAsync(Profile(), "bucket", "目录/file + %.bin", path, "STANDARD", Context(), token);
+            await service.UploadFileAsync(Profile() with { ServiceType = type, UploadSigningMode = mode }, "bucket", "目录/file + %.bin", path, "STANDARD", Context(), token);
             var uploads = recording.Requests.Where(request => request.Method == "PUT").OrderBy(request => request.Part).ToArray();
             Assert.Equal(length >= 5 * 1024 * 1024 ? 3 : 1, uploads.Length);
             Assert.Equal(bytes, uploads.SelectMany(request => request.Bytes).ToArray());
@@ -42,8 +49,10 @@ public sealed class R2UploadProtocolTests
         finally { File.Delete(path); }
     }
 
-    [Fact]
-    public async Task R2ConcurrentSmallFilesAndFolderMarkersUseSameCompatibilityPolicy()
+    [Theory]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload)]
+    public async Task ConcurrentSmallFilesAndFolderMarkersUseSameCompatibilityPolicy(S3ServiceType type, UploadSigningMode mode)
     {
         var token = TestContext.Current.CancellationToken;
         var path = Path.GetTempFileName();
@@ -52,9 +61,10 @@ public sealed class R2UploadProtocolTests
             await File.WriteAllTextAsync(path, "isolated-batch-content", token);
             using var recording = new RecordingHttpFactory();
             var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
+            var profile = Profile() with { ServiceType = type, UploadSigningMode = mode };
             await Task.WhenAll(Enumerable.Range(0, 4).Select(index => service.UploadFileAsync(
-                Profile(), "bucket", $"batch/{index}.txt", path, "STANDARD", Context(), token)));
-            await service.CreateFolderAsync(Profile(), "bucket", "empty/", token);
+                profile, "bucket", $"batch/{index}.txt", path, "STANDARD", Context(), token)));
+            await service.CreateFolderAsync(profile, "bucket", "empty/", token);
             Assert.Equal(5, recording.Requests.Count);
             Assert.All(recording.Requests, request =>
             {
@@ -68,18 +78,24 @@ public sealed class R2UploadProtocolTests
     }
 
     [Theory]
-    [InlineData(S3ServiceType.AmazonS3)]
-    [InlineData(S3ServiceType.MinIO)]
-    [InlineData(S3ServiceType.Custom)]
-    [InlineData(S3ServiceType.AliyunOss)]
-    [InlineData(S3ServiceType.TencentCos)]
-    [InlineData(S3ServiceType.BackblazeB2)]
-    public async Task OtherProvidersKeepSdkSigningAndChecksumDefaults(S3ServiceType type)
+    [InlineData(S3ServiceType.AmazonS3, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.MinIO, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.AliyunOss, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.TencentCos, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.BackblazeB2, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.SupabaseStorage, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.GoogleCloudStorage, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.AmazonS3, UploadSigningMode.Streaming)]
+    [InlineData(S3ServiceType.MinIO, UploadSigningMode.Streaming)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.Streaming)]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Streaming)]
+    public async Task DefaultAndExplicitStreamingModesKeepSdkSigningAndChecksums(S3ServiceType type, UploadSigningMode mode)
     {
         var put = new PutObjectRequest();
         var part = new UploadPartRequest();
         using var stream = new MemoryStream([1, 2, 3]);
-        var profile = Profile() with { ServiceType = type };
+        var profile = Profile() with { ServiceType = type, UploadSigningMode = mode };
         await S3UploadCompatibility.PrepareAsync(profile, put, stream, TestContext.Current.CancellationToken);
         await S3UploadCompatibility.PrepareAsync(profile, part, stream, TestContext.Current.CancellationToken);
         Assert.True(put.UseChunkEncoding);
@@ -109,13 +125,51 @@ public sealed class R2UploadProtocolTests
         Assert.Equal(1, stream.Position);
     }
 
-    [Fact]
-    public async Task R2DoesNotSendUnsignedPayloadOverHttp()
+    [Theory]
+    [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto)]
+    [InlineData(S3ServiceType.Custom, UploadSigningMode.UnsignedPayload)]
+    public async Task DoesNotSendUnsignedPayloadOverHttp(S3ServiceType type, UploadSigningMode mode)
     {
         using var stream = new MemoryStream([1]);
         await Assert.ThrowsAsync<InvalidOperationException>(() => S3UploadCompatibility.PrepareAsync(
-            Profile() with { Endpoint = "http://storage.example.test", UseHttps = false }, new PutObjectRequest(), stream,
+            Profile() with { ServiceType = type, UploadSigningMode = mode, Endpoint = "http://storage.example.test", UseHttps = false }, new PutObjectRequest(), stream,
             TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData(137)]
+    [InlineData(11 * 1024 * 1024)]
+    public async Task HttpUnsignedUploadsAreRejectedBeforeAnyRemoteRequest(int length)
+    {
+        var path = Path.GetTempFileName();
+        var token = TestContext.Current.CancellationToken;
+        try
+        {
+            await File.WriteAllBytesAsync(path, new byte[length], token);
+            using var recording = new RecordingHttpFactory();
+            var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
+            var profile = Profile() with
+            {
+                ServiceType = S3ServiceType.Custom, UploadSigningMode = UploadSigningMode.UnsignedPayload,
+                Endpoint = "http://storage.example.test"
+            };
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadFileAsync(
+                profile, "bucket", "blocked", path, "STANDARD", Context(), token));
+            Assert.Empty(recording.Requests);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task UnknownModesAreRejectedBeforePreparingUploads()
+    {
+        var profile = Profile() with { UploadSigningMode = (UploadSigningMode)123 };
+        using var source = new MemoryStream([1]);
+        Assert.Throws<ArgumentOutOfRangeException>(() => S3UploadCompatibility.ValidateEndpoint(profile));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            S3UploadCompatibility.PrepareAsync(profile, new PutObjectRequest(), source, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            S3UploadCompatibility.PrepareAsync(profile, new UploadPartRequest(), source, TestContext.Current.CancellationToken));
     }
 
     private static ConnectionProfile Profile() => ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using S3Explorer.Core;
 using S3Explorer.Infrastructure.S3;
 using Xunit;
@@ -246,6 +247,33 @@ public sealed class ProfileStoreTests
             Assert.All(ungrouped.Profiles, profile => Assert.Null(profile.GroupId));
         }
         finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(UploadSigningMode.Auto)]
+    [InlineData(UploadSigningMode.Streaming)]
+    [InlineData(UploadSigningMode.UnsignedPayload)]
+    public async Task UploadSigningModeRoundTripsAndOmittedLegacyFieldDefaultsToAuto(UploadSigningMode mode)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "profiles.json");
+        var store = new JsonProfileStore(new FakeProtector(), path);
+        var profile = new ConnectionProfile
+        {
+            Name = "Compatible", ServiceType = S3ServiceType.Custom, Endpoint = "https://storage.example.test",
+            AccessKey = "fake-access", SecretKey = "fake-secret", UploadSigningMode = mode
+        };
+        var token = TestContext.Current.CancellationToken;
+        try
+        {
+            await store.SaveAsync([profile], token);
+            Assert.Equal(mode, Assert.Single(await new JsonProfileStore(new FakeProtector(), path).LoadAsync(token)).UploadSigningMode);
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(path, token))!.AsObject();
+            json["profiles"]![0]!.AsObject().Remove("uploadSigningMode");
+            await File.WriteAllTextAsync(path, json.ToJsonString(), token);
+            Assert.Equal(UploadSigningMode.Auto, Assert.Single(await new JsonProfileStore(new FakeProtector(), path).LoadAsync(token)).UploadSigningMode);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
 
     private sealed class FakeProtector : ICredentialProtector
