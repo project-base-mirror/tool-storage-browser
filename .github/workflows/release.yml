@@ -87,6 +87,13 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-Publish.ps1 -SkipPackageBuild
 
+      - name: Run isolated Windows application smoke checks
+        shell: pwsh
+        run: |
+          ./scripts/AppAutomation.ps1 Smoke
+          ./scripts/AppAutomation.ps1 CorruptSmoke
+          ./scripts/AppAutomation.ps1 SingleInstanceSmoke
+
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
@@ -141,3 +148,9 @@ jobs:
             gh release create $env:RELEASE_TAG @assets --verify-tag --title "S3 Explorer $env:RELEASE_TAG" --notes-file $env:RELEASE_NOTES
           }
           if ($LASTEXITCODE -ne 0) { throw 'Failed to publish GitHub Release.' }
+
+      - name: Verify published release using asset digests
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/Verify-RemoteRelease.ps1 -Tag $env:RELEASE_TAG
