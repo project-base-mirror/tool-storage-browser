@@ -231,6 +231,7 @@ public sealed partial class S3StorageService : IS3StorageService
         var file = new FileInfo(localPath);
         if (!file.Exists)
             throw new FileNotFoundException("上传源文件不存在。", localPath);
+        S3UploadCompatibility.ValidateEndpoint(profile);
         if (transferContext.Options.RequireSseS3Encryption && profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO))
             throw new TransferExecutionException(new TransferFailureInfo(
                 "此服务商尚无可靠的显式 AES256 保留路径；保留本地编辑，不执行替换。", TransferFailureCategory.Validation));
@@ -279,6 +280,7 @@ public sealed partial class S3StorageService : IS3StorageService
                 if (resolvedStorageClass is not null)
                     request.StorageClass = resolvedStorageClass;
                 ApplyWriteHeaders(request.Headers, request.Metadata, request.TagSet, headers);
+                await S3UploadCompatibility.PrepareAsync(profile, request, source, cancellationToken).ConfigureAwait(false);
                 using var requestLease = await transferContext.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
                 await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
                 transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
@@ -286,7 +288,7 @@ public sealed partial class S3StorageService : IS3StorageService
             }
 
             await UploadMultipartFileAsync(
-                client, bucket, key, file, storageClass, headers, transferContext, cancellationToken)
+                client, bucket, key, file, storageClass, headers, transferContext, cancellationToken, profile)
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -656,15 +658,18 @@ public sealed partial class S3StorageService : IS3StorageService
 
     public async Task CreateFolderAsync(ConnectionProfile profile, string bucket, string folderKey, CancellationToken cancellationToken)
     {
+        S3UploadCompatibility.ValidateEndpoint(profile);
         if (!folderKey.EndsWith('/'))
             throw new ArgumentException("虚拟目录 Key 必须以 / 结尾。", nameof(folderKey));
         using var client = _factory.Create(profile);
-        await client.PutObjectAsync(new PutObjectRequest
+        var request = new PutObjectRequest
         {
             BucketName = bucket,
             Key = folderKey,
             ContentBody = string.Empty
-        }, cancellationToken).ConfigureAwait(false);
+        };
+        await S3UploadCompatibility.PrepareAsync(profile, request, Stream.Null, cancellationToken).ConfigureAwait(false);
+        await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken)
@@ -874,8 +879,10 @@ public sealed partial class S3StorageService : IS3StorageService
         string storageClass,
         ObjectWriteHeaders headers,
         TransferOperationContext transferContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ConnectionProfile? profile = null)
     {
+        S3UploadCompatibility.ValidateEndpoint(profile);
         var partSize = MultipartUploadPlanner.EffectivePartSize(file.Length, transferContext.Options.PartSizeBytes);
         // Validate the complete plan before creating a remote upload.
         _ = MultipartUploadPlanner.BuildParts(file.Length, partSize);
@@ -1010,8 +1017,7 @@ public sealed partial class S3StorageService : IS3StorageService
                         transferContext.ReportProgress(new TransferProgress(total, file.Length));
                     },
                     leaveOpen: true);
-                using var requestLease = await transferContext.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
-                var response = await client.UploadPartAsync(new UploadPartRequest
+                var request = new UploadPartRequest
                 {
                     BucketName = bucket,
                     Key = key,
@@ -1020,7 +1026,10 @@ public sealed partial class S3StorageService : IS3StorageService
                     PartSize = part.Size,
                     InputStream = throttled,
                     IsLastPart = part.Offset + part.Size == file.Length
-                }, cancellationToken).ConfigureAwait(false);
+                };
+                await S3UploadCompatibility.PrepareAsync(profile, request, bounded, cancellationToken).ConfigureAwait(false);
+                using var requestLease = await transferContext.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
+                var response = await client.UploadPartAsync(request, cancellationToken).ConfigureAwait(false);
 
                 requestLease.Dispose();
                 uploadGate.Release();

@@ -25,6 +25,7 @@ public sealed record S3ClientCreation(
 public sealed class S3ClientFactory
 {
     private readonly AwsCredentialResolver _credentialResolver;
+    internal HttpClientFactory? HttpClientFactoryOverride { get; init; }
 
     public S3ClientFactory(AwsCredentialResolver? credentialResolver = null) =>
         _credentialResolver = credentialResolver ?? new AwsCredentialResolver();
@@ -76,6 +77,8 @@ public sealed class S3ClientFactory
 
         if (profile.IgnoreCertificateErrors)
             config.HttpClientFactory = new CompatibilityHttpClientFactory();
+        if (HttpClientFactoryOverride is not null)
+            config.HttpClientFactory = HttpClientFactoryOverride;
 
         if (profile.ServiceType == S3ServiceType.AmazonS3 &&
             !string.IsNullOrWhiteSpace(profile.Region) &&

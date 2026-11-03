@@ -217,6 +217,14 @@ Unity 2021.3 可从每个正式 Release 下载独立的 `S3Explorer.Contracts-vX
 
 验证账户树交互时请使用隔离的自动化数据目录（见上方 GUI 自动化章节），不要用会从正式配置复制数据的普通 Debug 启动。相关回归测试使用临时文件、假凭据和假存储服务：`ConnectionProfileConfigurationTests`、`ProfileStoreTests` 和 `MainFormInteractionTests`（界面测试需在 Windows 运行）。
 
+## Cloudflare R2 上传
+
+连接类型请选择 `CloudflareR2`（CLI 新建连接可用 `--type r2`），使用 HTTPS S3 API Endpoint 和 `auto` 签名 Region。单文件、目录批量、分片上传与空目录标记共用 R2 兼容策略：禁用 R2 尚不支持的 Streaming SigV4 / AWS chunked 请求体，并保留 SigV4 请求认证。
+
+R2 请求显式发送 `Content-MD5`：发送前以有界内存预读文件或当前分片计算校验，随后重置流位置。这样既兼容 R2，也保留服务端内容校验；不会全局关闭 AWS、MinIO 或其他服务的校验。预读会增加一次本地磁盘读取。CLI `upload --verify` 仍可额外下载并验证大小与 SHA-256。
+
+旧版出现 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD not implemented` 而列目录正常，原因是上传请求体签名模式不兼容，并不表示 R2 不支持上传或 multipart。参考 [Cloudflare .NET SDK 指引](https://developers.cloudflare.com/r2/examples/aws/aws-sdk-net/#upload-and-retrieve-objects) 与 [R2 S3 API 兼容表](https://developers.cloudflare.com/r2/api/s3/api/)。自动化协议测试使用假凭据和本地 HTTP handler 验证 SDK 实际生成的头、请求体和分片边界，不能替代真实 R2 账户验收。
+
 ## 数据位置与安全
 
 - 统一配置（连接、CDN、凭据）：`%APPDATA%\S3Explorer\configuration.json`
