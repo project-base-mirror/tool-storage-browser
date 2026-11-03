@@ -11,7 +11,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async host =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var form = fixture.Form;
             var tree = fixture.Tree;
             host.Controls.Add(tree);
@@ -40,7 +40,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async _ =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var form = fixture.Form;
             var account = fixture.Account(fixture.First.Id);
             account.Nodes.Clear();
@@ -76,7 +76,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async host =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var form = fixture.Form;
             var tree = fixture.Tree;
             host.Controls.Add(tree);
@@ -133,7 +133,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async _ =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var release = new TaskCompletionSource<IReadOnlyList<BucketInfo>>(TaskCreationOptions.RunContinuationsAsynchronously);
             fixture.Storage.Buckets = () => release.Task;
             var account = fixture.Account(fixture.First.Id);
@@ -156,7 +156,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async _ =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var release = new TaskCompletionSource<IReadOnlyList<BucketInfo>>(TaskCreationOptions.RunContinuationsAsynchronously);
             fixture.Storage.Buckets = () => release.Task;
             var account = fixture.Account(fixture.First.Id);
@@ -179,7 +179,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async _ =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             fixture.Store.BeforeSave = () => { started.TrySetResult(); return release.Task; };
@@ -200,7 +200,7 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async _ =>
         {
-            await using var fixture = new AccountTreeFixture();
+            await using var fixture = await AccountTreeFixture.CreateAsync();
             fixture.Store.BeforeSave = () => throw new IOException("isolated save failure");
             var account = fixture.Account(fixture.First.Id);
             await Assert.ThrowsAsync<IOException>(() => InvokeAccountTask(fixture.Form, "ApplyAccountTreeDropAsync", account, fixture.GroupNode, false));
@@ -238,7 +238,7 @@ public sealed partial class MainFormInteractionTests
         public TreeNode GroupNode => Tree.Nodes[0].Nodes.Cast<TreeNode>().Single(node => node.Tag is ConnectionGroup group && group.Id == Group.Id);
         public TreeNode Account(Guid id) => MainFormNodes(Tree.Nodes).Single(node => node.Tag is ConnectionProfile profile && profile.Id == id);
 
-        public AccountTreeFixture()
+        private AccountTreeFixture()
         {
             Directory.CreateDirectory(_directory);
             Store = new RecordingProfileStore(new([First, Second], [Group]));
@@ -251,6 +251,13 @@ public sealed partial class MainFormInteractionTests
             SetField(Form, "_profiles", Store.Saved.Profiles);
             SetField(Form, "_profileGroups", Store.Saved.Groups);
             InvokeInstance(Form, "PopulateProfiles");
+        }
+
+        public static async Task<AccountTreeFixture> CreateAsync()
+        {
+            var fixture = new AccountTreeFixture();
+            await fixture._queue.InitializeAsync();
+            return fixture;
         }
 
         public async ValueTask DisposeAsync()
