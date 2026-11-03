@@ -12,7 +12,7 @@ public sealed class MainFormInteractionCollection
 }
 
 [Collection(MainFormInteractionCollection.Name)]
-public sealed class MainFormInteractionTests
+public sealed partial class MainFormInteractionTests
 {
     [Fact]
     public async Task UploadKeepsCapturedDestinationWhenNavigationChangesDuringConflictLookup()
@@ -588,11 +588,14 @@ public sealed class MainFormInteractionTests
     public class FakeStorageProxy : DispatchProxy
     {
         public PausedFakeUpload? Upload { get; set; }
+        public Func<Task<IReadOnlyList<BucketInfo>>>? Buckets { get; set; }
         public Func<ConnectionProfile, string, string, Task<bool>>? Exists { get; set; }
         public int ListRequests;
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
+            if (targetMethod?.Name == nameof(IS3StorageService.ListBucketsAsync))
+                return (Buckets ?? throw new InvalidOperationException("Fake bucket lookup was not configured."))();
             if (targetMethod?.Name == nameof(IS3StorageService.ObjectExistsAsync) && args is not null)
                 return (Exists ?? throw new InvalidOperationException("Fake existence lookup was not configured."))(
                     (ConnectionProfile)args[0]!, (string)args[1]!, (string)args[2]!);

@@ -189,6 +189,65 @@ public sealed class ProfileStoreTests
         }
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task LegacyAccountsCanBeGroupedReorderedAndReopenedWithoutChangingCredentials(int version)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "profiles.json");
+        var protector = new FakeProtector();
+        var originalIds = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
+        var legacy = new
+        {
+            version,
+            profiles = originalIds.Select((id, index) => new
+            {
+                id, name = $"Legacy {index}", serviceType = "minIO", endpoint = "https://storage.example.test",
+                region = "us-east-1", accessKey = "isolated-access",
+                protectedSecretKey = protector.Protect("isolated-secret"),
+                protectedSessionToken = protector.Protect("isolated-token"),
+                defaultBucket = "test-bucket"
+            })
+        };
+        var token = TestContext.Current.CancellationToken;
+        try
+        {
+            await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(legacy), token);
+            var store = new JsonProfileStore(protector, path);
+            var loaded = await store.LoadConfigurationAsync(token);
+            Assert.Empty(loaded.Groups);
+            Assert.All(loaded.Profiles, profile => Assert.Null(profile.GroupId));
+            var firstGroup = new ConnectionGroup { Name = "First", IsExpanded = false };
+            var secondGroup = new ConnectionGroup { Name = "Second", SortOrder = 1 };
+            var organized = (loaded with { Groups = [firstGroup, secondGroup] })
+                .PlaceProfile(originalIds[0], firstGroup.Id, 0)
+                .PlaceProfileRelative(originalIds[2], originalIds[0], false)
+                .PlaceGroupRelative(secondGroup.Id, firstGroup.Id, false);
+            await store.SaveConfigurationAsync(organized, token);
+            var reopened = await new JsonProfileStore(protector, path).LoadConfigurationAsync(token);
+            Assert.Equal([secondGroup.Id, firstGroup.Id], reopened.Groups.Select(group => group.Id));
+            Assert.Equal([originalIds[2], originalIds[0]], reopened.Profiles.Where(profile => profile.GroupId == firstGroup.Id)
+                .OrderBy(profile => profile.SortOrder).Select(profile => profile.Id));
+            Assert.All(reopened.Profiles, profile =>
+            {
+                var original = loaded.Profiles.Single(item => item.Id == profile.Id);
+                Assert.Equivalent(original with { GroupId = profile.GroupId, SortOrder = profile.SortOrder }, profile, strict: true);
+            });
+            Assert.False(reopened.Groups.Single(group => group.Id == firstGroup.Id).IsExpanded);
+            var text = await File.ReadAllTextAsync(path, token);
+            Assert.DoesNotContain("isolated-secret", text);
+            Assert.DoesNotContain("isolated-token", text);
+            await store.SaveConfigurationAsync(reopened.RemoveGroup(firstGroup.Id), token);
+            var ungrouped = await new JsonProfileStore(protector, path).LoadConfigurationAsync(token);
+            Assert.Equal(3, ungrouped.Profiles.Count);
+            Assert.All(ungrouped.Profiles, profile => Assert.Null(profile.GroupId));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     private sealed class FakeProtector : ICredentialProtector
     {
         public string Protect(string plaintext) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plaintext));

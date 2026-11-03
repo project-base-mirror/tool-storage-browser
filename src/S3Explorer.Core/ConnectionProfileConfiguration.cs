@@ -119,6 +119,35 @@ public sealed record ConnectionProfileConfiguration(
             otherMembers.Concat(targetMembers.Select((item, order) => item with { SortOrder = order })).ToArray(),
             Groups).Normalize();
     }
+
+    public ConnectionProfileConfiguration PlaceProfileRelative(Guid profileId, Guid targetProfileId, bool after)
+    {
+        var target = Profiles.FirstOrDefault(item => item.Id == targetProfileId)
+            ?? throw new ArgumentException("找不到目标连接。", nameof(targetProfileId));
+        if (profileId == targetProfileId) return this;
+        // Resolve the insertion index after removing the source, including moves within one group.
+        var members = Profiles.Where(item => item.GroupId == target.GroupId && item.Id != profileId)
+            .OrderBy(item => item.SortOrder)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        var index = Array.FindIndex(members, item => item.Id == targetProfileId);
+        return PlaceProfile(profileId, target.GroupId, index + (after ? 1 : 0));
+    }
+
+    public ConnectionProfileConfiguration PlaceGroupRelative(Guid groupId, Guid targetGroupId, bool after)
+    {
+        var ordered = Normalize().Groups.ToList();
+        var source = ordered.FindIndex(item => item.Id == groupId);
+        if (source < 0) throw new ArgumentException("找不到要移动的连接分组。", nameof(groupId));
+        if (ordered.All(item => item.Id != targetGroupId))
+            throw new ArgumentException("找不到目标连接分组。", nameof(targetGroupId));
+        if (groupId == targetGroupId) return this;
+        var group = ordered[source];
+        ordered.RemoveAt(source);
+        var target = ordered.FindIndex(item => item.Id == targetGroupId);
+        ordered.Insert(target + (after ? 1 : 0), group);
+        return new ConnectionProfileConfiguration(Profiles,
+            ordered.Select((item, index) => item with { SortOrder = index }).ToArray()).Normalize();
+    }
 }
 
 public sealed record AwsIdentitySummary(
