@@ -325,24 +325,41 @@ internal sealed partial class MainForm
         if (!EnsureLocation()) return;
         var selected = SelectedEntries();
         if (selected.Count == 0) return;
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
         var keys = new List<string>();
-        foreach (var entry in selected)
+        try
         {
-            if (entry.IsDirectory)
-                keys.AddRange((await ListAllObjectsAsync(entry.Key)).Where(item => !item.IsDirectory).Select(item => item.Key));
-            else
-                keys.Add(entry.Key);
+            foreach (var entry in selected)
+            {
+                if (entry.IsDirectory)
+                    keys.AddRange(await ObjectDeletionListing.ListKeysAsync(
+                        entry.Key, _settings.ObjectCacheLimit,
+                        (token, ct) => _storage.ListObjectsForDeletionAsync(
+                            profile, bucket, entry.Key, token, _settings.ObjectPageSize, ct)));
+                else
+                    keys.Add(entry.Key);
+            }
+        }
+        catch (Exception exception)
+        {
+            // Discovery must finish before any delete is sent. Invalid pagination,
+            // out-of-prefix results and limits are expected fail-closed errors.
+            ErrorDialog.ShowException(this, "无法完整列出删除对象", "准备批量删除", exception,
+                new S3Location(profile.Name, bucket, string.Empty).ToString());
+            return;
         }
         keys = keys.Distinct(StringComparer.Ordinal).ToList();
+        if (keys.Count == 0) return;
         if (_settings.ConfirmDelete)
         {
             var versioningWarning = "版本控制状态未确认；普通删除在版本化 Bucket 中可能创建 Delete Marker。";
             try
             {
-                if (S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.VersionOperations.Supported)
+                if (S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations.Supported)
                 {
                     var state = await _storage.GetBucketVersioningAsync(
-                        _currentProfile, _currentBucket!, CancellationToken.None);
+                        profile, bucket, CancellationToken.None);
                     versioningWarning = state == BucketVersioningState.Enabled
                         ? "当前 Bucket 已启用版本控制：本次普通删除将创建 Delete Marker，不会永久删除历史版本。"
                         : state == BucketVersioningState.Suspended
@@ -362,7 +379,7 @@ internal sealed partial class MainForm
         try
         {
             SetBusy($"正在删除 {keys.Count:N0} 个对象...");
-            await _storage.DeleteObjectsAsync(_currentProfile!, _currentBucket!, keys, CancellationToken.None);
+            await _storage.DeleteObjectsAsync(profile, bucket, keys, CancellationToken.None);
             await RefreshAsync();
         }
         catch (Exception exception)
@@ -453,7 +470,7 @@ internal sealed partial class MainForm
                         var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
                         if (resolved is null) { skipped++; continue; }
                         chunk.Add(new ObjectTransferBatchItem(
-                            child.Key, destinationBucket, resolved, $"{topName}/{relative}", child.Size, conflictPolicy));
+                            child.Key, destinationBucket, resolved.Value.Key, $"{topName}/{relative}", child.Size, resolved.Value.Policy));
                         if (chunk.Count >= 256)
                         {
                             await _transfers.AddObjectTransferBatchItemsAsync(batch, chunk);
@@ -469,7 +486,7 @@ internal sealed partial class MainForm
                     var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
                     if (resolved is null) { skipped++; continue; }
                     chunk.Add(new ObjectTransferBatchItem(
-                        entry.Key, destinationBucket, resolved, topName, entry.Size, conflictPolicy));
+                        entry.Key, destinationBucket, resolved.Value.Key, topName, entry.Size, resolved.Value.Policy));
                 }
 
                 if (chunk.Count >= 256)
@@ -506,12 +523,12 @@ internal sealed partial class MainForm
         UpdateCommandStates();
     }
 
-    private async Task<string?> ResolveObjectConflictAsync(
+    private async Task<(string Key, ObjectConflictPolicy Policy)?> ResolveObjectConflictAsync(
         string bucket, string key, ObjectConflictPolicy policy)
     {
-        if (policy == ObjectConflictPolicy.Overwrite) return key;
+        if (policy == ObjectConflictPolicy.Overwrite) return (key, policy);
         if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, key, CancellationToken.None))
-            return key;
+            return (key, policy == ObjectConflictPolicy.Ask ? ObjectConflictPolicy.Skip : policy);
         if (policy == ObjectConflictPolicy.Skip) return null;
         if (policy == ObjectConflictPolicy.Ask)
         {
@@ -520,7 +537,7 @@ internal sealed partial class MainForm
                 "对象冲突", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
             return answer switch
             {
-                DialogResult.Yes => key,
+                DialogResult.Yes => (key, ObjectConflictPolicy.Overwrite),
                 DialogResult.No => null,
                 _ => throw new OperationCanceledException()
             };
@@ -529,7 +546,7 @@ internal sealed partial class MainForm
         {
             var candidate = ObjectTransferPlanner.GetAutoRenameCandidate(key, sequence);
             if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, candidate, CancellationToken.None))
-                return candidate;
+                return (candidate, ObjectConflictPolicy.AutoRename);
         }
         throw new InvalidOperationException("无法为目标对象生成不冲突的名称。");
     }
@@ -561,7 +578,9 @@ internal sealed partial class MainForm
         try
         {
             SetBusy("正在重命名（Copy + Delete）...");
-            await _storage.MoveObjectAsync(_currentProfile!, _currentBucket!, entry.Key, _currentBucket!, targetKey, CancellationToken.None);
+            var profile = _currentProfile!;
+            var bucket = _currentBucket!;
+            await RenameObjectSafelyAsync(_storage, profile, bucket, entry.Key, targetKey, CancellationToken.None);
             await RefreshAsync();
         }
         catch (Exception exception)
@@ -569,6 +588,20 @@ internal sealed partial class MainForm
             ErrorDialog.ShowException(this, "重命名失败", "Copy + Delete", exception, CurrentLocationText());
         }
         finally { SetIdle(); }
+    }
+
+    internal static async Task RenameObjectSafelyAsync(
+        IS3StorageService storage, ConnectionProfile profile, string bucket,
+        string sourceKey, string targetKey, CancellationToken cancellationToken)
+    {
+        if (await storage.ObjectExistsAsync(profile, bucket, targetKey, cancellationToken))
+            throw new IOException("目标对象已存在；请选择其他名称，重命名不会覆盖已有对象。");
+        var context = new TransferOperationContext(
+            new TransferExecutionOptions { AllowDestinationOverwrite = false, RetainFailedTransferState = false },
+            new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
+        // The preflight improves feedback; the backend condition protects a target
+        // created after the check and must succeed before the source is deleted.
+        await storage.MoveObjectAsync(profile, bucket, sourceKey, bucket, targetKey, context, cancellationToken);
     }
 
     private async Task ShowPropertiesAsync()
@@ -690,7 +723,7 @@ internal sealed partial class MainForm
         if (selected.Count != 1 || selected[0].IsDirectory) return;
         var entry = selected[0];
         using var dialog = new PresignedUrlDialog(
-            $"s3://{_currentProfile!.Name}/{_currentBucket}/{entry.Key}",
+            new S3Location(_currentProfile!.Name, _currentBucket, entry.Key).ToString(),
             lifetime => _storage.CreatePresignedUrl(_currentProfile!, _currentBucket!, entry.Key, lifetime));
         dialog.ShowDialog(this);
         _logger.Info($"Presigned URL generated bucket={_currentBucket} key={entry.Key}");

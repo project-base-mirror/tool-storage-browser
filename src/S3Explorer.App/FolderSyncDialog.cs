@@ -667,6 +667,7 @@ internal sealed class FolderSyncDialog : Form
 
         await RunOperationAsync("正在创建同步批次...", async token =>
         {
+            LocalObjectPath.ValidateSyncDestinations(job.LocalDirectory, selectedItems);
             var executionId = Guid.NewGuid();
             var groups = selectedItems.GroupBy(item => ToTransferDirection(item.Action));
             foreach (var group in groups)
@@ -707,7 +708,7 @@ internal sealed class FolderSyncDialog : Form
         TransferDirection direction)
     {
         var remoteKey = S3Path.Combine(job.Prefix, item.RelativePath);
-        var localPath = LocalObjectPath.MapRelativeKey(job.LocalDirectory, item.RelativePath);
+        var localPath = LocalObjectPath.ResolveSyncPath(job.LocalDirectory, item);
         var totalBytes = direction switch
         {
             TransferDirection.Upload => item.Local?.Size ?? 0,

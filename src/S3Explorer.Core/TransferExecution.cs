@@ -10,6 +10,8 @@ public sealed record TransferExecutionOptions
     /// <summary>Optional hard upper bound for a single download. Zero means unlimited.</summary>
     public long MaximumDownloadBytes { get; init; }
     public bool AllowDestinationOverwrite { get; init; } = true;
+    /// <summary>Only durable queue tasks should retain incomplete transfer state after failure.</summary>
+    public bool RetainFailedTransferState { get; init; } = true;
     public string? ExpectedDestinationETag { get; init; }
     public bool RequireSseS3Encryption { get; init; }
 

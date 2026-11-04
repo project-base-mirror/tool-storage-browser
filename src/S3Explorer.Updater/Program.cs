@@ -98,12 +98,24 @@ internal static class UpdateRunner
 {
     private static readonly TimeSpan ParentExitTimeout = TimeSpan.FromMinutes(5);
 
-    public static int Run(UpdateArguments options)
+    public static int Run(UpdateArguments options) => Run(
+        options,
+        () => WaitForParent(options.ParentPid, options.ParentStartTimeUtc, ParentExitTimeout),
+        () =>
+        {
+            using var installer = StartInstaller(options.MsiPath, options.LogPath, options.ApplicationPath);
+            installer.WaitForExit();
+            return installer.ExitCode;
+        },
+        StartApplication);
+
+    internal static int Run(UpdateArguments options, Action waitForParent, Func<int> install, Action<string> startApplication)
     {
         int? installerExitCode = null;
+        var applicationStarted = false;
         try
         {
-            WaitForParent(options.ParentPid, options.ParentStartTimeUtc, ParentExitTimeout);
+            waitForParent();
             Directory.CreateDirectory(Path.GetDirectoryName(options.StatePath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(options.LogPath)!);
 
@@ -121,28 +133,38 @@ internal static class UpdateRunner
                 throw new InvalidDataException("安装包 SHA-256 在启动安装前发生变化，已拒绝执行。");
             packageLock.Position = 0;
 
-            using var installer = StartInstaller(options.MsiPath, options.LogPath);
-            installer.WaitForExit();
-            installerExitCode = installer.ExitCode;
-            if (installer.ExitCode is not (0 or 3010))
-                throw new InvalidOperationException($"Windows Installer 返回退出码 {installer.ExitCode}。");
+            installerExitCode = install();
+            if (installerExitCode is not (0 or 3010))
+                throw new InvalidOperationException($"Windows Installer 返回退出码 {installerExitCode}。");
 
+            startApplication(options.ApplicationPath);
+            applicationStarted = true;
             WriteResult(options.StatePath, new UpdateResult(
                 1,
                 "completed",
                 options.TargetVersion,
-                installer.ExitCode,
-                installer.ExitCode == 3010 ? "更新已安装，Windows 建议重新启动。" : "更新安装成功。",
+                installerExitCode,
+                installerExitCode == 3010 ? "更新已安装并启动，Windows 建议重新启动。" : "更新已安装并启动。",
                 options.LogPath,
                 DateTimeOffset.UtcNow));
-            StartApplication(options.ApplicationPath);
             return 0;
         }
         catch (Exception exception)
         {
-            TryWriteFailure(options, installerExitCode, exception);
-            if (exception is not TimeoutException)
-                StartApplication(options.ApplicationPath);
+            Exception failure = exception;
+            // Retry the original path only when installation did not succeed. MSI rollback
+            // is transactional, but we cannot promise that it completed on this machine.
+            if (!applicationStarted && installerExitCode is not (0 or 3010) && exception is not TimeoutException)
+            {
+                try { startApplication(options.ApplicationPath); }
+                catch (Exception restartException)
+                {
+                    failure = new AggregateException("更新失败，且原路径程序无法重新启动。", exception, restartException);
+                }
+            }
+            if (installerExitCode is 0 or 3010)
+                failure = new InvalidOperationException("安装已完成，但重启或状态记录失败。请从原安装目录手动启动并查看日志。", exception);
+            TryWriteFailure(options, installerExitCode, failure);
             return exception is Win32Exception { NativeErrorCode: 1223 } ? 2 : 1;
         }
     }
@@ -172,7 +194,7 @@ internal static class UpdateRunner
         }
     }
 
-    internal static Process StartInstaller(string msiPath, string logPath)
+    internal static Process StartInstaller(string msiPath, string logPath, string applicationPath)
     {
         var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var startInfo = new ProcessStartInfo
@@ -181,9 +203,18 @@ internal static class UpdateRunner
             UseShellExecute = true,
             Verb = "runas",
             WindowStyle = ProcessWindowStyle.Hidden,
-            Arguments = $"/i \"{msiPath}\" /qn /norestart /l*v \"{logPath}\""
+            Arguments = BuildInstallerArguments(msiPath, logPath, applicationPath)
         };
         return Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Windows Installer。");
+    }
+
+    internal static string BuildInstallerArguments(string msiPath, string logPath, string applicationPath)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(applicationPath))
+            ?? throw new ArgumentException("应用程序目录无效。", nameof(applicationPath));
+        // A terminal dot also handles drive roots without a trailing quote-escaping slash.
+        directory = Path.Combine(directory, ".");
+        return $"/i \"{msiPath}\" /qn /norestart /l*v \"{logPath}\" APPLICATIONFOLDER=\"{directory}\"";
     }
 
     internal static void WriteResult(string path, UpdateResult result)
@@ -203,7 +234,7 @@ internal static class UpdateRunner
                 "failed",
                 options.TargetVersion,
                 installerExitCode,
-                $"{exception.GetType().Name}: {exception.Message}",
+                $"{exception.GetType().Name}: {exception}",
                 options.LogPath,
                 DateTimeOffset.UtcNow));
         }
@@ -213,18 +244,19 @@ internal static class UpdateRunner
         }
     }
 
-    private static void StartApplication(string applicationPath)
+    internal static void StartApplication(string applicationPath)
     {
-        try
+        if (!File.Exists(applicationPath))
+            throw new FileNotFoundException("安装后程序不存在。", applicationPath);
+        using var application = Process.Start(new ProcessStartInfo(applicationPath)
         {
-            if (File.Exists(applicationPath))
-                Process.Start(new ProcessStartInfo(applicationPath) { UseShellExecute = true });
-        }
-        catch
-        {
-            // MSI 日志与状态文件保留，用户仍可从快捷方式重启。
-        }
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(applicationPath)!
+        }) ?? throw new InvalidOperationException("无法启动应用程序。");
+        if (application.WaitForExit(1000))
+            throw new InvalidOperationException($"应用程序启动后立即退出，退出码 {application.ExitCode}。");
     }
+
 }
 
 internal static class Program

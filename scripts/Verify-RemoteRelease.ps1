@@ -3,11 +3,16 @@ param(
     [string]$Tag,
     [string]$Repository = "project-base-mirror/tool-storage-browser",
     [switch]$FullDownload,
+    [switch]$MetadataOnly,
+    [switch]$SkipPages,
     [switch]$RequireSigning
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($MetadataOnly -and ($FullDownload -or $RequireSigning)) {
+    throw '-MetadataOnly cannot be combined with -FullDownload or -RequireSigning.'
+}
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -116,6 +121,12 @@ try {
             "GitHub digest does not match SHA256SUMS.txt for $packageName.")
     }
 
+    # Pages uses this gate before deploying: only the tiny checksum asset is downloaded.
+    if ($MetadataOnly) {
+        Write-Host "Published release assets and SHA-256 digests verified: $Tag"
+        return
+    }
+
     $metricsPath = Download-Asset -Name "release-metrics.json" -Destination $temporaryRoot
     $frameworkPath = Download-Asset -Name $frameworkName -Destination $temporaryRoot
     $contractsPath = Download-Asset -Name $contractsName -Destination $temporaryRoot
@@ -183,19 +194,21 @@ try {
         throw "-RequireSigning requires -FullDownload because EXE and MSI signatures must be inspected locally."
     }
 
-    $siteBase = "https://project-base-mirror.github.io/tool-storage-browser"
-    $manifestResponse = Invoke-WebRequest -Uri "$siteBase/update.json" -UseBasicParsing
-    Assert-True -Condition ($manifestResponse.StatusCode -eq 200) -Message "Pages update.json did not return HTTP 200."
-    $onlineManifest = $manifestResponse.Content | ConvertFrom-Json
-    Assert-True -Condition ([string]$onlineManifest.tagName -ceq $Tag) -Message "Pages update.json tag mismatch."
-    Assert-True -Condition ([string]$onlineManifest.version -ceq $version) -Message "Pages update.json version mismatch."
-    foreach ($url in @(
-        "$siteBase/",
-        "$siteBase/robots.txt",
-        "$siteBase/sitemap.xml",
-        "$siteBase/assets/social-card.png")) {
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing
-        Assert-True -Condition ($response.StatusCode -eq 200) -Message "$url did not return HTTP 200."
+    if (-not $SkipPages) {
+        $siteBase = "https://project-base-mirror.github.io/tool-storage-browser"
+        $manifestResponse = Invoke-WebRequest -Uri "$siteBase/update.json" -UseBasicParsing
+        Assert-True -Condition ($manifestResponse.StatusCode -eq 200) -Message "Pages update.json did not return HTTP 200."
+        $onlineManifest = $manifestResponse.Content | ConvertFrom-Json
+        Assert-True -Condition ([string]$onlineManifest.tagName -ceq $Tag) -Message "Pages update.json tag mismatch."
+        Assert-True -Condition ([string]$onlineManifest.version -ceq $version) -Message "Pages update.json version mismatch."
+        foreach ($url in @(
+            "$siteBase/",
+            "$siteBase/robots.txt",
+            "$siteBase/sitemap.xml",
+            "$siteBase/assets/social-card.png")) {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing
+            Assert-True -Condition ($response.StatusCode -eq 200) -Message "$url did not return HTTP 200."
+        }
     }
 
     Write-Host "Remote release verified: $Tag"

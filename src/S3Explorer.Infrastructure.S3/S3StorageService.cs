@@ -10,6 +10,7 @@ namespace S3Explorer.Infrastructure.S3;
 
 public sealed partial class S3StorageService : IS3StorageService
 {
+    internal const long MaximumSingleUploadBytes = 5L * 1024 * 1024 * 1024;
     private const long MaximumSingleCopyBytes = 5L * 1024 * 1024 * 1024;
 
     private readonly S3ClientFactory _factory;
@@ -42,12 +43,40 @@ public sealed partial class S3StorageService : IS3StorageService
         }
         catch (AmazonS3Exception ex) when (S3CompatibilityPolicy.IsRestrictedListBuckets(ex))
         {
+            // A denied global listing proves reachability, not valid credentials.
+            // A successful authenticated read of a configured bucket can verify the
+            // restricted account without requiring global ListAllMyBuckets access.
+            string? verificationError = null;
+            foreach (var bucket in profile.KnownBuckets)
+            {
+                try
+                {
+                    using var client = _factory.Create(profile);
+                    await client.ListObjectsV2Async(new ListObjectsV2Request
+                    {
+                        BucketName = bucket,
+                        MaxKeys = 1
+                    }, connectionTimeout.Token).ConfigureAwait(false);
+                    stopwatch.Stop();
+                    return new(true, stopwatch.Elapsed, profile.KnownBuckets.Count,
+                        $"已验证配置 Bucket {bucket} 的读取权限；当前凭据无权列出全部 Bucket。",
+                        CredentialSource: credentialSource, AwsIdentity: credentialResolution?.GetCurrentIdentity());
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    verificationError = "Bucket 权限验证超时。";
+                    break;
+                }
+                catch (Exception verificationException) when (verificationException is not OperationCanceledException)
+                {
+                    verificationError = SensitiveDataRedactor.Redact(verificationException.Message);
+                }
+            }
             stopwatch.Stop();
-            var configuredCount = profile.KnownBuckets.Count;
-            var message = configuredCount > 0
-                ? $"已到达 S3 服务；当前凭据无权列出全部 Bucket，将使用已配置的 {configuredCount} 个 Bucket。"
-                : "已到达 S3 服务，但当前凭据无权列出全部 Bucket。请配置默认 Bucket 或外部 Bucket。";
-            return new(true, stopwatch.Elapsed, configuredCount, message, (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
+            return new(false, stopwatch.Elapsed, profile.KnownBuckets.Count,
+                "已到达 S3 服务，但身份与 Bucket 权限尚未验证，不能确认连接成功。" +
+                (verificationError is null ? " 请配置可读取的 Bucket。" : " " + verificationError),
+                (int)ex.StatusCode, ex.ErrorCode, ex.RequestId,
                 credentialSource, credentialResolution?.GetCurrentIdentity());
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && connectionTimeout.IsCancellationRequested)
@@ -156,6 +185,31 @@ public sealed partial class S3StorageService : IS3StorageService
         return new(items, response.NextContinuationToken, response.IsTruncated == true);
     }
 
+    public async Task<PagedObjectResult> ListObjectsForDeletionAsync(
+        ConnectionProfile profile,
+        string bucket,
+        string prefix,
+        string? continuationToken,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        using var client = _factory.Create(profile);
+        // No delimiter and no prefix-object filtering: directory markers are real
+        // objects and must be retained in a destructive listing.
+        var response = await client.ListObjectsV2Async(new ListObjectsV2Request
+        {
+            BucketName = bucket,
+            Prefix = prefix,
+            ContinuationToken = continuationToken,
+            MaxKeys = Math.Clamp(pageSize, 1, 1000)
+        }, cancellationToken).ConfigureAwait(false);
+        var items = (response.S3Objects ?? []).Select(item => new S3ObjectEntry(
+            item.Key, S3Path.DisplayName(item.Key, false), item.Size.GetValueOrDefault(),
+            false, item.LastModified, item.StorageClass?.Value ?? "STANDARD", item.ETag))
+            .ToArray();
+        return new(items, response.NextContinuationToken, response.IsTruncated == true);
+    }
+
     public async Task<PagedObjectVersionResult> ListObjectVersionsAsync(
         ConnectionProfile profile,
         string bucket,
@@ -201,6 +255,9 @@ public sealed partial class S3StorageService : IS3StorageService
             isTruncated);
     }
 
+    internal static bool UseSingleUpload(long length, long requestedThreshold) =>
+        length < Math.Min(requestedThreshold, MaximumSingleUploadBytes);
+
     internal static ServerSideEncryptionMethod? RequiredUploadEncryption(TransferExecutionOptions options) =>
         options.RequireSseS3Encryption ? ServerSideEncryptionMethod.AES256 : null;
 
@@ -237,14 +294,14 @@ public sealed partial class S3StorageService : IS3StorageService
                 "此服务商尚无可靠的显式 AES256 保留路径；保留本地编辑，不执行替换。", TransferFailureCategory.Validation));
         if ((!transferContext.Options.AllowDestinationOverwrite || transferContext.Options.ExpectedDestinationETag is not null) &&
             profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO) &&
-            !(profile.ServiceType == S3ServiceType.CloudflareR2 && file.Length < transferContext.Options.MultipartThresholdBytes))
+            !(profile.ServiceType == S3ServiceType.CloudflareR2 && UseSingleUpload(file.Length, transferContext.Options.MultipartThresholdBytes)))
             throw new TransferExecutionException(new TransferFailureInfo(
                 "此服务商/上传方式尚无可靠的原子非覆盖写入支持；请明确选择覆盖或更换目标。", TransferFailureCategory.Validation));
 
         try
         {
             using var client = _factory.Create(profile);
-            if (file.Length < transferContext.Options.MultipartThresholdBytes)
+            if (UseSingleUpload(file.Length, transferContext.Options.MultipartThresholdBytes))
             {
                 await using var source = new FileStream(
                     localPath,
@@ -313,6 +370,8 @@ public sealed partial class S3StorageService : IS3StorageService
         if (string.IsNullOrWhiteSpace(key))
             throw new ArgumentException("对象 Key 不能为空。", nameof(key));
 
+        if (profile.ServiceType == S3ServiceType.MinIO && mode == ObjectAclMode.PublicRead)
+            throw new NotSupportedException("MinIO 不支持公开读取 ACL；请显式配置 Bucket Policy。");
         using var client = _factory.Create(profile);
         try
         {
@@ -369,11 +428,18 @@ public sealed partial class S3StorageService : IS3StorageService
         string? versionId,
         string localPath,
         TransferOperationContext transferContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onCommitted = null)
     {
         transferContext.Options.Validate();
         var temporaryPath = transferContext.DownloadCheckpoint?.TemporaryPath ?? ResumableDownloadFile.TemporaryPath(localPath);
 
+        var ownsTemporaryPath = false;
+        void ReleaseTemporaryPath()
+        {
+            ownsTemporaryPath = false;
+            onCommitted?.Invoke();
+        }
         try
         {
             using var client = _factory.Create(profile);
@@ -388,6 +454,7 @@ public sealed partial class S3StorageService : IS3StorageService
                     Retryable: false));
 
             temporaryPath = ResumableDownloadFile.ReserveTemporaryPath(localPath, transferContext.DownloadCheckpoint);
+            ownsTemporaryPath = true;
             var remote = CreateDownloadIdentity(metadata);
             transferContext = transferContext with
             {
@@ -402,7 +469,8 @@ public sealed partial class S3StorageService : IS3StorageService
                 try
                 {
                     await DownloadParallelAsync(
-                        client, bucket, key, localPath, remote, segmentSize, transferContext, cancellationToken)
+                        client, bucket, key, localPath, remote, segmentSize, transferContext, cancellationToken,
+                        onCommitted: ReleaseTemporaryPath)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -415,7 +483,7 @@ public sealed partial class S3StorageService : IS3StorageService
                         {
                             Options = transferContext.Options with { MultipartConcurrency = 1 },
                             DownloadCheckpoint = new DownloadCheckpoint(temporaryPath, 0, 0)
-                        }, cancellationToken).ConfigureAwait(false);
+                        }, cancellationToken, onCommitted: ReleaseTemporaryPath).ConfigureAwait(false);
                     return;
                 }
             }
@@ -546,6 +614,8 @@ public sealed partial class S3StorageService : IS3StorageService
             checkpoint = checkpoint with { IntegritySummary = integrity };
             await transferContext.UpdateCheckpointAsync(completed, checkpoint, transferContext.MultipartCheckpoint, cancellationToken).ConfigureAwait(false);
             ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length, transferContext.Options.AllowDestinationOverwrite);
+            // The scratch name is no longer ours once Commit moves its file.
+            ReleaseTemporaryPath();
             transferContext.ReportProgress(new TransferProgress(remote.Length, remote.Length));
         }
         catch (ParallelRangeNotSupportedException)
@@ -555,12 +625,18 @@ public sealed partial class S3StorageService : IS3StorageService
                 {
                     Options = transferContext.Options with { MultipartConcurrency = 1 },
                     DownloadCheckpoint = new DownloadCheckpoint(temporaryPath, 0, 0)
-                }, cancellationToken).ConfigureAwait(false);
+                }, cancellationToken, onCommitted: ReleaseTemporaryPath).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             throw ToTransferException(exception);
         }
+        finally
+        {
+            if (!transferContext.Options.RetainFailedTransferState && ownsTemporaryPath)
+                File.Delete(temporaryPath);
+        }
+
     }
 
     public async Task<IReadOnlyList<IncompleteMultipartUpload>> ListIncompleteMultipartUploadsAsync(
@@ -988,95 +1064,116 @@ public sealed partial class S3StorageService : IS3StorageService
             }
             throw;
         }
-        transferContext.ReportProgress(new TransferProgress(transferredBytes, file.Length));
-
-        using var uploadGate = new SemaphoreSlim(
-            transferContext.Options.MultipartConcurrency,
-            transferContext.Options.MultipartConcurrency);
-        using var checkpointGate = new SemaphoreSlim(1, 1);
-        var uploadTasks = reconciliation.MissingParts.Select(async part =>
+        try
         {
-            await uploadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            var uploadSlotReleased = false;
-            try
-            {
-                await using var source = new FileStream(
-                    file.FullName,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    128 * 1024,
-                    FileOptions.Asynchronous | FileOptions.RandomAccess);
-                source.Position = part.Offset;
-                await using var bounded = new BoundedReadStream(source, part.Size, leaveOpen: true);
-                await using var throttled = new ThrottledReadStream(
-                    bounded,
-                    transferContext.BandwidthLimiter,
-                    TransferDirection.Upload,
-                    bytes =>
-                    {
-                        var total = Interlocked.Add(ref transferredBytes, bytes);
-                        transferContext.ReportProgress(new TransferProgress(total, file.Length));
-                    },
-                    leaveOpen: true);
-                var request = new UploadPartRequest
-                {
-                    BucketName = bucket,
-                    Key = key,
-                    UploadId = uploadId,
-                    PartNumber = part.PartNumber,
-                    PartSize = part.Size,
-                    InputStream = throttled,
-                    IsLastPart = part.Offset + part.Size == file.Length
-                };
-                await S3UploadCompatibility.PrepareAsync(profile, request, bounded, cancellationToken).ConfigureAwait(false);
-                using var requestLease = await transferContext.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
-                var response = await client.UploadPartAsync(request, cancellationToken).ConfigureAwait(false);
+            transferContext.ReportProgress(new TransferProgress(transferredBytes, file.Length));
 
-                requestLease.Dispose();
-                uploadGate.Release();
-                uploadSlotReleased = true;
-                await checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            using var uploadGate = new SemaphoreSlim(
+                transferContext.Options.MultipartConcurrency,
+                transferContext.Options.MultipartConcurrency);
+            using var checkpointGate = new SemaphoreSlim(1, 1);
+            var uploadTasks = reconciliation.MissingParts.Select(async part =>
+            {
+                await uploadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var uploadSlotReleased = false;
                 try
                 {
-                    completedParts[part.PartNumber] = new MultipartPartCheckpoint(
-                        part.PartNumber, response.ETag, part.Size);
-                    checkpoint = checkpoint with
+                    await using var source = new FileStream(
+                        file.FullName,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        128 * 1024,
+                        FileOptions.Asynchronous | FileOptions.RandomAccess);
+                    source.Position = part.Offset;
+                    await using var bounded = new BoundedReadStream(source, part.Size, leaveOpen: true);
+                    await using var throttled = new ThrottledReadStream(
+                        bounded,
+                        transferContext.BandwidthLimiter,
+                        TransferDirection.Upload,
+                        bytes =>
+                        {
+                            var total = Interlocked.Add(ref transferredBytes, bytes);
+                            transferContext.ReportProgress(new TransferProgress(total, file.Length));
+                        },
+                        leaveOpen: true);
+                    var request = new UploadPartRequest
                     {
-                        CompletedParts = completedParts.Values
-                            .OrderBy(item => item.PartNumber)
-                            .ToArray()
+                        BucketName = bucket,
+                        Key = key,
+                        UploadId = uploadId,
+                        PartNumber = part.PartNumber,
+                        PartSize = part.Size,
+                        InputStream = throttled,
+                        IsLastPart = part.Offset + part.Size == file.Length
                     };
-                    var confirmedBytes = completedParts.Values.Sum(item => item.Size);
-                    await transferContext.UpdateCheckpointAsync(
-                        confirmedBytes, null, checkpoint, cancellationToken).ConfigureAwait(false);
+                    await S3UploadCompatibility.PrepareAsync(profile, request, bounded, cancellationToken).ConfigureAwait(false);
+                    using var requestLease = await transferContext.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
+                    var response = await client.UploadPartAsync(request, cancellationToken).ConfigureAwait(false);
+
+                    requestLease.Dispose();
+                    uploadGate.Release();
+                    uploadSlotReleased = true;
+                    await checkpointGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        completedParts[part.PartNumber] = new MultipartPartCheckpoint(
+                            part.PartNumber, response.ETag, part.Size);
+                        checkpoint = checkpoint with
+                        {
+                            CompletedParts = completedParts.Values
+                                .OrderBy(item => item.PartNumber)
+                                .ToArray()
+                        };
+                        var confirmedBytes = completedParts.Values.Sum(item => item.Size);
+                        await transferContext.UpdateCheckpointAsync(
+                            confirmedBytes, null, checkpoint, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        checkpointGate.Release();
+                    }
                 }
                 finally
                 {
-                    checkpointGate.Release();
+                    if (!uploadSlotReleased) uploadGate.Release();
                 }
-            }
-            finally
-            {
-                if (!uploadSlotReleased) uploadGate.Release();
-            }
-        }).ToArray();
+            }).ToArray();
 
-        await Task.WhenAll(uploadTasks).ConfigureAwait(false);
-        var complete = new CompleteMultipartUploadRequest
+            await Task.WhenAll(uploadTasks).ConfigureAwait(false);
+            var complete = new CompleteMultipartUploadRequest
+            {
+                BucketName = bucket,
+                IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
+                IfMatch = transferContext.Options.ExpectedDestinationETag,
+                Key = key,
+                UploadId = uploadId,
+                PartETags = completedParts.Values
+                    .OrderBy(part => part.PartNumber)
+                    .Select(part => new PartETag(part.PartNumber, part.ETag))
+                    .ToList()
+            };
+            await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
+            transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
+        }
+        catch (Exception transferException) when (!transferContext.Options.RetainFailedTransferState)
         {
-            BucketName = bucket,
-            IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
-            IfMatch = transferContext.Options.ExpectedDestinationETag,
-            Key = key,
-            UploadId = uploadId,
-            PartETags = completedParts.Values
-                .OrderBy(part => part.PartNumber)
-                .Select(part => new PartETag(part.PartNumber, part.ETag))
-                .ToList()
-        };
-        await client.CompleteMultipartUploadAsync(complete, cancellationToken).ConfigureAwait(false);
-        transferContext.ReportProgress(new TransferProgress(file.Length, file.Length));
+            try
+            {
+                using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await AbortMultipartInternalAsync(client, bucket, key, uploadId, cleanupTimeout.Token).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception cleanupException) when (IsNoSuchUpload(cleanupException))
+            {
+                // A completed/lost upload no longer leaves multipart resources.
+            }
+            catch (Exception cleanupException)
+            {
+                throw new AggregateException($"上传失败，且清理远端分片失败（UploadId={uploadId}）；请在分片管理器中核对清理。",
+                    transferException, cleanupException);
+            }
+            throw;
+        }
     }
 
     private static async Task<IReadOnlyList<MultipartPartCheckpoint>> ListMultipartPartsAsync(

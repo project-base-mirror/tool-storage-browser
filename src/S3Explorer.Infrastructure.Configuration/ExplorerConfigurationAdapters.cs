@@ -28,6 +28,16 @@ public sealed class ExplorerProfileStore(IExplorerConfigurationStore configurati
         await configurationStore.UpdateAsync(
             current => current with { Storage = configuration.Normalize() },
             cancellationToken).ConfigureAwait(false);
+
+    public async Task<ConnectionProfileConfiguration> MergeConfigurationAsync(
+        ConnectionProfileConfiguration baseline,
+        ConnectionProfileConfiguration proposed,
+        CancellationToken cancellationToken = default) =>
+        (await configurationStore.UpdateAsync(
+            current => current with
+            {
+                Storage = ExplorerConfigurationMerger.MergeStorage(baseline, proposed, current.Storage)
+            }, cancellationToken).ConfigureAwait(false)).Storage;
 }
 
 public sealed class ExplorerCdnConfigurationStore(IExplorerConfigurationStore configurationStore)

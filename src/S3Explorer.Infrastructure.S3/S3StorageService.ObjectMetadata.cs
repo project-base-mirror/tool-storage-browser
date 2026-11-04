@@ -49,7 +49,7 @@ public sealed partial class S3StorageService
         };
     }
 
-    public async Task ReplaceObjectMetadataAsync(
+    public Task ReplaceObjectMetadataAsync(
         ConnectionProfile profile,
         string bucket,
         string key,
@@ -57,33 +57,14 @@ public sealed partial class S3StorageService
         ObjectWriteHeaders headers,
         CancellationToken cancellationToken)
     {
-        EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.MetadataRewrite, "对象 Metadata 替换");
-        headers = headers.ValidateAndNormalize();
-        using var client = _factory.Create(profile);
-        var existing = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
-        {
-            BucketName = bucket,
-            Key = key,
-            VersionId = NullIfWhiteSpace(versionId)
-        }, cancellationToken).ConfigureAwait(false);
-        if (existing.ContentLength > MaximumSingleCopyBytes)
-            throw new InvalidOperationException(
-                "超过 5 GiB 的对象不能通过单次原地 Copy 替换 Metadata；请重新上传对象，避免不完整的分片复制。");
-
-        var request = new CopyObjectRequest
-        {
-            SourceBucket = bucket,
-            SourceKey = key,
-            SourceVersionId = NullIfWhiteSpace(versionId),
-            DestinationBucket = bucket,
-            DestinationKey = key,
-            MetadataDirective = S3MetadataDirective.REPLACE
-        };
-        var storageClass = S3CompatibilityPolicy.ResolveStorageClass(existing.StorageClass?.Value);
-        if (storageClass is not null)
-            request.StorageClass = storageClass;
-        ApplyWriteHeaders(request.Headers, request.Metadata, null, headers);
-        await client.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        // Do not self-copy a cached version: even a source condition or HEAD check can
+        // overwrite a newer current object. A safe metadata-only edit must also preserve
+        // noneditable headers, KMS context/BucketKey, ACL and retention/legal-hold state.
+        // This API does not carry that complete snapshot, so fail before creating a client
+        // instead of silently changing content, encryption or object protections.
+        return Task.FromException(new NotSupportedException(
+            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.MetadataRewrite.Reason));
     }
 
     public async Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(

@@ -152,7 +152,7 @@ public sealed class ConnectionDialogCredentialLayoutTests
 
             var credential = Assert.IsType<ComboBox>(Find(dialog, "StorageCredentialComboBox"));
             Assert.Single(saved);
-            Assert.Single(credential.Items);
+            Assert.Equal(2, credential.Items.Count); // Explicit unselected choice plus the new credential.
             Assert.Contains(created.Name, credential.Text, StringComparison.Ordinal);
             Assert.DoesNotContain(created.Secret, AllControlText(dialog), StringComparison.Ordinal);
         });

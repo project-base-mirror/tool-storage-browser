@@ -16,6 +16,7 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
+        RespectNullableAnnotations = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
     private readonly DurableJsonFile _file;
@@ -99,20 +100,29 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
 
     private async Task<ExplorerConfiguration> LoadCoreAsync(CancellationToken cancellationToken)
     {
-        var envelope = await _file.LoadAsync(static () => new Envelope(ExplorerConfiguration.CurrentSchema, ""), Options, ValidateEnvelope, cancellationToken: cancellationToken).ConfigureAwait(false);
+        ExplorerConfiguration? validated = null;
+        var envelope = await _file.LoadAsync(
+            static () => new Envelope(ExplorerConfiguration.CurrentSchema, ""), Options,
+            candidate => validated = ReadAndValidatePayload(candidate),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         if (_file.LastRecovery is { } recovery)
             _lastRecovery = recovery;
-        var json = _protector.Unprotect(envelope.EncryptedPayload);
+        var configuration = validated ?? ReadAndValidatePayload(envelope);
+        // Candidate validation is read-only: migration is committed only after a healthy
+        // primary or backup has been selected and DurableJsonFile has released its gate.
         if (envelope.Schema == 1)
-        {
-            var migrated = MigrateSchema1(json);
-            migrated.Validate();
-            await SaveCoreAsync(migrated, cancellationToken).ConfigureAwait(false);
-            return migrated.ResolveCredentialReferences();
-        }
-        if (envelope.Schema != ExplorerConfiguration.CurrentSchema) throw new InvalidDataException($"不支持的统一配置 Schema：{envelope.Schema}");
-        var configuration = JsonSerializer.Deserialize<ExplorerConfiguration>(json, Options)
-            ?? throw new InvalidDataException("统一配置载荷为空。");
+            return await SaveCoreAsync(configuration, cancellationToken).ConfigureAwait(false);
+        return configuration;
+    }
+
+    private ExplorerConfiguration ReadAndValidatePayload(Envelope envelope)
+    {
+        ValidateEnvelope(envelope);
+        var json = _protector.Unprotect(envelope.EncryptedPayload);
+        var configuration = envelope.Schema == 1
+            ? MigrateSchema1(json)
+            : JsonSerializer.Deserialize<ExplorerConfiguration>(json, Options)
+                ?? throw new InvalidDataException("统一配置载荷为空。");
         return configuration.ResolveCredentialReferences();
     }
 

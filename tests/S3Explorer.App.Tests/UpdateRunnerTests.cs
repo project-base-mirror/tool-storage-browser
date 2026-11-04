@@ -1,4 +1,6 @@
 using S3Explorer.Updater;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Xunit;
 
 namespace S3Explorer.App.Tests;
@@ -119,15 +121,74 @@ public sealed class UpdateRunnerTests
                 Path.Combine(root, "install.log"),
                 "0.7.2");
 
-            var exitCode = UpdateRunner.Run(options);
+            var installerStarted = false;
+            var restartedPaths = new List<string>();
+            var exitCode = UpdateRunner.Run(options, () => { }, () =>
+            {
+                installerStarted = true;
+                return 0;
+            }, restartedPaths.Add);
 
             Assert.Equal(1, exitCode);
+            Assert.False(installerStarted);
+            Assert.Equal(app, Assert.Single(restartedPaths));
             Assert.Contains("SHA-256", File.ReadAllText(state), StringComparison.Ordinal);
         }
         finally
         {
             Directory.Delete(root, true);
         }
+    }
+
+    [Fact]
+    public void InstallerArgumentsKeepCustomDirectory()
+    {
+        var arguments = UpdateRunner.BuildInstallerArguments(
+            @"C:\Downloads\update.msi", @"C:\Logs\install.log", @"D:\My Apps\S3 Explorer\S3Explorer.exe");
+        Assert.Contains("APPLICATIONFOLDER=\"D:\\My Apps\\S3 Explorer\\.\"", arguments, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0, false, "completed", 0)]
+    [InlineData(3010, false, "completed", 0)]
+    [InlineData(0, true, "failed", 1)]
+    [InlineData(1603, false, "failed", 1)]
+    [InlineData(1603, true, "failed", 1)]
+    public void CompletionRequiresSuccessfulInstallationAndRelaunch(int installerCode, bool restartFails, string status, int expectedExit)
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var msi = Path.Combine(root, "update.msi");
+            File.WriteAllText(msi, "verified-package");
+            var options = new UpdateArguments(int.MaxValue, DateTime.UtcNow, msi,
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(msi))),
+                Path.Combine(root, "custom", "S3Explorer.exe"),
+                Path.Combine(root, "state.json"), Path.Combine(root, "install.log"), "0.7.2");
+            var restarts = new List<string>();
+            var result = UpdateRunner.Run(options, () => { }, () => installerCode, path =>
+            {
+                Assert.False(File.Exists(options.StatePath));
+                restarts.Add(path);
+                if (restartFails) throw new IOException("restart failed");
+            });
+
+            Assert.Equal(expectedExit, result);
+            Assert.Equal(options.ApplicationPath, Assert.Single(restarts));
+            using var state = JsonDocument.Parse(File.ReadAllText(options.StatePath));
+            Assert.Equal(status, state.RootElement.GetProperty("status").GetString());
+            Assert.Equal(installerCode, state.RootElement.GetProperty("installerExitCode").GetInt32());
+            if (restartFails)
+                Assert.Contains("restart failed", state.RootElement.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void MissingApplicationIsReportedInsteadOfSilentlySucceeding()
+    {
+        Assert.Throws<FileNotFoundException>(() => UpdateRunner.StartApplication(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "S3Explorer.exe")));
     }
 
     private static string TemporaryDirectory()

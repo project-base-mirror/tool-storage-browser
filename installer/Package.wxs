@@ -9,7 +9,17 @@
       Scope="perMachine"
       UpgradeCode="A4A79148-53A1-4EAB-ADE4-B496E9641BB4">
     <SummaryInformation Description="S3 Explorer Windows object storage manager" />
-    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 S3 Explorer。" />
+    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的 S3 Explorer。" />
+    <!-- Remove the prior product inside the MSI transaction so failure can restore it. -->
+    <Property Id="APPLICATIONFOLDER" Secure="yes" />
+    <Property Id="PREVIOUSINSTALLLOCATION" Secure="yes">
+      <RegistrySearch Id="PreviousInstallLocation" Root="HKLM"
+          Key="Software\project-base-mirror\S3 Explorer" Name="InstallLocation"
+          Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="APPLICATIONFOLDER" Value="[PREVIOUSINSTALLLOCATION]"
+        Before="CostFinalize" Sequence="both"
+        Condition="NOT APPLICATIONFOLDER AND PREVIOUSINSTALLLOCATION" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="ARPURLINFOABOUT" Value="https://project-base-mirror.github.io/tool-storage-browser/" />

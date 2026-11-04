@@ -103,6 +103,38 @@ public sealed class AppSettingsStoreTests
         }
     }
 
+    [Theory]
+    [InlineData(5120, 5120)]
+    [InlineData(10240, 5120)]
+    [InlineData(int.MaxValue, 5120)]
+    public void MultipartThresholdNeverExceedsSinglePutLimit(int value, int expected)
+    {
+        var settings = (new AppSettings { MultipartThresholdMb = value }).Normalize();
+        Assert.Equal(expected, settings.MultipartThresholdMb);
+    }
+
+    [Fact]
+    public async Task LastProfileIdRoundTripsAndEmptyIdNormalizesToNull()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var store = new AppSettingsStore(Path.Combine(root, "settings.json"));
+            Assert.Null((await store.LoadAsync(TestContext.Current.CancellationToken)).LastProfileId);
+            var id = Guid.NewGuid();
+            await store.SaveAsync(new AppSettings { AutoConnectLastProfile = true, LastProfileId = id },
+                TestContext.Current.CancellationToken);
+            var restored = await store.LoadAsync(TestContext.Current.CancellationToken);
+            Assert.True(restored.AutoConnectLastProfile);
+            Assert.Equal(id, restored.LastProfileId);
+            Assert.Null((restored with { LastProfileId = Guid.Empty }).Normalize().LastProfileId);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     private static string TemporaryDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "S3Explorer.Tests", Guid.NewGuid().ToString("N"));

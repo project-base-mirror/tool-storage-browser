@@ -12,6 +12,148 @@ namespace S3Explorer.Infrastructure.Configuration.Tests;
 [SupportedOSPlatform("windows")]
 public sealed class ExplorerConfigurationStoreTests
 {
+    [Fact]
+    public async Task TreeReorderAfterCredentialRotationReturnsFreshResolvedProfiles()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var store = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var credential = new CredentialProfile
+            {
+                Name = "shared", Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.AccessKeyPair, AccessKeyId = "old-access", Secret = "old-secret"
+            };
+            var first = new ConnectionProfile { Name = "first", CredentialId = credential.Id };
+            var second = new ConnectionProfile { Name = "second", CredentialId = credential.Id, SortOrder = 1 };
+            var group = new ConnectionGroup { Name = "Group" };
+            await store.SaveAsync(new(new([first, second], [group]), CdnConfiguration.Empty, [credential]), token);
+            var gui = new ExplorerProfileStore(store);
+            var baseline = await gui.LoadConfigurationAsync(token);
+            var cli = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var rotated = credential with { AccessKeyId = "new-access", Secret = "new-secret" };
+            await cli.UpdateAsync(current => current with { CredentialVault = [rotated] }, token);
+            var proposed = baseline.PlaceProfile(first.Id, group.Id, 0);
+            Assert.Equal(0, proposed.Profiles.Single(value => value.Id == second.Id).SortOrder);
+            Assert.Equal(credential.Secret, proposed.Profiles.Single(value => value.Id == second.Id).SecretKey);
+
+            var saved = await gui.MergeConfigurationAsync(baseline, proposed, token);
+
+            Assert.All(saved.Profiles, value => Assert.Equal("new-access", value.AccessKey));
+            Assert.All(saved.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+            var reloaded = await store.LoadAsync(token);
+            Assert.Equal(rotated, Assert.Single(reloaded.CredentialVault));
+            Assert.All(reloaded.Storage.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+            Assert.Equal(group.Id, reloaded.Storage.Profiles.Single(value => value.Id == first.Id).GroupId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("ciphertext")]
+    [InlineData("authentication")]
+    [InlineData("json")]
+    [InlineData("reference")]
+    [InlineData("null-record")]
+    public async Task FullPayloadValidationRecoversHealthyBackup(string corruption)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var protector = new RecoveryTestProtector();
+            var store = await ExplorerConfigurationStore.OpenAsync(root, protector, token);
+            var first = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with { Name = "backup profile" };
+            var healthy = new ExplorerConfiguration(new([first], []), CdnConfiguration.Empty, []);
+            await store.SaveAsync(healthy, token);
+            await store.SaveAsync(healthy with { Storage = new([first with { Name = "primary profile" }], []) }, token);
+            var backup = await File.ReadAllBytesAsync(store.Path + ".bak", token);
+            var envelope = JsonNode.Parse(await File.ReadAllTextAsync(store.Path, token))!.AsObject();
+            if (corruption is "reference" or "null-record")
+            {
+                var payload = JsonNode.Parse(protector.Unprotect(envelope["encryptedPayload"]!.GetValue<string>()))!;
+                if (corruption == "reference")
+                    payload["storage"]!["profiles"]![0]!["credentialId"] = Guid.NewGuid().ToString();
+                else
+                    payload["storage"]!["profiles"]![0] = null;
+                envelope["encryptedPayload"] = protector.Protect(payload.ToJsonString());
+            }
+            else
+            {
+                envelope["encryptedPayload"] = corruption switch
+                {
+                    "ciphertext" => "not-base64!",
+                    "authentication" => "authentication-failed",
+                    _ => protector.Protect("{invalid-json")
+                };
+            }
+            var corruptText = envelope.ToJsonString();
+            await File.WriteAllTextAsync(store.Path, corruptText, token);
+
+            var reopened = await ExplorerConfigurationStore.OpenAsync(root, protector, token);
+            var restored = await reopened.LoadAsync(token);
+
+            Assert.Equal("backup profile", Assert.Single(restored.Storage.Profiles).Name);
+            Assert.True(reopened.LastRecovery?.RestoredFromBackup);
+            Assert.Equal(backup, await File.ReadAllBytesAsync(store.Path, token));
+            Assert.Equal(corruptText, await File.ReadAllTextAsync(reopened.LastRecovery!.CorruptPath!, token));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task GuiAdapterMergeKeepsCliAdditionsAndRejectsSameRecordConflicts()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var store = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var first = new ConnectionProfile { Name = "GUI profile" };
+            var group = new ConnectionGroup { Name = "Group" };
+            await store.SaveAsync(new(new([first], [group]), CdnConfiguration.Empty, []), token);
+            var gui = new ExplorerProfileStore(store);
+            var baseline = await gui.LoadConfigurationAsync(token);
+            var cli = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var added = new ConnectionProfile { Name = "CLI profile", SortOrder = 1 };
+            await cli.UpdateAsync(current => current with
+            {
+                Storage = current.Storage with { Profiles = current.Storage.Profiles.Append(added).ToArray() }
+            }, token);
+
+            var saved = await gui.MergeConfigurationAsync(baseline, baseline.PlaceProfile(first.Id, group.Id, 0), token);
+
+            Assert.Equal(2, saved.Profiles.Count);
+            Assert.Contains(saved.Profiles, value => value.Id == added.Id);
+            var onDisk = await cli.LoadAsync(token);
+            Assert.Equal(group.Id, onDisk.Storage.Profiles.Single(value => value.Id == first.Id).GroupId);
+            await cli.UpdateAsync(current => current with
+            {
+                Storage = current.Storage with
+                {
+                    Profiles = current.Storage.Profiles.Select(value => value.Id == first.Id
+                        ? value with { Name = "CLI renamed" } : value).ToArray()
+                }
+            }, token);
+            var beforeConflict = await File.ReadAllBytesAsync(store.Path, token);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => gui.MergeConfigurationAsync(saved,
+                saved with { Profiles = saved.Profiles.Select(value => value.Id == first.Id
+                    ? value with { Name = "GUI renamed" } : value).ToArray() }, token));
+            Assert.Equal(beforeConflict, await File.ReadAllBytesAsync(store.Path, token));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class RecoveryTestProtector : IConfigurationPayloadProtector
+    {
+        private readonly FakeProtector _inner = new();
+        public string Protect(string plaintext) => _inner.Protect(plaintext);
+        public string Unprotect(string ciphertext) => ciphertext == "authentication-failed"
+            ? throw new System.Security.Cryptography.CryptographicException("Test authentication failure")
+            : _inner.Unprotect(ciphertext);
+    }
+
     [Theory]
     [InlineData(UploadSigningMode.Auto)]
     [InlineData(UploadSigningMode.Streaming)]

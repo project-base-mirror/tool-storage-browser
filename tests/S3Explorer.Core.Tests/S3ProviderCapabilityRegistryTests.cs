@@ -52,13 +52,27 @@ public sealed class S3ProviderCapabilityRegistryTests
     }
 
     [Fact]
-    public void AliyunKeepsVerifiedMetadataCapabilities()
+    public void AliyunKeepsTaggingButUnsafeMetadataRewriteIsDisabled()
     {
         var capabilities = S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Object;
 
         Assert.True(capabilities.Tagging.Supported);
-        Assert.True(capabilities.MetadataRewrite.Supported);
+        Assert.False(capabilities.MetadataRewrite.Supported);
         Assert.False(capabilities.Acl.Supported);
+    }
+
+    [Fact]
+    public void AutomaticMoveRequiresVerifiedConditionalDelete()
+    {
+        foreach (var provider in S3ProviderCapabilityRegistry.All)
+            Assert.Equal(provider.ServiceType == S3ServiceType.AmazonS3, provider.ConditionalDelete.Supported);
+    }
+
+    [Fact]
+    public void MetadataRewriteIsFailClosedUntilFullPreservationIsImplemented()
+    {
+        Assert.All(S3ProviderCapabilityRegistry.All, provider =>
+            Assert.False(provider.Object.MetadataRewrite.Supported));
     }
 
     [Fact]

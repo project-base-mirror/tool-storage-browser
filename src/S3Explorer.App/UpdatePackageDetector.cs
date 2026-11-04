@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.Reflection;
 
 namespace S3Explorer.App;
 
@@ -19,11 +20,10 @@ internal static class UpdatePackageDetector
         if (TryGetInstallerRegistration(out var registeredKind, out _))
             return registeredKind;
 
-        var processPath = Environment.ProcessPath;
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (IsUnderDirectory(processPath, programFiles))
-            return UpdatePackageKind.InstallerSelfContained;
-        return UpdatePackageKind.PortableFrameworkDependent;
+        var selfContained = typeof(UpdatePackageDetector).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == "S3Explorer.SelfContained")?.Value;
+        return PortableKind(selfContained);
     }
 
     public static bool TryGetInstallerRegistration(
@@ -45,6 +45,8 @@ internal static class UpdatePackageDetector
             var parsedKind = FromInstallerFlavor(installerFlavor);
             if (parsedKind is not (UpdatePackageKind.InstallerFrameworkDependent or UpdatePackageKind.InstallerSelfContained))
                 return false;
+            if (!MatchesApplicationDirectory(Environment.ProcessPath, registeredLocation))
+                return false;
             packageKind = parsedKind;
             installLocation = Path.GetFullPath(registeredLocation);
             return true;
@@ -54,6 +56,23 @@ internal static class UpdatePackageDetector
         {
             return false;
         }
+    }
+
+    internal static UpdatePackageKind PortableKind(string? selfContained) =>
+        bool.TryParse(selfContained, out var value) && value
+            ? UpdatePackageKind.PortableSelfContained
+            : UpdatePackageKind.PortableFrameworkDependent;
+
+    internal static bool MatchesApplicationDirectory(string? applicationPath, string? installLocation)
+    {
+        if (string.IsNullOrWhiteSpace(applicationPath) || string.IsNullOrWhiteSpace(installLocation) ||
+            !Path.IsPathFullyQualified(applicationPath) || !Path.IsPathFullyQualified(installLocation))
+            return false;
+        var applicationDirectory = Path.GetDirectoryName(Path.GetFullPath(applicationPath));
+        return string.Equals(
+            applicationDirectory?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(installLocation).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     internal static UpdatePackageKind FromInstallerFlavor(string installerFlavor) =>

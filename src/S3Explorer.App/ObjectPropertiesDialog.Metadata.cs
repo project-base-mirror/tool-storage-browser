@@ -29,6 +29,12 @@ internal sealed partial class ObjectPropertiesDialog
             : S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.MetadataRewrite;
         _metadataReason.Text = capability.Reason;
         _metadataSave.Enabled = capability.Supported && _storage is not null;
+        foreach (var textBox in new[] { _contentType, _cacheControl, _contentEncoding, _contentDisposition, _expiresUtc })
+            textBox.ReadOnly = !capability.Supported;
+        _metadataGrid.ReadOnly = !capability.Supported;
+        _metadataGrid.AllowUserToAddRows = capability.Supported;
+        _metadataGrid.AllowUserToDeleteRows = capability.Supported;
+        _metadataReason.MaximumSize = new Size(520, 0);
         _metadataSave.Click += async (_, _) => await SaveMetadataAsync();
 
         var headers = new TableLayoutPanel
@@ -56,12 +62,11 @@ internal sealed partial class ObjectPropertiesDialog
             Padding = new Padding(8, 4, 8, 7)
         };
         actions.Controls.Add(_metadataSave);
-        actions.Controls.Add(_metadataReason);
 
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 3,
+            RowCount = 4,
             ColumnCount = 1,
             Padding = Padding.Empty
         };
@@ -69,8 +74,10 @@ internal sealed partial class ObjectPropertiesDialog
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(headers, 0, 0);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(_metadataGrid, 0, 1);
-        layout.Controls.Add(actions, 0, 2);
+        layout.Controls.Add(_metadataReason, 0, 2);
+        layout.Controls.Add(actions, 0, 3);
         var page = new TabPage("Metadata");
         page.Controls.Add(layout);
         return page;
@@ -126,6 +133,12 @@ internal sealed partial class ObjectPropertiesDialog
     private async Task SaveMetadataAsync()
     {
         if (_storage is null || _profile is null || _objectProperties is null || _metadataBusy) return;
+        var capability = S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.MetadataRewrite;
+        if (!capability.Supported)
+        {
+            _metadataReason.Text = capability.Reason;
+            return;
+        }
         ObjectWriteHeaders headers;
         try
         {

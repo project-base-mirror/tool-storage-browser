@@ -28,7 +28,7 @@ internal sealed class SettingsDialog : Form
     };
     private readonly NumericUpDown _files = new() { Minimum = 1, Maximum = 32 };
     private readonly NumericUpDown _parts = new() { Minimum = 1, Maximum = 32 };
-    private readonly NumericUpDown _threshold = new() { Minimum = 5, Maximum = 10240 };
+    private readonly NumericUpDown _threshold = new() { Name = "MultipartThresholdMb", Minimum = 5, Maximum = 5120 };
     private readonly NumericUpDown _partSize = new() { Minimum = 5, Maximum = 512 };
     private readonly NumericUpDown _retries = new() { Minimum = 0, Maximum = 20 };
     private readonly NumericUpDown _delay = new() { Minimum = 0, Maximum = 300 };
@@ -123,7 +123,7 @@ internal sealed class SettingsDialog : Form
             ObjectListingLimits.MaximumCacheLimit);
         _files.Value = settings.ConcurrentTransfers;
         _parts.Value = settings.MultipartConcurrency;
-        _threshold.Value = settings.MultipartThresholdMb;
+        _threshold.Value = Math.Clamp(settings.MultipartThresholdMb, 5, 5120);
         _partSize.Value = settings.PartSizeMb;
         _retries.Value = settings.RetryCount;
         _delay.Value = settings.RetryDelaySeconds;

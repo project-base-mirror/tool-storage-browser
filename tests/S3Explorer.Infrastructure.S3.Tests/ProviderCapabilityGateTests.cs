@@ -38,6 +38,17 @@ public sealed class ProviderCapabilityGateTests
         Assert.Contains("尚未验证", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task MinioPublicAclsAreRejectedBeforeNetworkAccess()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(() => _storage.PutObjectAclAsync(
+            Profile(S3ServiceType.MinIO), "bucket", "key", ObjectAclMode.PublicRead,
+            TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<NotSupportedException>(() => _storage.PutBucketAclAsync(
+            Profile(S3ServiceType.MinIO), "bucket", BucketAclMode.PublicRead,
+            TestContext.Current.CancellationToken));
+    }
+
     private static ConnectionProfile Profile(S3ServiceType type) =>
         ConnectionProfile.CreatePreset(type) with
         {

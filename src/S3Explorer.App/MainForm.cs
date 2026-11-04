@@ -157,7 +157,11 @@ internal sealed partial class MainForm : Form
         _automation = automation;
         _developmentMode = developmentMode;
         _clipboardWriter = clipboardWriter ?? ClipboardTextWriter.SetTextAsync;
-        Disposed += (_, _) => _cdnCopyCancellation?.Cancel();
+        Disposed += (_, _) =>
+        {
+            _cdnCopyCancellation?.Cancel();
+            _updateCancellation.Cancel();
+        };
         _transfers = new TransferQueueControl(transferQueue) { Name = "TransferQueue" };
 
         Name = "MainWindow";
@@ -805,9 +809,7 @@ internal sealed partial class MainForm : Form
 
         try
         {
-            var configuration = await _profileStore.LoadConfigurationAsync();
-            _profiles = configuration.Profiles;
-            _profileGroups = configuration.Groups;
+            ApplyConfiguration(await _configurationStore.LoadAsync(), refreshTree: false);
             AddRecoveryWarning(warnings, "统一配置", _configurationStore as IRecoveryAwareStore);
         }
         catch (Exception exception)
@@ -818,7 +820,6 @@ internal sealed partial class MainForm : Form
             warnings.Add($"对象存储连接：{exception.GetType().Name}: {exception.Message}；原文件已保留，当前以空列表启动。");
         }
         PopulateProfiles();
-        warnings.AddRange(await LoadCdnStateAsync());
 
         var cdnQueueReady = false;
         try
@@ -866,7 +867,48 @@ internal sealed partial class MainForm : Form
             }
         }
         if (_automation is null)
-            ShowPendingUpdateResult();
+            _ = ShowPendingUpdateResultAsync();
+        await AutoConnectLastProfileAsync();
+    }
+
+    private async Task AutoConnectLastProfileAsync()
+    {
+        if (!_settings.AutoConnectLastProfile || _settings.LastProfileId is not Guid id) return;
+        var profile = _profiles.FirstOrDefault(value => value.Id == id);
+        if (profile is null || !profile.HasCredentialConfiguration) return;
+        var node = FindProfileNode(profile);
+        if (node is null) return;
+        SelectTreeNodeWithoutNavigation(node);
+        await LoadBucketsAsync(profile, node);
+    }
+
+    private async Task RememberLastConnectedProfileAsync(ConnectionProfile profile)
+    {
+        if (_settings.LastProfileId == profile.Id) return;
+        var proposed = _settings with { LastProfileId = profile.Id };
+        try
+        {
+            await _settingsStore.SaveAsync(proposed);
+            _settings = _settings with { LastProfileId = profile.Id };
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Failed to persist last connected profile: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    private void ApplyConfiguration(ExplorerConfiguration configuration, bool refreshTree = true)
+    {
+        _profiles = configuration.Storage.Profiles;
+        _profileGroups = configuration.Storage.Groups;
+        _cdnConfiguration = configuration.Cdn;
+        _credentials = configuration.CredentialVault;
+        if (_currentProfile is not null)
+        {
+            var latest = _profiles.FirstOrDefault(profile => profile.Id == _currentProfile.Id);
+            if (latest is null) Disconnect(); else _currentProfile = latest;
+        }
+        if (refreshTree) PopulateProfiles();
     }
 
     private static void AddRecoveryWarning(
@@ -1277,28 +1319,21 @@ internal sealed partial class MainForm : Form
         CredentialProfile credential)
     {
         credential.Validate();
-        var updated = await _configurationStore.UpdateAsync(current =>
+        await _profileConfigurationGate.WaitAsync();
+        try
         {
-            if (current.CredentialVault.Any(value => value.Id == credential.Id ||
-                string.Equals(value.Name, credential.Name, StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException($"凭据名称或 ID 已存在：{credential.Name}");
-
-            return current with
+            var updated = await _configurationStore.UpdateAsync(current =>
             {
-                CredentialVault = current.CredentialVault.Append(credential).ToArray()
-            };
-        });
-
-        _profiles = updated.Storage.Profiles;
-        _profileGroups = updated.Storage.Groups;
-        _cdnConfiguration = updated.Cdn;
-        _credentials = updated.CredentialVault;
-        if (_currentProfile is not null)
-            _currentProfile = _profiles.FirstOrDefault(value => value.Id == _currentProfile.Id);
-        PopulateProfiles();
-        UpdateCommandStates();
-        _logger.Info($"Credential created from connection dialog name={credential.Name} provider={credential.Provider} kind={credential.Kind}");
-        return _credentials;
+                if (current.CredentialVault.Any(value => value.Id == credential.Id ||
+                    string.Equals(value.Name, credential.Name, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException($"凭据名称或 ID 已存在：{credential.Name}");
+                return current with { CredentialVault = current.CredentialVault.Append(credential).ToArray() };
+            });
+            ApplyConfiguration(updated);
+            _logger.Info($"Credential created from connection dialog name={credential.Name} provider={credential.Provider} kind={credential.Kind}");
+            return _credentials;
+        }
+        finally { _profileConfigurationGate.Release(); }
     }
 
     private async Task NewConnectionGroupAsync()
@@ -1323,6 +1358,7 @@ internal sealed partial class MainForm : Form
     private async Task RenameSelectedGroupAsync()
     {
         if (_tree.SelectedNode?.Tag is not ConnectionGroup group) return;
+        var baseline = new ConnectionProfileConfiguration(_profiles, _profileGroups);
         using var dialog = new ConnectionGroupDialog(group);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (_profileGroups.Any(item => item.Id != group.Id &&
@@ -1332,19 +1368,20 @@ internal sealed partial class MainForm : Form
         {
             Groups = current.Groups.Select(item => item.Id == group.Id
                 ? item with { Name = dialog.GroupName } : item).ToArray()
-        });
+        }, baseline: baseline);
         SelectGroupNode(group.Id);
     }
 
     private async Task DeleteSelectedGroupAsync()
     {
         if (_tree.SelectedNode?.Tag is not ConnectionGroup group) return;
-        var count = _profiles.Count(profile => profile.GroupId == group.Id);
+        var baseline = new ConnectionProfileConfiguration(_profiles, _profileGroups);
+        var count = baseline.Profiles.Count(profile => profile.GroupId == group.Id);
         if (MessageBox.Show(this,
                 $"确定删除分组“{group.Name}”吗？\n\n其中 {count} 个连接会移到未分组；连接本身不会被删除。",
                 "删除连接分组", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
-        await UpdateProfileConfigurationAsync(current => current.RemoveGroup(group.Id));
+        await UpdateProfileConfigurationAsync(current => current.RemoveGroup(group.Id), baseline: baseline);
     }
 
     private async Task MoveSelectedGroupAsync(int offset)
@@ -1400,15 +1437,17 @@ internal sealed partial class MainForm : Form
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
+        var baseline = new ConnectionProfileConfiguration(_profiles, _profileGroups);
         using var dialog = new ConnectionDialog(
             _storage,
             profile,
             _credentials,
             SaveNewConnectionCredentialAsync);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        var proposed = _profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray();
-        await SaveProfilesAndRefreshAsync(proposed);
-        if (_currentProfile?.Id == profile.Id) _currentProfile = dialog.Profile;
+        await UpdateProfileConfigurationAsync(current => current with
+        {
+            Profiles = current.Profiles.Select(item => item.Id == profile.Id ? dialog.Profile : item).ToArray()
+        }, baseline: baseline);
     }
 
     private async Task CopyCurrentConnectionAsync()
@@ -1448,7 +1487,9 @@ internal sealed partial class MainForm : Form
     {
         var profile = SelectedTreeProfile();
         if (profile is null) return;
-        var affectedBindings = _cdnConfiguration.Bindings
+        var baseline = new ExplorerConfiguration(
+            new ConnectionProfileConfiguration(_profiles, _profileGroups), _cdnConfiguration, _credentials);
+        var affectedBindings = baseline.Cdn.Bindings
             .Count(binding => binding.StorageProfileId == profile.Id);
         var associationWarning = affectedBindings == 0
             ? string.Empty
@@ -1457,20 +1498,22 @@ internal sealed partial class MainForm : Form
                 $"确定删除连接“{profile.Name}”吗？{associationWarning}\n\n这只删除本地配置，不会删除任何远程 Bucket、对象或 CDN 内容。",
                 "删除连接", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
-        var proposedProfiles = _profiles.Where(item => item.Id != profile.Id).ToArray();
-        var proposedCdnConfiguration = new CdnConfiguration(
-            _cdnConfiguration.Profiles,
-            _cdnConfiguration.Bindings
-                .Where(binding => binding.StorageProfileId != profile.Id)
-                .ToArray());
-        await _configurationStore.SaveAsync(new ExplorerConfiguration(
-            new ConnectionProfileConfiguration(proposedProfiles, _profileGroups),
-            proposedCdnConfiguration,
-            _credentials));
-        _profiles = proposedProfiles;
-        _cdnConfiguration = proposedCdnConfiguration;
-        if (_currentProfile?.Id == profile.Id) Disconnect();
-        PopulateProfiles();
+        var proposed = baseline with
+        {
+            Storage = baseline.Storage with { Profiles = baseline.Storage.Profiles.Where(item => item.Id != profile.Id).ToArray() },
+            Cdn = baseline.Cdn with
+            {
+                Bindings = baseline.Cdn.Bindings.Where(binding => binding.StorageProfileId != profile.Id).ToArray()
+            }
+        };
+        await _profileConfigurationGate.WaitAsync();
+        try
+        {
+            var saved = await _configurationStore.UpdateAsync(current =>
+                ExplorerConfigurationMerger.Merge(baseline, proposed, current));
+            ApplyConfiguration(saved);
+        }
+        finally { _profileConfigurationGate.Release(); }
     }
 
     private async Task SaveProfilesAndRefreshAsync(IReadOnlyList<ConnectionProfile> proposed)
@@ -1618,6 +1661,8 @@ internal sealed partial class MainForm : Form
                 }
             }
 
+            var baseline = new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(_profiles, _profileGroups), _cdnConfiguration, _credentials);
             using var preview = new ConnectionImportPreviewDialog(
                 package,
                 _profiles,
@@ -1628,13 +1673,13 @@ internal sealed partial class MainForm : Form
             if (preview.ShowDialog(this) != DialogResult.OK) return;
             var selectedStorage = preview.SelectedProfiles;
             var selectedCdn = preview.SelectedCdnProfiles;
-            var previousProfiles = _profiles;
-            var previousCdnConfiguration = _cdnConfiguration;
-            var previousCredentials = _credentials;
+            var previousProfiles = baseline.Storage.Profiles;
+            var previousCdnConfiguration = baseline.Cdn;
+            var previousCredentials = baseline.CredentialVault;
             var merged = _connectionArchive.MergePackage(
-                _profiles,
-                _cdnConfiguration,
-                _credentials,
+                baseline.Storage.Profiles,
+                baseline.Cdn,
+                baseline.CredentialVault,
                 package,
                 new ConnectionArchiveImportSelection(
                     selectedStorage.Select(profile => profile.Id).ToArray(),
@@ -1643,22 +1688,17 @@ internal sealed partial class MainForm : Form
                 preview.ImportCredentials,
                 preview.ConflictStrategy,
                 preview.TargetGroupId);
-
-            await _configurationStore.SaveAsync(new ExplorerConfiguration(
-                new ConnectionProfileConfiguration(merged.Profiles, _profileGroups),
-                merged.CdnConfiguration,
-                merged.Credentials));
-
-            _profiles = merged.Profiles;
-            _cdnConfiguration = merged.CdnConfiguration;
-            _credentials = merged.Credentials;
-            PopulateProfiles();
-
-            if (_currentProfile is not null)
+            var proposed = new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(merged.Profiles, baseline.Storage.Groups),
+                merged.CdnConfiguration, merged.Credentials);
+            await _profileConfigurationGate.WaitAsync();
+            try
             {
-                _currentProfile = _profiles.FirstOrDefault(profile => profile.Id == _currentProfile.Id);
-                if (_currentProfile is null) Disconnect();
+                var saved = await _configurationStore.UpdateAsync(current =>
+                    ExplorerConfigurationMerger.Merge(baseline, proposed, current));
+                ApplyConfiguration(saved);
             }
+            finally { _profileConfigurationGate.Release(); }
 
             var changedCount = CountChangedProfiles(previousProfiles, _profiles);
             var changedCdnProfiles = CountChangedRecords(
@@ -1849,6 +1889,8 @@ internal sealed partial class MainForm : Form
             {
                 ShowConnectionSummary(profile, profileNode, buckets.Count);
             }
+            if (_currentProfile?.Id == profile.Id)
+                await RememberLastConnectedProfileAsync(profile);
             _logger.Info($"Connected profile={profile.Name} endpoint={profile.Endpoint} buckets={buckets.Count}");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -2426,41 +2468,8 @@ internal sealed partial class MainForm : Form
 
     private static IEnumerable<string> EnumerateFilesSafely(
         string root,
-        Action<string, Exception> onDirectoryError)
-    {
-        var pending = new Stack<string>();
-        pending.Push(root);
-        while (pending.Count > 0)
-        {
-            var directory = pending.Pop();
-            string[] files;
-            try
-            {
-                files = Directory.GetFiles(directory);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                onDirectoryError(directory, exception);
-                continue;
-            }
-
-            foreach (var file in files)
-                yield return file;
-
-            string[] children;
-            try
-            {
-                children = Directory.GetDirectories(directory);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                onDirectoryError(directory, exception);
-                continue;
-            }
-            for (var index = children.Length - 1; index >= 0; index--)
-                pending.Push(children[index]);
-        }
-    }
+        Action<string, Exception> onDirectoryError) =>
+        SafeLocalFileTraversal.EnumerateFiles(root, onDirectoryError);
 
     private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix)
     {
@@ -2689,10 +2698,42 @@ internal sealed partial class MainForm : Form
         return true;
     }
 
-    private void ShowPendingUpdateResult()
+    private async Task ShowPendingUpdateResultAsync()
     {
-        var result = UpdateInstallerLauncher.TryConsumeResult();
-        if (result is null) return;
+        try
+        {
+            var result = await WaitForPendingUpdateResultAsync(
+                UpdateInstallerLauncher.TryConsumeResult, Task.Delay, _updateCancellation.Token);
+            if (result is not null && !IsDisposed && !_updateCancellation.IsCancellationRequested)
+                ShowPendingUpdateResult(result);
+        }
+        catch (OperationCanceledException) when (_updateCancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _logger.Warning($"Failed to read pending update result: {exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    internal static async Task<UpdateInstallResult?> WaitForPendingUpdateResultAsync(
+        Func<UpdateInstallResult?> readResult,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        CancellationToken cancellationToken)
+    {
+        // The updater writes its final result after the new process survives its first
+        // second. Retry briefly without delaying initialization or showing a false result.
+        for (var attempt = 0; attempt <= 10; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = readResult();
+            if (result is not null) return result;
+            if (attempt < 10)
+                await delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+        }
+        return null;
+    }
+
+    private void ShowPendingUpdateResult(UpdateInstallResult result)
+    {
         var currentVersion = typeof(MainForm).Assembly.GetName().Version ?? new Version(0, 0, 0, 0);
         var installedTarget = GitHubUpdateChecker.NormalizeVersion(currentVersion).CompareTo(
             GitHubUpdateChecker.NormalizeVersion(result.TargetVersion)) >= 0;
@@ -2765,7 +2806,8 @@ internal sealed partial class MainForm : Form
 
     private void CopySelectedPaths()
     {
-        var values = SelectedEntries().Select(entry => $"s3://{_currentProfile?.Name}/{_currentBucket}/{entry.Key}").ToArray();
+        if (!EnsureLocation()) return;
+        var values = SelectedEntries().Select(entry => new S3Location(_currentProfile!.Name, _currentBucket, entry.Key).ToString()).ToArray();
         if (values.Length > 0) Clipboard.SetText(string.Join(Environment.NewLine, values));
     }
 
@@ -2838,7 +2880,7 @@ internal sealed partial class MainForm : Form
     private string CurrentLocationText() =>
         _currentProfile is null || _currentBucket is null
             ? "s3://"
-            : $"s3://{_currentProfile.Name}/{_currentBucket}/{_currentPrefix}";
+            : new S3Location(_currentProfile.Name, _currentBucket, _currentPrefix).ToString();
 
     private void UpdateSelectionStatus()
     {

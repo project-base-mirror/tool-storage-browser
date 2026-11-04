@@ -28,10 +28,21 @@ public sealed class ObjectMetadataTests
     }
 
     [Fact]
+    public void MetadataReplacementIsDisabledUntilContentAndAllAttributesCanBePreservedAtomically()
+    {
+        foreach (var provider in Enum.GetValues<S3ServiceType>())
+        {
+            var capability = S3ProviderCapabilityRegistry.For(provider).Object.MetadataRewrite;
+            Assert.False(capability.Supported);
+            Assert.False(string.IsNullOrWhiteSpace(capability.Reason));
+        }
+    }
+
+    [Fact]
     public void ObjectCapabilitiesRemainConservativeForUnverifiedProviders()
     {
         Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AmazonS3).Object.Tagging.Supported);
-        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Object.MetadataRewrite.Supported);
+        Assert.False(S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Object.MetadataRewrite.Supported);
         Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Object.Tagging.Supported);
         Assert.False(S3ProviderCapabilityRegistry.For(S3ServiceType.CloudflareR2).Object.MetadataRewrite.Supported);
     }

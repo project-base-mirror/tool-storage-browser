@@ -7,6 +7,115 @@ namespace S3Explorer.App.Tests;
 public sealed partial class MainFormInteractionTests
 {
     [Fact]
+    public async Task TreeSaveRefreshesCredentialSelectorsAndCdnAlongWithResolvedProfiles()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            var rotated = Assert.Single(fixture.Configuration.Credentials) with
+            {
+                Name = "rotated", AccessKeyId = "new-access", Secret = "new-secret"
+            };
+            var cdn = new CdnProfile { Name = "CLI CDN", BaseUrl = "https://cdn.example.test" };
+            fixture.Configuration.Credentials = [rotated];
+            fixture.Configuration.Cdn = new([cdn], []);
+            Assert.Equal("test-secret", GetField<IReadOnlyList<ConnectionProfile>>(fixture.Form, "_profiles")
+                .Single(value => value.Id == fixture.Second.Id).SecretKey);
+
+            // Moving First also renumbers Second. The saved record must resolve the
+            // rotated vault entry, not retain Second's stale editor-time runtime keys.
+            await InvokeAccountTask(fixture.Form, "MoveProfileToGroupAsync", fixture.First, fixture.Group.Id);
+
+            Assert.Equal(rotated, Assert.Single(GetField<IReadOnlyList<CredentialProfile>>(fixture.Form, "_credentials")));
+            Assert.Equal(cdn.Id, Assert.Single(GetField<CdnConfiguration>(fixture.Form, "_cdnConfiguration").Profiles).Id);
+            Assert.Equal("new-secret", GetField<IReadOnlyList<ConnectionProfile>>(fixture.Form, "_profiles")
+                .Single(value => value.Id == fixture.Second.Id).SecretKey);
+            Assert.All(fixture.Store.Saved.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+            var reloaded = await fixture.Configuration.LoadAsync(TestContext.Current.CancellationToken);
+            Assert.All(reloaded.Storage.Profiles, value => Assert.Equal(rotated.Id, value.CredentialId));
+            Assert.All(reloaded.Storage.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+        });
+    }
+
+    [Fact]
+    public async Task TreeMoveKeepsConnectionsAddedAfterTheGuiSnapshot()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            var added = fixture.First with { Id = Guid.NewGuid(), Name = "CLI added", SortOrder = 2 };
+            await fixture.Store.SaveConfigurationAsync(fixture.Store.Saved with
+            {
+                Profiles = fixture.Store.Saved.Profiles.Append(added).ToArray()
+            });
+
+            await InvokeAccountTask(fixture.Form, "MoveProfileToGroupAsync", fixture.First, fixture.Group.Id);
+
+            Assert.Contains(fixture.Store.Saved.Profiles, value => value.Id == added.Id);
+            Assert.Equal(added.Id, Assert.IsType<ConnectionProfile>(fixture.Account(added.Id).Tag).Id);
+            Assert.Equal(fixture.Group.Id, fixture.Store.Saved.Profiles.Single(value => value.Id == fixture.First.Id).GroupId);
+        });
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 0)]
+    [InlineData(true, true, false, 0)]
+    [InlineData(true, false, true, 0)]
+    [InlineData(true, false, false, 1)]
+    public async Task StartupAutoConnectHonorsSettingExactIdAndCredentialReadiness(
+        bool enabled, bool missing, bool incomplete, int expectedCalls)
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            if (incomplete)
+            {
+                var profiles = fixture.Store.Saved.Profiles.Select(value => value.Id == fixture.Second.Id
+                    ? value with { CredentialId = null, AccessKey = "", SecretKey = "" } : value).ToArray();
+                await fixture.Store.SaveConfigurationAsync(fixture.Store.Saved with { Profiles = profiles });
+                SetField(fixture.Form, "_profiles", profiles);
+                InvokeInstance(fixture.Form, "PopulateProfiles");
+            }
+            SetField(fixture.Form, "_settings", new AppSettings
+            {
+                AutoConnectLastProfile = enabled,
+                LastProfileId = missing ? Guid.NewGuid() : fixture.Second.Id
+            });
+            var calls = 0;
+            fixture.Storage.Buckets = () =>
+            {
+                calls++;
+                return Task.FromResult<IReadOnlyList<BucketInfo>>([]);
+            };
+
+            await InvokeAccountTask(fixture.Form, "AutoConnectLastProfileAsync");
+
+            Assert.Equal(expectedCalls, calls);
+            if (expectedCalls > 0)
+                Assert.Equal(fixture.Second.Id, GetField<ConnectionProfile>(fixture.Form, "_currentProfile").Id);
+            else
+                Assert.Null(GetField<ConnectionProfile?>(fixture.Form, "_currentProfile"));
+        });
+    }
+
+    [Fact]
+    public async Task SuccessfulConnectionPersistsLastProfileForNextStartup()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            SetField(fixture.Form, "_settings", new AppSettings { LastProfileId = fixture.First.Id });
+            fixture.Storage.Buckets = () => Task.FromResult<IReadOnlyList<BucketInfo>>([]);
+
+            await InvokeAccountTask(fixture.Form, "LoadBucketsAsync", fixture.Second, fixture.Account(fixture.Second.Id));
+
+            Assert.Equal(fixture.Second.Id, GetField<AppSettings>(fixture.Form, "_settings").LastProfileId);
+            var saved = await GetField<AppSettingsStore>(fixture.Form, "_settingsStore").LoadAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(fixture.Second.Id, saved.LastProfileId);
+        });
+    }
+
+    [Fact]
     public async Task AccountsAndBlankSpaceExposeCreationAndToolbarDisablesInvalidMoves()
     {
         await RunMessagePumpAsync(async host =>
@@ -226,12 +335,14 @@ public sealed partial class MainFormInteractionTests
 
     private sealed class AccountTreeFixture : IAsyncDisposable
     {
+        private static readonly Guid SharedCredentialId = Guid.Parse("aa0e8bf0-118a-49cd-92be-3d90bd21a23c");
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "s3-account-tree-" + Guid.NewGuid().ToString("N"));
         private readonly PersistentTransferQueue _queue;
         public ConnectionProfile First { get; } = TestAccount("First", 0);
         public ConnectionProfile Second { get; } = TestAccount("Second", 1);
         public ConnectionGroup Group { get; } = new() { Name = "Test group" };
         public RecordingProfileStore Store { get; }
+        public RecordingExplorerStore Configuration { get; }
         public FakeStorageProxy Storage { get; }
         public MainForm Form { get; }
         public TreeView Tree => GetField<TreeView>(Form, "_tree");
@@ -242,14 +353,25 @@ public sealed partial class MainFormInteractionTests
         {
             Directory.CreateDirectory(_directory);
             Store = new RecordingProfileStore(new([First, Second], [Group]));
+            Configuration = new RecordingExplorerStore(Store)
+            {
+                Credentials = [new CredentialProfile
+                {
+                    Id = SharedCredentialId, Name = "Test shared credential",
+                    Provider = CredentialProviderKind.S3Compatible, Kind = CredentialKind.AccessKeyPair,
+                    AccessKeyId = "test-access", Secret = "test-secret"
+                }]
+            };
             var storage = DispatchProxy.Create<IS3StorageService, FakeStorageProxy>();
             Storage = (FakeStorageProxy)(object)storage;
             _queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(_directory, "tasks.json")), new NeverRunExecutor());
-            Form = CreateForm(_queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(_directory, "logs")), Store, storage: storage);
+            Form = CreateForm(_queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(_directory, "logs")), Store,
+                storage: storage, configurationStore: Configuration);
             _ = Form.Handle;
             _ = Tree.Handle;
             SetField(Form, "_profiles", Store.Saved.Profiles);
             SetField(Form, "_profileGroups", Store.Saved.Groups);
+            SetField(Form, "_credentials", Configuration.Credentials);
             InvokeInstance(Form, "PopulateProfiles");
         }
 
@@ -269,11 +391,37 @@ public sealed partial class MainFormInteractionTests
 
         private static ConnectionProfile TestAccount(string name, int order) => ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with
         {
-            Name = name, Endpoint = "https://storage.example.test", AccessKey = "test-access", SecretKey = "test-secret", SortOrder = order
+            Name = name, Endpoint = "https://storage.example.test", CredentialId = SharedCredentialId,
+            AccessKey = "test-access", SecretKey = "test-secret", SortOrder = order
         };
 
         private static IEnumerable<TreeNode> MainFormNodes(TreeNodeCollection nodes) =>
             nodes.Cast<TreeNode>().SelectMany(node => new[] { node }.Concat(MainFormNodes(node.Nodes)));
+    }
+
+    private sealed class RecordingExplorerStore(RecordingProfileStore profiles) : IExplorerConfigurationStore
+    {
+        public CdnConfiguration Cdn { get; set; } = CdnConfiguration.Empty;
+        public IReadOnlyList<CredentialProfile> Credentials { get; set; } = [];
+        public Task<ExplorerConfiguration> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExplorerConfiguration(profiles.Saved, Cdn, Credentials)
+                .ToPersistentSnapshot().ResolveCredentialReferences());
+        public async Task SaveAsync(ExplorerConfiguration configuration, CancellationToken cancellationToken = default) =>
+            await SaveCoreAsync(configuration, cancellationToken);
+        private async Task<ExplorerConfiguration> SaveCoreAsync(
+            ExplorerConfiguration configuration, CancellationToken cancellationToken)
+        {
+            // Mirror the canonical store contract: runtime keys are never authoritative,
+            // and UpdateAsync returns the same freshly resolved snapshot that was saved.
+            var resolved = configuration.ToPersistentSnapshot().ResolveCredentialReferences();
+            await profiles.SaveConfigurationAsync(resolved.Storage, cancellationToken);
+            Cdn = resolved.Cdn;
+            Credentials = resolved.CredentialVault;
+            return resolved;
+        }
+        public async Task<ExplorerConfiguration> UpdateAsync(
+            Func<ExplorerConfiguration, ExplorerConfiguration> update, CancellationToken cancellationToken = default) =>
+            await SaveCoreAsync(update(await LoadAsync(cancellationToken)), cancellationToken);
     }
 
     private sealed class RecordingProfileStore(ConnectionProfileConfiguration initial) : IProfileStore
@@ -281,6 +429,7 @@ public sealed partial class MainFormInteractionTests
         public ConnectionProfileConfiguration Saved { get; private set; } = initial;
         public Func<Task>? BeforeSave { get; set; }
         public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(Saved.Profiles);
+        public Task<ConnectionProfileConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default) => Task.FromResult(Saved);
         public Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default) =>
             SaveConfigurationAsync(Saved with { Profiles = profiles.ToArray() }, cancellationToken);
         public async Task SaveConfigurationAsync(ConnectionProfileConfiguration configuration, CancellationToken cancellationToken = default)

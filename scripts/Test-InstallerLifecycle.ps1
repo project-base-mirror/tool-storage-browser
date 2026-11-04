@@ -25,12 +25,15 @@ function Invoke-Msi {
     param(
         [Parameter(Mandatory)][ValidateSet("Install", "Uninstall")][string]$Action,
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$LogPath
+        [Parameter(Mandatory)][string]$LogPath,
+        [switch]$ReuseRegisteredDirectory
     )
     $verb = if ($Action -eq "Install") { "/i" } else { "/x" }
     $arguments = @($verb, "`"$Path`"", "/qn", "/norestart", "/l*v", "`"$LogPath`"")
     if ($Action -eq "Install") {
-        $arguments += "APPLICATIONFOLDER=`"$InstallDirectory`""
+        if (-not $ReuseRegisteredDirectory) {
+            $arguments += "APPLICATIONFOLDER=`"$InstallDirectory`""
+        }
         $arguments += "INSTALLDESKTOPSHORTCUT=0"
     }
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" `
@@ -112,7 +115,7 @@ try {
         Test-InstalledApplication
     }
 
-    Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log")
+    Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log") -ReuseRegisteredDirectory:([bool]$PreviousMsi)
     $installed = $true
     Test-InstalledApplication -RequireUpdater -RequireStableStartMenuShortcut
 

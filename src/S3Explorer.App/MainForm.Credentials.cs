@@ -37,16 +37,14 @@ internal sealed partial class MainForm
         {
             var plan = dialog.ChangePlan
                 ?? throw new InvalidOperationException("凭据更改尚未确认。");
-            var updated = await _configurationStore.UpdateAsync(current =>
-                plan.Apply(current, clearIncompatibleReferences: true));
-            _profiles = updated.Storage.Profiles;
-            _profileGroups = updated.Storage.Groups;
-            _cdnConfiguration = updated.Cdn;
-            _credentials = updated.CredentialVault;
-            if (_currentProfile is not null)
-                _currentProfile = _profiles.FirstOrDefault(value => value.Id == _currentProfile.Id);
-            PopulateProfiles();
-            UpdateCommandStates();
+            await _profileConfigurationGate.WaitAsync();
+            try
+            {
+                var updated = await _configurationStore.UpdateAsync(current =>
+                    plan.Apply(current, clearIncompatibleReferences: true));
+                ApplyConfiguration(updated);
+            }
+            finally { _profileConfigurationGate.Release(); }
             MessageBox.Show(this, "凭据更改已保存。", "凭据中心", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)

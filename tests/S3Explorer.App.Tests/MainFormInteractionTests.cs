@@ -365,7 +365,8 @@ public sealed partial class MainFormInteractionTests
         SimpleFileLogger logger,
         IProfileStore profiles,
         Func<string, CancellationToken, Task>? clipboardWriter = null,
-        IS3StorageService? storage = null)
+        IS3StorageService? storage = null,
+        IExplorerConfigurationStore? configurationStore = null)
     {
         var cdnQueue = new PersistentCdnJobQueue(new EmptyCdnJobStore(), new NeverRunCdnExecutor());
         var updateChecker = new GitHubUpdateChecker(cachePath: Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"));
@@ -378,7 +379,7 @@ public sealed partial class MainFormInteractionTests
             runtime,
             new EmptyFolderSyncStore(),
             updateChecker,
-            null!,
+            configurationStore!,
             new EmptyCdnConfigurationStore(),
             null!,
             null!,

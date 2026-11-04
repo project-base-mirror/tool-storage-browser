@@ -808,7 +808,13 @@ public sealed class ConnectionArchiveService
 
         var mergedConfiguration = new CdnConfiguration(cdnProfiles, bindings);
         CdnConfigurationValidator.EnsureValid(mergedConfiguration, credentials);
-        return new ConnectionArchiveMergeResult(profiles, mergedConfiguration, credentials);
+        // A replaced vault entry can be shared by profiles outside the import selection.
+        // Refresh every reference so the preview/runtime result agrees with the saved vault.
+        var resolvedProfiles = profiles.Select(profile =>
+            profile.CredentialId is not null || profile.AwsExternalIdCredentialId is not null
+                ? ExplorerConfiguration.ResolveStorageCredentialReferences(profile, credentials)
+                : profile).ToArray();
+        return new ConnectionArchiveMergeResult(resolvedProfiles, mergedConfiguration, credentials);
     }
 
     private ArchiveEnvelope ReadEnvelope(ReadOnlySpan<byte> archive)

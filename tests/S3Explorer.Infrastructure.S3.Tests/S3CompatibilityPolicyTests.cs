@@ -20,6 +20,31 @@ public sealed class S3CompatibilityPolicyTests
     }
 
     [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, "AccessDenied")]
+    [InlineData(HttpStatusCode.Forbidden, "InvalidAccessKeyId")]
+    [InlineData(HttpStatusCode.Forbidden, "SignatureDoesNotMatch")]
+    [InlineData(HttpStatusCode.Forbidden, "ExpiredToken")]
+    [InlineData(HttpStatusCode.Forbidden, "AllAccessDisabled")]
+    [InlineData(HttpStatusCode.Forbidden, "")]
+    public void AuthenticationFailuresAreNeverRestrictedListingSuccess(HttpStatusCode status, string code)
+    {
+        Assert.False(S3CompatibilityPolicy.IsRestrictedListBuckets(new AmazonS3Exception("denied")
+        {
+            StatusCode = status, ErrorCode = code
+        }));
+    }
+
+    [Theory]
+    [InlineData(0, 10L * 1024 * 1024 * 1024, true)]
+    [InlineData(6L * 1024 * 1024 * 1024, 10L * 1024 * 1024 * 1024, false)]
+    [InlineData(5L * 1024 * 1024 * 1024, 10L * 1024 * 1024 * 1024, false)]
+    [InlineData(64L * 1024 * 1024, 64L * 1024 * 1024, false)]
+    public void ServiceHardCapsSinglePutSize(long length, long threshold, bool expected)
+    {
+        Assert.Equal(expected, S3StorageService.UseSingleUpload(length, threshold));
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.MethodNotAllowed, "MethodNotAllowed")]
     [InlineData(HttpStatusCode.NotImplemented, "NotImplemented")]
     [InlineData(HttpStatusCode.Forbidden, "AccessDenied")]

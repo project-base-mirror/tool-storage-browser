@@ -15,18 +15,18 @@ public readonly record struct S3Location(string Profile, string? Bucket, string 
         if (string.IsNullOrWhiteSpace(value) || !value.StartsWith("s3://", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var remainder = value[5..].Replace('\\', '/').Trim('/');
-        var parts = remainder.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0)
-            return false;
-
+        // Only URI separators are structural. Decode each field once and preserve the
+        // object key verbatim: %, repeated slashes, backslashes and spaces are data.
+        var parts = value[5..].Split('/', 3, StringSplitOptions.None);
+        if (parts[0].Length == 0) return false;
         var profile = Uri.UnescapeDataString(parts[0]);
-        var bucket = parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : null;
-        var prefix = parts.Length > 2 ? string.Join('/', parts.Skip(2).Select(Uri.UnescapeDataString)) : string.Empty;
-        if (prefix.Length > 0 && value.EndsWith('/'))
-            prefix += '/';
+        var bucket = parts.Length > 1 && parts[1].Length > 0 ? Uri.UnescapeDataString(parts[1]) : null;
+        var prefix = parts.Length > 2
+            ? string.Join('/', parts[2].Split('/').Select(Uri.UnescapeDataString))
+            : string.Empty;
+        if (bucket is null && prefix.Length > 0) return false;
 
-        result = new(profile, bucket, S3Path.NormalizePrefix(prefix));
+        result = new(profile, bucket, prefix);
         return true;
     }
 
@@ -49,7 +49,8 @@ public readonly record struct S3Location(string Profile, string? Bucket, string 
         var profile = Uri.EscapeDataString(Profile);
         if (Bucket is null)
             return $"s3://{profile}/";
-        return $"s3://{profile}/{Uri.EscapeDataString(Bucket)}/{Prefix}";
+        var prefix = string.Join('/', Prefix.Split('/').Select(Uri.EscapeDataString));
+        return $"s3://{profile}/{Uri.EscapeDataString(Bucket)}/{prefix}";
     }
 }
 
