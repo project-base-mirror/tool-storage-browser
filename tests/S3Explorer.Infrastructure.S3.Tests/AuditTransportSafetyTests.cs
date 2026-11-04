@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using Amazon.Runtime;
 using S3Explorer.Core;
@@ -20,6 +21,7 @@ public sealed class AuditTransportSafetyTests
         using (var gzip = new GZipStream(gzipBuffer, CompressionMode.Compress, leaveOpen: true))
             gzip.Write(Encoding.UTF8.GetBytes("Object storage must preserve these compressed bytes."));
         var bytes = gzipBuffer.ToArray();
+        var etag = Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -57,7 +59,7 @@ public sealed class AuditTransportSafetyTests
                 methods.Enqueue(method);
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(timeout.Token))) { }
                 var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Length: {bytes.Length}\r\nContent-Encoding: gzip\r\nETag: \"same\"\r\nConnection: close\r\n\r\n");
+                    $"HTTP/1.1 200 OK\r\nContent-Length: {bytes.Length}\r\nContent-Encoding: gzip\r\nETag: \"{etag}\"\r\nConnection: close\r\n\r\n");
                 await stream.WriteAsync(headers, timeout.Token);
                 if (method == "GET") await stream.WriteAsync(bytes, timeout.Token);
                 await stream.FlushAsync(timeout.Token);
@@ -163,7 +165,8 @@ public sealed class AuditTransportSafetyTests
                 Content = new ByteArrayContent(request.Method == HttpMethod.Head ? [] : new byte[] { 42 })
             };
             response.Content.Headers.ContentLength = 1;
-            response.Headers.ETag = new System.Net.Http.Headers.EntityTagHeaderValue("\"same\"");
+            response.Headers.ETag = new System.Net.Http.Headers.EntityTagHeaderValue(
+                "\"" + Convert.ToHexString(MD5.HashData(new byte[] { 42 })).ToLowerInvariant() + "\"");
             return response;
         });
         try

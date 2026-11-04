@@ -12,6 +12,44 @@ namespace S3Explorer.Infrastructure.Configuration.Tests;
 [SupportedOSPlatform("windows")]
 public sealed class ExplorerConfigurationStoreTests
 {
+    [Fact]
+    public async Task TreeReorderAfterCredentialRotationReturnsFreshResolvedProfiles()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        try
+        {
+            var store = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var credential = new CredentialProfile
+            {
+                Name = "shared", Provider = CredentialProviderKind.AmazonWebServices,
+                Kind = CredentialKind.AccessKeyPair, AccessKeyId = "old-access", Secret = "old-secret"
+            };
+            var first = new ConnectionProfile { Name = "first", CredentialId = credential.Id };
+            var second = new ConnectionProfile { Name = "second", CredentialId = credential.Id, SortOrder = 1 };
+            var group = new ConnectionGroup { Name = "Group" };
+            await store.SaveAsync(new(new([first, second], [group]), CdnConfiguration.Empty, [credential]), token);
+            var gui = new ExplorerProfileStore(store);
+            var baseline = await gui.LoadConfigurationAsync(token);
+            var cli = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            var rotated = credential with { AccessKeyId = "new-access", Secret = "new-secret" };
+            await cli.UpdateAsync(current => current with { CredentialVault = [rotated] }, token);
+            var proposed = baseline.PlaceProfile(first.Id, group.Id, 0);
+            Assert.Equal(0, proposed.Profiles.Single(value => value.Id == second.Id).SortOrder);
+            Assert.Equal(credential.Secret, proposed.Profiles.Single(value => value.Id == second.Id).SecretKey);
+
+            var saved = await gui.MergeConfigurationAsync(baseline, proposed, token);
+
+            Assert.All(saved.Profiles, value => Assert.Equal("new-access", value.AccessKey));
+            Assert.All(saved.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+            var reloaded = await store.LoadAsync(token);
+            Assert.Equal(rotated, Assert.Single(reloaded.CredentialVault));
+            Assert.All(reloaded.Storage.Profiles, value => Assert.Equal("new-secret", value.SecretKey));
+            Assert.Equal(group.Id, reloaded.Storage.Profiles.Single(value => value.Id == first.Id).GroupId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData("ciphertext")]
     [InlineData("authentication")]
