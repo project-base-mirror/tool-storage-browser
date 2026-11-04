@@ -1,16 +1,16 @@
 {
   "schemaVersion": 3,
-  "tagName": "v0.8.5",
-  "version": "0.8.5",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.5",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/S3Explorer-v0.8.5-win-x64.zip",
+  "tagName": "v0.8.6",
+  "version": "0.8.6",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.6",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/S3Explorer-v0.8.6-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/S3Explorer-v0.8.5-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/S3Explorer-v0.8.5-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/S3Explorer-v0.8.5-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/S3Explorer-v0.8.5-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/S3Explorer-v0.8.6-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/S3Explorer-v0.8.6-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/S3Explorer-v0.8.6-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/S3Explorer-v0.8.6-win-x64-setup.msi"
   },
-  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.5/SHA256SUMS.txt",
-  "notes": "新增账户分组快捷入口与拖拽排序；修复 Cloudflare R2 单文件、目录批量与分片上传的流式签名兼容问题，保留内容校验。",
-  "publishedAt": "2026-11-03T13:08:24+00:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.6/SHA256SUMS.txt",
+  "notes": "新增独立 Cloudflare R2 账户与通用 S3 上传签名设置；凭据变更可确认清除不兼容引用；切换模板保留自定义 Endpoint，CLI 同步支持。",
+  "publishedAt": "2026-11-03T23:57:33+00:00"
 }
