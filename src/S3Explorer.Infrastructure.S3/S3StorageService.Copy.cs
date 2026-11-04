@@ -187,7 +187,7 @@ public sealed partial class S3StorageService
                 {
                     BucketName = sourceBucket, Key = sourceKey, VersionId = source.VersionId
                 }, cancellationToken).ConfigureAwait(false);
-                request.TagSet = tags.Tagging ?? [];
+                request.TagSet = tags.Tagging is { Count: > 0 } ? tags.Tagging : null;
             }
             var initiate = await client.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
             checkpoint = new MultipartUploadCheckpoint(initiate.UploadId, partSize, [],

@@ -34,6 +34,7 @@ public sealed class R2UploadProtocolTests
             using var recording = new RecordingHttpFactory();
             var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
             await service.UploadFileAsync(Profile() with { ServiceType = type, UploadSigningMode = mode }, "bucket", "目录/file + %.bin", path, "STANDARD", Context(), token);
+            Assert.All(recording.Requests, request => Assert.Null(request.Tagging));
             var uploads = recording.Requests.Where(request => request.Method == "PUT").OrderBy(request => request.Part).ToArray();
             Assert.Equal(length >= 5 * 1024 * 1024 ? 3 : 1, uploads.Length);
             Assert.Equal(bytes, uploads.SelectMany(request => request.Bytes).ToArray());
@@ -68,11 +69,78 @@ public sealed class R2UploadProtocolTests
             Assert.Equal(5, recording.Requests.Count);
             Assert.All(recording.Requests, request =>
             {
+                Assert.Null(request.Tagging);
                 Assert.Equal("UNSIGNED-PAYLOAD", request.PayloadHash);
                 Assert.Equal(Convert.ToBase64String(MD5.HashData(request.Bytes)), request.Md5);
                 Assert.DoesNotContain("aws-chunked", request.Encoding);
             });
             Assert.Single(recording.Requests, request => request.Bytes.Length == 0);
+        }
+        finally { File.Delete(path); }
+    }
+
+    public static TheoryData<S3ServiceType, UploadSigningMode, bool, int> TaggingCases
+    {
+        get
+        {
+            var cases = new TheoryData<S3ServiceType, UploadSigningMode, bool, int>();
+            foreach (var provider in Enum.GetValues<S3ServiceType>())
+                foreach (var mode in provider == S3ServiceType.CloudflareR2
+                    ? Enum.GetValues<UploadSigningMode>() : [UploadSigningMode.Auto])
+                    foreach (var multipart in new[] { false, true })
+                        foreach (var tags in new[] { 0, 1, 2, 3 })
+                            cases.Add(provider, mode, multipart, tags);
+            return cases;
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(TaggingCases))]
+    public async Task ActualSdkRequestsOmitEmptyTagsAndPreserveNonemptyTags(
+        S3ServiceType provider, UploadSigningMode mode, bool multipart, int tagsCase)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var path = Path.GetTempFileName();
+        IReadOnlyList<ObjectTag>? tags = tagsCase switch
+        {
+            0 => null,
+            1 => [],
+            2 => [new(" ", " ")], // Normalization also removes blank editor rows.
+            _ => [new("key with space", "value /+&= %"), new("empty", ""), new("环境", "开发")]
+        };
+        try
+        {
+            await File.WriteAllBytesAsync(path, new byte[multipart ? 5 * 1024 * 1024 + 1 : 137], token);
+            using var recording = new RecordingHttpFactory();
+            var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
+            await service.UploadFileAsync(Profile() with { ServiceType = provider, UploadSigningMode = mode }, "bucket", "tagged", path,
+                "STANDARD", new ObjectWriteHeaders(ContentType: "application/test", CacheControl: "max-age=123",
+                    Metadata: new Dictionary<string, string> { ["custom"] = "preserved" }, Tags: tags), Context(), token);
+
+            var creation = Assert.Single(recording.Requests, request => multipart
+                ? request.Method == "POST" && request.Query.Contains("uploads")
+                : request.Method == "PUT");
+            Assert.Equal("application/test", creation.Headers["Content-Type"]);
+            Assert.Equal("max-age=123", creation.Headers["Cache-Control"]);
+            Assert.Equal("preserved", creation.Headers["x-amz-meta-custom"]);
+            Assert.True(creation.Authenticated);
+            if (tagsCase < 3)
+                Assert.All(recording.Requests, request => Assert.Null(request.Tagging));
+            else
+            {
+                Assert.Equal("key%20with%20space=value%20%2F%2B%26%3D%20%25&empty=&%E7%8E%AF%E5%A2%83=%E5%BC%80%E5%8F%91",
+                    creation.Tagging);
+                Assert.All(recording.Requests.Where(request => !ReferenceEquals(request, creation)),
+                    request => Assert.Null(request.Tagging));
+            }
+            if (multipart)
+            {
+                Assert.Equal(4, recording.Requests.Count); // Initiate, two parts, complete.
+                Assert.Equal(2, recording.Requests.Count(request => request.Method == "PUT" && request.Part > 0));
+                Assert.Single(recording.Requests, request => request.Method == "POST" && request.Query.Contains("uploadId="));
+            }
+            else
+                Assert.Single(recording.Requests);
         }
         finally { File.Delete(path); }
     }
@@ -182,7 +250,11 @@ public sealed class R2UploadProtocolTests
         new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
 
     private sealed record CapturedRequest(string Method, int Part, byte[] Bytes, string PayloadHash,
-        string? Md5, string Encoding, long? ContentLength, bool Authenticated);
+        string? Md5, string Encoding, long? ContentLength, bool Authenticated, string Query,
+        IReadOnlyDictionary<string, string> Headers)
+    {
+        public string? Tagging => Headers.GetValueOrDefault("x-amz-tagging");
+    }
 
     private sealed class RecordingHttpFactory : HttpClientFactory, IDisposable
     {
@@ -203,12 +275,16 @@ public sealed class R2UploadProtocolTests
             var query = request.RequestUri!.Query;
             var partValue = query.TrimStart('?').Split('&').FirstOrDefault(value => value.StartsWith("partNumber="))?.Split('=')[1];
             var part = partValue is null ? 0 : int.Parse(partValue);
+            var headers = request.Headers.AsEnumerable();
+            if (request.Content is not null)
+                headers = headers.Concat(request.Content.Headers);
             requests.Add(new(request.Method.Method, part, bytes,
                 request.Headers.TryGetValues("x-amz-content-sha256", out var hash) ? hash.Single() : "",
                 request.Content?.Headers.ContentMD5 is { } md5 ? Convert.ToBase64String(md5) : null,
                 string.Join(",", request.Content?.Headers.ContentEncoding ?? []), request.Content?.Headers.ContentLength,
                 request.Headers.NonValidated.TryGetValues("Authorization", out var authorization) &&
-                authorization.ToString().StartsWith("AWS4-HMAC-SHA256 ", StringComparison.Ordinal)));
+                authorization.ToString().StartsWith("AWS4-HMAC-SHA256 ", StringComparison.Ordinal), query,
+                headers.ToDictionary(header => header.Key, header => string.Join(",", header.Value), StringComparer.OrdinalIgnoreCase)));
             var xml = request.Method == HttpMethod.Post && query.Contains("uploads")
                 ? "<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>key</Key><UploadId>fake-upload</UploadId></InitiateMultipartUploadResult>"
                 : request.Method == HttpMethod.Post

@@ -274,7 +274,8 @@ public sealed partial class S3StorageService : IS3StorageService
                     ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
                     InputStream = throttled,
                     AutoCloseStream = false,
-                    TagSet = []
+                    // The SDK serializes an empty list as x-amz-tagging: ""; omit it instead.
+                    TagSet = headers.Tags is { Count: > 0 } ? [] : null
                 };
                 var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
                 if (resolvedStorageClass is not null)
@@ -943,7 +944,8 @@ public sealed partial class S3StorageService : IS3StorageService
                 BucketName = bucket,
                 Key = key,
                 ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
-                TagSet = []
+                // The SDK serializes an empty list as x-amz-tagging: ""; omit it instead.
+                TagSet = headers.Tags is { Count: > 0 } ? [] : null
             };
             var resolvedStorageClass = S3CompatibilityPolicy.ResolveStorageClass(storageClass);
             if (resolvedStorageClass is not null)

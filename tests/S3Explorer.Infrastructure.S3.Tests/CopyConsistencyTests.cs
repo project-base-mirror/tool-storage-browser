@@ -100,6 +100,22 @@ public sealed class CopyConsistencyTests
         Assert.True(client.Completed);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MultipartCopyOmitsTaggingHeaderWhenSourceHasNoTags(bool emptyList)
+    {
+        using var client = new CopyClient { Large = true, SourceTags = emptyList ? [] : null };
+        await S3StorageService.CopyOrMoveObjectAsync(client, Profile, "source", "key", "target", "copy", false,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(client.Initiate);
+        Assert.Null(client.Initiate.TagSet);
+        var serialized = Amazon.S3.Model.Internal.MarshallTransformations.InitiateMultipartUploadRequestMarshaller.Instance
+            .Marshall(client.Initiate);
+        Assert.DoesNotContain(serialized.Headers.Keys, key => string.Equals(key, "x-amz-tagging", StringComparison.OrdinalIgnoreCase));
+        Assert.True(client.Completed);
+    }
+
     [Fact]
     public async Task MultipartSourceChangeAbortsInsteadOfCompletingMixedContent()
     {
@@ -136,6 +152,7 @@ public sealed class CopyConsistencyTests
     private sealed class CopyClient() : AmazonS3Client(new AnonymousAWSCredentials(), new AmazonS3Config { ServiceURL = "http://127.0.0.1:1" })
     {
         public bool Large { get; init; }
+        public List<Tag>? SourceTags { get; init; } = [new Tag { Key = "tag", Value = "tag-value" }];
         public bool ReplaceAfterCopy { get; init; }
         public bool FailPart { get; init; }
         public bool TimeoutAfterDelete { get; init; }
@@ -182,7 +199,7 @@ public sealed class CopyConsistencyTests
         public override Task<GetObjectTaggingResponse> GetObjectTaggingAsync(GetObjectTaggingRequest request, CancellationToken cancellationToken = default)
         {
             Tags = request;
-            return Task.FromResult(new GetObjectTaggingResponse { Tagging = [new Tag { Key = "tag", Value = "tag-value" }] });
+            return Task.FromResult(new GetObjectTaggingResponse { Tagging = SourceTags });
         }
         public override Task<InitiateMultipartUploadResponse> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
         {
