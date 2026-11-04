@@ -48,6 +48,68 @@ public sealed class ObjectPropertiesDialogLayoutTests
     }
 
     [Fact]
+    public void MetadataCopyCommitsActiveCellAndPreservesUnchangedValues()
+    {
+        RunSta(() =>
+        {
+            var properties = Properties() with
+            {
+                VersionId = "v1", ServerSideEncryptionMethod = "AES256", CacheControl = " max-age=10 ",
+                Metadata = new Dictionary<string, string> { ["build"] = " before ", ["unchanged"] = " \u00a0 " }
+            };
+            using var dialog = new ObjectPropertiesDialog(properties, "https://s3.amazonaws.com",
+                storage: DispatchProxy.Create<IS3StorageService, NoCallsStorage>(),
+                profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
+            dialog.Show();
+            var tabs = Assert.Single(dialog.Controls.Cast<Control>().SelectMany(Flatten).OfType<TabControl>());
+            tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Metadata");
+            Application.DoEvents();
+            var grid = Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid"));
+            grid.CurrentCell = grid.Rows[0].Cells[1];
+            Assert.True(grid.BeginEdit(false));
+            Assert.IsType<DataGridViewTextBoxEditingControl>(grid.EditingControl).Text = " after ";
+
+            var headers = dialog.ReadMetadataEdits();
+            Assert.False(grid.IsCurrentCellInEditMode);
+            Assert.Equal(" after ", headers.Metadata!["build"]);
+            Assert.Equal(" \u00a0 ", headers.Metadata["unchanged"]);
+            Assert.Equal(" max-age=10 ", headers.CacheControl);
+            // Reading or dismissing the editor never starts a storage operation.
+            dialog.Close();
+        });
+    }
+
+    [Fact]
+    public void FullLengthKeyHasAValidDifferentCopySuggestion()
+    {
+        RunSta(() =>
+        {
+            var properties = Properties() with
+            {
+                Key = string.Concat(Enumerable.Repeat("\U0001F680", 256)),
+                VersionId = "v1", ServerSideEncryptionMethod = "AES256"
+            };
+            using var dialog = new ObjectPropertiesDialog(properties, "https://s3.amazonaws.com",
+                profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
+            var destination = Assert.IsType<TextBox>(Find(dialog, "ObjectMetadataCopyDestination")).Text;
+            ObjectMetadataCopyPolicy.ValidateDestination(properties, destination);
+        });
+    }
+
+    [Fact]
+    public void CopyFailureGuidanceDoesNotSuggestLocalDiskFixesOrBlindRetry()
+    {
+        foreach (var failure in Enum.GetValues<ObjectMetadataCopyFailure>())
+        {
+            var error = new ObjectMetadataCopyException(failure, new TimeoutException());
+            var suggestion = ErrorDialog.Suggest(error);
+            Assert.Contains("检查目标", suggestion);
+            Assert.Contains("结果未确认不代表未创建副本", suggestion);
+            Assert.DoesNotContain("磁盘", suggestion);
+        }
+    }
+
+    [Fact]
     public void GeneralFieldsAndDownloadActionsRemainReadableAtLargeText()
     {
         RunSta(() =>

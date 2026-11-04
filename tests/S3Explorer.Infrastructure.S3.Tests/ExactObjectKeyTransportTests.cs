@@ -10,7 +10,7 @@ using Xunit;
 
 namespace S3Explorer.Infrastructure.S3.Tests;
 
-public sealed class ExactObjectKeyTransportTests
+public sealed partial class ExactObjectKeyTransportTests
 {
     [Theory]
     [InlineData("https://s3.example.test/bucket", "/bucket//leading//file")]
@@ -79,6 +79,7 @@ public sealed class ExactObjectKeyTransportTests
     {
         using var transport = new CaptureTransport(request =>
         {
+            AssertValidSignature(request, "us-east-1");
             Assert.Equal(expectedHost, request.RequestUri!.Host);
             Assert.Equal(expectedPath, request.RequestUri.AbsolutePath);
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
@@ -131,7 +132,7 @@ public sealed class ExactObjectKeyTransportTests
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
         });
         var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = transport });
-        var operation = service.ObjectExistsAsync(Profile with { FollowTemporaryRedirects = follow },
+        var operation = service.ObjectExistsAsync(Profile with { ServiceType = S3ServiceType.AmazonS3, Endpoint = "https://s3.us-east-1.amazonaws.com", FollowTemporaryRedirects = follow },
             "bucket", "file", TestContext.Current.CancellationToken);
         if (follow) Assert.True(await operation);
         else await Assert.ThrowsAsync<NotSupportedException>(() => operation);
@@ -170,14 +171,14 @@ public sealed class ExactObjectKeyTransportTests
         var headerNames = signedHeaders.Split(';');
         Assert.Contains("host", headerNames);
         Assert.Contains("x-amz-date", headerNames);
-        Assert.Empty(request.RequestUri!.Query);
+
         Assert.Equal(request.RequestUri.Authority, Header("host"));
         Assert.Equal(credential[1], Header("x-amz-date")[..8]);
         Assert.Equal(headerNames.Order(StringComparer.Ordinal), headerNames);
         var canonicalHeaders = string.Concat(headerNames.Select(name =>
             name + ":" + string.Join(' ', Header(name).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)) + "\n"));
         var canonicalRequest = string.Join("\n", request.Method.Method, request.RequestUri.AbsolutePath,
-            "", canonicalHeaders, signedHeaders, Header("x-amz-content-sha256"));
+            CanonicalQuery(request.RequestUri), canonicalHeaders, signedHeaders, Header("x-amz-content-sha256"));
         var scope = string.Join('/', credential[1..]);
         var stringToSign = string.Join("\n", algorithm, Header("x-amz-date"), scope,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))).ToLowerInvariant());
@@ -188,23 +189,6 @@ public sealed class ExactObjectKeyTransportTests
             Encoding.UTF8.GetBytes(stringToSign))).ToLowerInvariant();
         Assert.Equal(expectedSignature, parameters["Signature"]);
         return authorization;
-    }
-
-    [Theory]
-    [InlineData("/")]
-    [InlineData("//leading")]
-    public async Task LeadingKeyPresignedUrlFailsClosed(string key)
-    {
-        using var transport = new CaptureTransport(_ => throw new InvalidOperationException("No network call expected."));
-        var factory = new S3ClientFactory { HttpClientFactoryOverride = transport };
-        var service = new S3StorageService(factory);
-        var profile = Profile with { ServiceType = S3ServiceType.AmazonS3 };
-        Assert.Throws<NotSupportedException>(() => service.CreatePresignedUrl(profile, "bucket", key, TimeSpan.FromHours(1)));
-        using var client = factory.Create(profile);
-        var request = new GetPreSignedUrlRequest { BucketName = "bucket", Key = key, Expires = DateTime.UtcNow.AddHours(1) };
-        Assert.Throws<NotSupportedException>(() => client.GetPreSignedURL(request));
-        await Assert.ThrowsAsync<NotSupportedException>(() => client.GetPreSignedURLAsync(request));
-        Assert.Empty(transport.Requests);
     }
 
     [Theory]

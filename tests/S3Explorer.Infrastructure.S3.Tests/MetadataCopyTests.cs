@@ -165,6 +165,35 @@ public sealed class MetadataCopyTests
     }
 
     [Fact]
+    public async Task ReadAndCopyPreserveUneditedMetadataAndHeaderValues()
+    {
+        using var client = new Client();
+        var response = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest());
+        response.Metadata.Add("padded", "  keep this value  ");
+        response.Metadata.Add("blank", " ");
+        response.Headers.CacheControl = " max-age=10 ";
+        response.Headers.ContentEncoding = " gzip ";
+        response.Headers.ContentDisposition = " inline ";
+        var properties = S3StorageService.CreateObjectProperties(Source.Bucket, Source.Key, response);
+        Assert.Equal("  keep this value  ", properties.Metadata["padded"]);
+        Assert.Equal(" ", properties.Metadata["blank"]);
+        Assert.Equal(response.Headers.CacheControl, properties.CacheControl);
+        Assert.Equal(response.Headers.ContentEncoding, properties.ContentEncoding);
+        Assert.Equal(response.Headers.ContentDisposition, properties.ContentDisposition);
+
+        var headers = new ObjectWriteHeaders("text/plain", properties.CacheControl,
+            properties.ContentEncoding, properties.ContentDisposition, Metadata: properties.Metadata);
+        await S3StorageService.SaveObjectMetadataCopyAsync(client, Profile, properties, "copy", headers,
+            TestContext.Current.CancellationToken);
+        var wire = CopyObjectRequestMarshaller.Instance.Marshall(client.Copy!);
+        Assert.Equal("  keep this value  ", wire.Headers["x-amz-meta-padded"]);
+        Assert.Equal(" ", wire.Headers["x-amz-meta-blank"]);
+        Assert.Equal(headers.CacheControl, wire.Headers["Cache-Control"]);
+        Assert.Equal(headers.ContentEncoding, wire.Headers["Content-Encoding"]);
+        Assert.Equal(headers.ContentDisposition, wire.Headers["Content-Disposition"]);
+    }
+
+    [Fact]
     public async Task AbsentExpiresDoesNotInjectSdkYearOneHeader()
     {
         using var client = new Client();
@@ -180,7 +209,10 @@ public sealed class MetadataCopyTests
     public async Task DestinationRaceNeverFallsBackOrDeletesSource(HttpStatusCode status)
     {
         using var client = new Client { CopyErrorStatus = status };
-        await Assert.ThrowsAsync<AmazonS3Exception>(() => Save(client));
+        var error = await Assert.ThrowsAsync<ObjectMetadataCopyException>(() => Save(client));
+        Assert.Equal(ObjectMetadataCopyFailure.ConditionNotMet, error.Failure);
+        Assert.Equal(status, Assert.IsType<AmazonS3Exception>(error.InnerException).StatusCode);
+        Assert.Contains("检查目标", error.Message);
         Assert.Equal(1, client.CopyCalls);
         Assert.Equal(0, client.DeleteCalls);
         Assert.Equal("*", client.Copy!.IfNoneMatch);
@@ -190,9 +222,57 @@ public sealed class MetadataCopyTests
     public async Task UnknownCopyOutcomeNeverDeletesOrTriesAnUnguardedWrite()
     {
         using var client = new Client { TimeoutAfterCopy = true };
-        await Assert.ThrowsAsync<TimeoutException>(() => Save(client));
+        var error = await Assert.ThrowsAsync<ObjectMetadataCopyException>(() => Save(client));
+        Assert.Equal(ObjectMetadataCopyFailure.OutcomeUnknown, error.Failure);
+        Assert.IsType<TimeoutException>(error.InnerException);
+        Assert.Contains("可能已经创建", error.Message);
         Assert.Equal(1, client.CopyCalls);
         Assert.Equal(0, client.DeleteCalls);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task ServerFailureAfterDispatchIsReportedAsUncertain(HttpStatusCode status)
+    {
+        using var client = new Client { CopyErrorStatus = status };
+        var error = await Assert.ThrowsAsync<ObjectMetadataCopyException>(() => Save(client));
+        Assert.Equal(ObjectMetadataCopyFailure.OutcomeUnknown, error.Failure);
+        Assert.Equal(1, client.CopyCalls);
+        Assert.Equal(0, client.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task PermissionFailureIsNotMisreportedAsDestinationConflict()
+    {
+        using var client = new Client { CopyErrorStatus = HttpStatusCode.Forbidden };
+        var error = await Assert.ThrowsAsync<AmazonS3Exception>(() => Save(client));
+        Assert.Equal(HttpStatusCode.Forbidden, error.StatusCode);
+        Assert.Equal(1, client.CopyCalls);
+    }
+
+    [Fact]
+    public async Task CancellationAfterDispatchDoesNotClaimTheCopyWasRolledBack()
+    {
+        using var client = new Client { CancelAfterCopy = true };
+        var error = await Assert.ThrowsAsync<ObjectMetadataCopyException>(() => Save(client));
+        Assert.Equal(ObjectMetadataCopyFailure.OutcomeUnknown, error.Failure);
+        Assert.IsType<OperationCanceledException>(error.InnerException);
+        Assert.Equal(1, client.CopyCalls);
+        Assert.Equal(0, client.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task CancellationBeforeDispatchMakesNoRequests()
+    {
+        using var client = new Client();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            S3StorageService.SaveObjectMetadataCopyAsync(client, Profile, Source, "copy",
+                new ObjectWriteHeaders(), cancellation.Token));
+        Assert.Null(client.Head);
+        Assert.Equal(0, client.CopyCalls);
     }
 
     [Fact]
@@ -217,6 +297,7 @@ public sealed class MetadataCopyTests
         public bool HasLockConfiguration { get; init; }
         public HttpStatusCode? CopyErrorStatus { get; init; }
         public bool TimeoutAfterCopy { get; init; }
+        public bool CancelAfterCopy { get; init; }
         public string? Expires { get; init; }
         public GetObjectMetadataRequest? Head { get; private set; }
         public CopyObjectRequest? Copy { get; private set; }
@@ -262,6 +343,7 @@ public sealed class MetadataCopyTests
             Copy = request;
             CopyCalls++;
             if (TimeoutAfterCopy) throw new TimeoutException("outcome unknown");
+            if (CancelAfterCopy) throw new OperationCanceledException("cancelled after dispatch");
             if (CopyErrorStatus is { } status) throw new AmazonS3Exception("copy race") { StatusCode = status };
             return Task.FromResult(new CopyObjectResponse { VersionId = "copy-v1" });
         }

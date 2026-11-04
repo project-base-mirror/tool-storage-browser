@@ -108,7 +108,6 @@ public sealed class ConditionalCopyDestinationTests
     }
 
     [Theory]
-    [InlineData(S3ServiceType.CloudflareR2)]
     [InlineData(S3ServiceType.SupabaseStorage)]
     [InlineData(S3ServiceType.Custom)]
     public async Task UnsupportedDestinationConditionsFailBeforeAnyRequest(S3ServiceType provider)

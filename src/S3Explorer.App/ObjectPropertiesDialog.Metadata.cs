@@ -35,7 +35,7 @@ internal sealed partial class ObjectPropertiesDialog
         _metadataGrid.ReadOnly = !capability.Supported;
         _metadataGrid.AllowUserToAddRows = capability.Supported;
         _metadataGrid.AllowUserToDeleteRows = capability.Supported;
-        _metadataDestination.Text = value.Key + ".metadata-copy";
+        _metadataDestination.Text = ObjectMetadataCopyPolicy.SuggestDestinationKey(value.Key);
         _metadataDestination.ReadOnly = !capability.Supported;
         _metadataReason.MaximumSize = new Size(520, 0);
         _metadataSave.Click += async (_, _) => await SaveMetadataAsync();
@@ -148,20 +148,7 @@ internal sealed partial class ObjectPropertiesDialog
         try
         {
             ObjectMetadataCopyPolicy.ValidateDestination(_objectProperties, destinationKey);
-            DateTimeOffset? expires = null;
-            if (!string.IsNullOrWhiteSpace(_expiresUtc.Text))
-            {
-                if (!DateTimeOffset.TryParse(_expiresUtc.Text.Trim(), out var parsedExpires))
-                    throw new ArgumentException("Expires UTC 必须为空或有效的 ISO 8601 日期时间。");
-                expires = parsedExpires.ToUniversalTime();
-            }
-            headers = new ObjectWriteHeaders(
-                _contentType.Text,
-                _cacheControl.Text,
-                _contentEncoding.Text,
-                _contentDisposition.Text,
-                expires,
-                ReadMetadataGrid()).ValidateAndNormalize();
+            headers = ReadMetadataEdits();
         }
         catch (Exception exception)
         {
@@ -173,7 +160,8 @@ internal sealed partial class ObjectPropertiesDialog
                 this,
                 $"将对话框中的 Header / Metadata 快照另存到同 Bucket 的新 Key。\r\n" +
                 "源对象保持不变；已存在的当前目标不会被覆盖。复制可能产生请求费、存储费与新版本。\r\n" +
-                "源版本的 Tags 与非编辑 Header 由服务端保留；新对象受目标 Key 的 Bucket Policy / 生命周期规则约束。\r\n" +
+                "固定版本的内容与非编辑 Header 保留；Tags 使用复制执行时该版本的服务端值，不是打开窗口时的快照。\r\n" +
+                "新对象受目标 Key 的 Bucket Policy / 生命周期规则约束。\r\n" +
                 "仅支持 SSE-S3、禁用 ACL 且无 Object Lock 的 Bucket；无法验证时会停止。\r\n\r\n" +
                 $"来源：{ObjectLocation()}\r\n固定版本：{_objectProperties.VersionId}\r\n目标：s3://{_objectProperties.Bucket}/{destinationKey}",
                 "确认另存 Metadata 快照",
@@ -187,6 +175,24 @@ internal sealed partial class ObjectPropertiesDialog
             await _storage.SaveObjectMetadataCopyAsync(_profile, source, destinationKey, headers, token);
             _metadataReason.Text = $"已另存为 s3://{source.Bucket}/{destinationKey}。源对象未改变；关闭后刷新列表可查看副本。";
         });
+    }
+
+    internal ObjectWriteHeaders ReadMetadataEdits()
+    {
+        // The user may press Save while the current cell is still in edit mode.
+        // Read its committed value, not the cell's previous cached value.
+        if (!_metadataGrid.EndEdit())
+            throw new ArgumentException("请先完成当前 Metadata 单元格的编辑。");
+        DateTimeOffset? expires = null;
+        if (!string.IsNullOrWhiteSpace(_expiresUtc.Text))
+        {
+            if (!DateTimeOffset.TryParse(_expiresUtc.Text.Trim(), out var parsedExpires))
+                throw new ArgumentException("Expires UTC 必须为空或有效的 ISO 8601 日期时间。");
+            expires = parsedExpires.ToUniversalTime();
+        }
+        return new ObjectWriteHeaders(
+            _contentType.Text, _cacheControl.Text, _contentEncoding.Text, _contentDisposition.Text,
+            expires, ReadMetadataGrid()).ValidateForMetadataCopy();
     }
 
     private async Task LoadObjectTagsAsync(bool force = false)
@@ -268,6 +274,14 @@ internal sealed partial class ObjectPropertiesDialog
         UseWaitCursor = true;
         try { await action(_objectLockCancellation.Token); }
         catch (OperationCanceledException) when (_objectLockCancellation.IsCancellationRequested) { }
+        catch (ObjectMetadataCopyException exception)
+        {
+            // Cancellation after dispatch is an uncertain write outcome, not a
+            // guaranteed rollback. A closed dialog must not open a new modal error.
+            if (IsDisposed || Disposing || _objectLockCancellation.IsCancellationRequested) return;
+            _metadataReason.Text = exception.Message;
+            ErrorDialog.ShowException(this, $"{operation}未确认", operation, exception, ObjectLocation());
+        }
         catch (Exception exception)
         {
             ErrorDialog.ShowException(this, $"{operation}失败", operation, exception, ObjectLocation());
@@ -280,15 +294,15 @@ internal sealed partial class ObjectPropertiesDialog
     }
 
     private IReadOnlyDictionary<string, string> ReadMetadataGrid() =>
-        ObjectMetadataValidator.Validate(ReadGrid(_metadataGrid)
+        ObjectMetadataValidator.ValidatePreservingValues(ReadGrid(_metadataGrid, preserveValues: true)
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase));
 
-    private static IReadOnlyList<KeyValuePair<string, string>> ReadGrid(DataGridView grid) =>
+    private static IReadOnlyList<KeyValuePair<string, string>> ReadGrid(DataGridView grid, bool preserveValues = false) =>
         grid.Rows.Cast<DataGridViewRow>()
             .Where(row => !row.IsNewRow)
             .Select(row => new KeyValuePair<string, string>(
                 row.Cells[0].Value?.ToString()?.Trim() ?? string.Empty,
-                row.Cells[1].Value?.ToString()?.Trim() ?? string.Empty))
+                (preserveValues ? row.Cells[1].Value?.ToString() : row.Cells[1].Value?.ToString()?.Trim()) ?? string.Empty))
             .Where(pair => pair.Key.Length > 0 || pair.Value.Length > 0)
             .ToArray();
 

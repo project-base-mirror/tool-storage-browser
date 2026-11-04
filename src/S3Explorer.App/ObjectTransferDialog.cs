@@ -38,8 +38,8 @@ internal sealed class ObjectTransferDialog : Form
         };
         Text = move ? "移动到" : "复制到";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(560, 275);
-        MinimumSize = new Size(500, 260);
+        ClientSize = new Size(560, move ? 335 : 275);
+        MinimumSize = new Size(500, move ? 320 : 260);
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
 
@@ -71,8 +71,10 @@ internal sealed class ObjectTransferDialog : Form
         AddRow(table, 2, "冲突处理：", _conflict);
         table.Controls.Add(new Label
         {
-            Text = $"将{(move ? "移动" : "复制")} {itemCount:N0} 个选中项。目标前缀可留空；文件夹会保留层级。",
-            AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 12, 3, 3)
+            Name = "ObjectTransferNotice",
+            Text = BuildTransferNotice(move, itemCount, profile?.ServiceType ?? S3ServiceType.AmazonS3),
+            Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.TopLeft,
+            ForeColor = SystemColors.GrayText, Margin = new Padding(3, 12, 3, 3)
         }, 1, 3);
         var buttons = new FlowLayoutPanel
         {
@@ -88,6 +90,16 @@ internal sealed class ObjectTransferDialog : Form
         {
             Shown += async (_, _) => await _bucket.RefreshAsync(profile, preserve: true);
         }
+    }
+
+    internal static string BuildTransferNotice(bool move, int itemCount, S3ServiceType serviceType = S3ServiceType.AmazonS3)
+    {
+        var text = $"将{(move ? "移动" : "复制")} {itemCount:N0} 个选中项。目标前缀可留空；文件夹会保留层级。";
+        if (move && !S3ProviderCapabilityRegistry.For(serviceType).ConditionalDelete.Supported)
+            return text + "\n\n" + S3ProviderCapabilityRegistry.For(serviceType).ConditionalDelete.Reason;
+        return move
+            ? text + "\n\n移动先复制，再按内容 ETag 条件删除，不是原子重命名。请避免并发修改源属性或目标；Metadata、标签和 ACL 的变化不受 ETag 保护。"
+            : text;
     }
 
     public ObjectTransferOptions? Options { get; private set; }

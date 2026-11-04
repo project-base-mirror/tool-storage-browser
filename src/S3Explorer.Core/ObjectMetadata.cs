@@ -39,25 +39,35 @@ public sealed record ObjectWriteHeaders(
 {
     public static ObjectWriteHeaders Empty { get; } = new();
 
-    public ObjectWriteHeaders ValidateAndNormalize()
+    public ObjectWriteHeaders ValidateAndNormalize() => Validate(preserveValues: false);
+
+    // A metadata copy edits an existing snapshot, not newly entered upload defaults.
+    // Trimming here would silently change unrelated values merely by pressing Save.
+    public ObjectWriteHeaders ValidateForMetadataCopy() => Validate(preserveValues: true);
+
+    private ObjectWriteHeaders Validate(bool preserveValues)
     {
-        var metadata = ObjectMetadataValidator.Validate(Metadata);
+        var metadata = preserveValues
+            ? ObjectMetadataValidator.ValidatePreservingValues(Metadata)
+            : ObjectMetadataValidator.Validate(Metadata);
         var tags = ObjectTagValidator.Validate(Tags);
         return this with
         {
-            ContentType = NormalizeHeader(ContentType, nameof(ContentType)),
-            CacheControl = NormalizeHeader(CacheControl, nameof(CacheControl)),
-            ContentEncoding = NormalizeHeader(ContentEncoding, nameof(ContentEncoding)),
-            ContentDisposition = NormalizeHeader(ContentDisposition, nameof(ContentDisposition)),
+            ContentType = NormalizeHeader(ContentType, nameof(ContentType), preserveValues),
+            CacheControl = NormalizeHeader(CacheControl, nameof(CacheControl), preserveValues),
+            ContentEncoding = NormalizeHeader(ContentEncoding, nameof(ContentEncoding), preserveValues),
+            ContentDisposition = NormalizeHeader(ContentDisposition, nameof(ContentDisposition), preserveValues),
             ExpiresUtc = ExpiresUtc?.ToUniversalTime(),
             Metadata = metadata,
             Tags = tags
         };
     }
 
-    private static string? NormalizeHeader(string? value, string name)
+    private static string? NormalizeHeader(string? value, string name, bool preserveValues)
     {
-        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        var normalized = preserveValues
+            ? (string.IsNullOrEmpty(value) ? null : value)
+            : (string.IsNullOrWhiteSpace(value) ? null : value.Trim());
         if (normalized?.IndexOfAny(['\r', '\n']) >= 0)
             throw new ArgumentException($"{name} 不能包含换行符。", name);
         return normalized;
@@ -69,13 +79,19 @@ public static class ObjectMetadataValidator
     private const int MaximumMetadataBytes = 2 * 1024;
 
     public static IReadOnlyDictionary<string, string> Validate(
-        IReadOnlyDictionary<string, string>? metadata)
+        IReadOnlyDictionary<string, string>? metadata) => Validate(metadata, preserveValues: false);
+
+    public static IReadOnlyDictionary<string, string> ValidatePreservingValues(
+        IReadOnlyDictionary<string, string>? metadata) => Validate(metadata, preserveValues: true);
+
+    private static IReadOnlyDictionary<string, string> Validate(
+        IReadOnlyDictionary<string, string>? metadata, bool preserveValues)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in metadata ?? new Dictionary<string, string>())
         {
             var key = NormalizeKey(pair.Key);
-            var value = pair.Value?.Trim() ?? string.Empty;
+            var value = (preserveValues ? pair.Value : pair.Value?.Trim()) ?? string.Empty;
             if (value.IndexOfAny(['\r', '\n']) >= 0)
                 throw new ArgumentException($"Metadata “{key}”的值不能包含换行符。", nameof(metadata));
             if (!result.TryAdd(key, value))
@@ -119,6 +135,26 @@ public sealed record ObjectCapabilities(
 public static class ObjectMetadataCopyPolicy
 {
     public const long MaximumBytes = 5L * 1024 * 1024 * 1024;
+
+    public static string SuggestDestinationKey(string sourceKey)
+    {
+        var candidate = WithSuffix(".metadata-copy");
+        // A full-length key might already equal its truncated-prefix suggestion.
+        return candidate == sourceKey ? WithSuffix(".metadata-copy-2") : candidate;
+
+        string WithSuffix(string suffix)
+        {
+            var prefix = new StringBuilder();
+            var remainingBytes = 1024 - Encoding.UTF8.GetByteCount(suffix);
+            foreach (var rune in sourceKey.EnumerateRunes())
+            {
+                if (rune.Utf8SequenceLength > remainingBytes) break;
+                prefix.Append(rune.ToString());
+                remainingBytes -= rune.Utf8SequenceLength;
+            }
+            return prefix.Append(suffix).ToString();
+        }
+    }
 
     public static BucketFeatureSupport For(S3ServiceType provider, ObjectProperties source)
     {

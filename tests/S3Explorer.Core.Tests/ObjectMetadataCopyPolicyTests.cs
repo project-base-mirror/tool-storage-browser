@@ -57,4 +57,32 @@ public sealed class ObjectMetadataCopyPolicyTests
         Assert.Throws<ArgumentException>(() => ObjectMetadataCopyPolicy.ValidateDestination(Source, "bad\0key"));
         Assert.Throws<ArgumentException>(() => ObjectMetadataCopyPolicy.ValidateDestination(Source, new string('中', 342)));
     }
+
+    [Theory]
+    [InlineData("/folder//object ")]
+    [InlineData("\U0001F680/")]
+    public void DestinationSuggestionPreservesShortKeyExactly(string sourceKey)
+    {
+        Assert.Equal(sourceKey + ".metadata-copy", ObjectMetadataCopyPolicy.SuggestDestinationKey(sourceKey));
+    }
+
+    [Fact]
+    public void DestinationSuggestionFitsUtf8LimitWithoutSplittingSurrogatesOrReusingSource()
+    {
+        string[] keys =
+        [
+            new string('a', 1024),
+            new string('中', 341),
+            string.Concat(Enumerable.Repeat("\U0001F680", 256)),
+            new string('a', 1010) + ".metadata-copy"
+        ];
+        foreach (var key in keys)
+        {
+            var suggestion = ObjectMetadataCopyPolicy.SuggestDestinationKey(key);
+            ObjectMetadataCopyPolicy.ValidateDestination(Source with { Key = key }, suggestion);
+            Assert.DoesNotContain('\uFFFD', suggestion);
+            Assert.Equal(suggestion, new System.Text.UTF8Encoding(false, true).GetString(
+                new System.Text.UTF8Encoding(false, true).GetBytes(suggestion)));
+        }
+    }
 }

@@ -42,7 +42,7 @@ public sealed class S3ClientFactory
         var config = CreateConfig(profile);
         var resolution = _credentialResolver.Resolve(profile, allowInteractiveSso);
         var client = new ExactObjectKeyS3Client(resolution.Credentials, config,
-            profile.FollowTemporaryRedirects, profile.ServiceType);
+            profile.FollowTemporaryRedirects, profile.ServiceType, !string.IsNullOrWhiteSpace(profile.CustomHostHeader));
         if (!string.IsNullOrWhiteSpace(profile.CustomHostHeader))
         {
             var customHost = profile.CustomHostHeader.Trim();

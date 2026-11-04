@@ -13,9 +13,11 @@ internal sealed class ErrorDialog : Form
         MinimumSize = new Size(560, 360);
         ShowInTaskbar = false;
 
-        var type = exception is AmazonS3Exception s3 ? s3.ErrorCode : exception.GetType().Name;
-        var status = exception is AmazonS3Exception aws ? $"{(int)aws.StatusCode} {aws.StatusCode}" : "—";
-        var requestId = exception is AmazonS3Exception request ? request.RequestId : "—";
+        var serviceError = exception as AmazonS3Exception ??
+            (exception as ObjectMetadataCopyException)?.InnerException as AmazonS3Exception;
+        var type = serviceError?.ErrorCode ?? exception.GetType().Name;
+        var status = serviceError is { } aws ? $"{(int)aws.StatusCode} {aws.StatusCode}" : "—";
+        var requestId = serviceError?.RequestId ?? "—";
         var safeOperation = SensitiveDataRedactor.Redact(operation);
         var safeLocation = SensitiveDataRedactor.Redact(location);
         var safeMessage = SensitiveDataRedactor.Redact(exception.Message);
@@ -77,8 +79,10 @@ internal sealed class ErrorDialog : Form
         table.Controls.Add(new TextBox { Text = value, ReadOnly = true, BorderStyle = BorderStyle.None, Multiline = true, Dock = DockStyle.Fill, BackColor = SystemColors.Control, Margin = new Padding(3, 6, 3, 3) }, 1, row);
     }
 
-    private static string Suggest(Exception exception)
+    internal static string Suggest(Exception exception)
     {
+        if (exception is ObjectMetadataCopyException)
+            return "保留当前编辑内容，先刷新并检查目标对象。结果未确认不代表未创建副本；不要直接覆盖、删除或改名重复提交。";
         if (exception is OperationCanceledException) return "操作已取消。";
         if (exception.Message.Contains("MinIO Endpoint", StringComparison.OrdinalIgnoreCase))
             return "请把 Endpoint 改为 MinIO S3 API 地址。默认 API 端口是 9000，默认 Console 端口是 9001。";

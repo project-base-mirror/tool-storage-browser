@@ -69,6 +69,17 @@ public sealed class S3ProviderCapabilityRegistryTests
     }
 
     [Fact]
+    public void SupabaseMoveExplainsSeparateNativeApiIdentityAndOwnership()
+    {
+        var feature = S3ProviderCapabilityRegistry.For(S3ServiceType.SupabaseStorage).ConditionalDelete;
+        Assert.False(feature.Supported);
+        Assert.Contains("应用外", feature.Reason, StringComparison.Ordinal);
+        Assert.Contains("REST 身份", feature.Reason, StringComparison.Ordinal);
+        Assert.Contains("5 GB", feature.Reason, StringComparison.Ordinal);
+        Assert.Contains("所有者", feature.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MetadataRewriteIsFailClosedUntilFullPreservationIsImplemented()
     {
         Assert.All(S3ProviderCapabilityRegistry.All, provider =>
