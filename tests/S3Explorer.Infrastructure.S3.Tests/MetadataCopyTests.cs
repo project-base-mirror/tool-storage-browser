@@ -168,7 +168,8 @@ public sealed class MetadataCopyTests
     public async Task ReadAndCopyPreserveUneditedMetadataAndHeaderValues()
     {
         using var client = new Client();
-        var response = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest());
+        var response = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest(),
+            TestContext.Current.CancellationToken);
         response.Metadata.Add("padded", "  keep this value  ");
         response.Metadata.Add("blank", " ");
         response.Headers.CacheControl = " max-age=10 ";
@@ -266,7 +267,7 @@ public sealed class MetadataCopyTests
     public async Task CancellationBeforeDispatchMakesNoRequests()
     {
         using var client = new Client();
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         cancellation.Cancel();
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             S3StorageService.SaveObjectMetadataCopyAsync(client, Profile, Source, "copy",

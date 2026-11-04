@@ -141,6 +141,8 @@ public sealed partial class ExactObjectKeyTransportTests
 
     private static string AssertValidSignature(HttpRequestMessage request, string expectedRegion)
     {
+        var uri = Assert.IsType<Uri>(request.RequestUri);
+        Assert.True(uri.IsAbsoluteUri);
         // The SDK adds this raw header without validation. Its semicolon-separated
         // SignedHeaders is not a generic HTTP auth-param token, so .NET's typed
         // Headers.Authorization parser can return null even when it is present.
@@ -163,7 +165,7 @@ public sealed partial class ExactObjectKeyTransportTests
             if (request.Headers.NonValidated.TryGetValues(name, out var header)) return header.ToString();
             if (request.Content is not null && request.Content.Headers.NonValidated.TryGetValues(name, out header))
                 return header.ToString();
-            if (name == "host") return request.RequestUri!.Authority;
+            if (name == "host") return uri.Authority;
             throw new InvalidOperationException("Signed header is missing: " + name);
         }
 
@@ -172,13 +174,13 @@ public sealed partial class ExactObjectKeyTransportTests
         Assert.Contains("host", headerNames);
         Assert.Contains("x-amz-date", headerNames);
 
-        Assert.Equal(request.RequestUri.Authority, Header("host"));
+        Assert.Equal(uri.Authority, Header("host"));
         Assert.Equal(credential[1], Header("x-amz-date")[..8]);
         Assert.Equal(headerNames.Order(StringComparer.Ordinal), headerNames);
         var canonicalHeaders = string.Concat(headerNames.Select(name =>
             name + ":" + string.Join(' ', Header(name).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)) + "\n"));
-        var canonicalRequest = string.Join("\n", request.Method.Method, request.RequestUri.AbsolutePath,
-            CanonicalQuery(request.RequestUri), canonicalHeaders, signedHeaders, Header("x-amz-content-sha256"));
+        var canonicalRequest = string.Join("\n", request.Method.Method, uri.AbsolutePath,
+            CanonicalQuery(uri), canonicalHeaders, signedHeaders, Header("x-amz-content-sha256"));
         var scope = string.Join('/', credential[1..]);
         var stringToSign = string.Join("\n", algorithm, Header("x-amz-date"), scope,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))).ToLowerInvariant());
