@@ -395,7 +395,8 @@ public static class ShellClipboardPublisher
     {
         var publication = Volatile.Read(ref current);
         return publication is not null && ReferenceEquals(publication.Data, data) &&
-            publication.OwnerWindow != IntPtr.Zero && GetClipboardOwner() == publication.OwnerWindow;
+            publication.OwnerWindow != IntPtr.Zero && GetClipboardOwner() == publication.OwnerWindow &&
+            ReferenceEquals(publication, Volatile.Read(ref current));
     }
 
     public static async Task ClearAsync(ShellFileDataObject? expected)

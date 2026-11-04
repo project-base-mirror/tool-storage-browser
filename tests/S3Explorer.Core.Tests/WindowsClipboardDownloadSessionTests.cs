@@ -6,11 +6,11 @@ namespace S3Explorer.Core.Tests;
 public sealed class WindowsClipboardDownloadSessionTests
 {
     [Fact]
-    public void Construction_and_invalid_indexes_do_not_create_cache_or_download()
+    public async Task Construction_and_invalid_indexes_do_not_create_cache_or_download()
     {
         using var scratch = new Scratch();
         var calls = 0;
-        using var session = new WindowsClipboardDownloadSession([Entry(), Entry() with { IsDirectory = true }],
+        await using var session = new WindowsClipboardDownloadSession([Entry(), Entry() with { IsDirectory = true }],
             (_, _, _, _) => { calls++; return Task.CompletedTask; }, Template(), cacheParent: scratch.Cache);
         Assert.False(Directory.Exists(scratch.Cache));
         Assert.Throws<ArgumentOutOfRangeException>(() => session.OpenRead(-1));
@@ -27,7 +27,7 @@ public sealed class WindowsClipboardDownloadSessionTests
         var started = Signal();
         var release = Signal();
         var calls = 0;
-        using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
         {
             Interlocked.Increment(ref calls);
             started.TrySetResult();
@@ -57,11 +57,11 @@ public sealed class WindowsClipboardDownloadSessionTests
     [InlineData("etag")]
     [InlineData("version")]
     [InlineData("missing")]
-    public void Changed_or_missing_remote_identity_is_rejected_before_returning_a_stream(string mismatch)
+    public async Task Changed_or_missing_remote_identity_is_rejected_before_returning_a_stream(string mismatch)
     {
         using var scratch = new Scratch();
         string? target = null;
-        using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
         {
             target = path;
             await File.WriteAllBytesAsync(path, [1, 2, 3], token);
@@ -84,10 +84,10 @@ public sealed class WindowsClipboardDownloadSessionTests
     [InlineData(0)]
     [InlineData(2)]
     [InlineData(4)]
-    public void Committed_file_length_must_match_snapshot(int actualLength)
+    public async Task Committed_file_length_must_match_snapshot(int actualLength)
     {
         using var scratch = new Scratch();
-        using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
         {
             await context.UpdateCheckpointAsync(0, Checkpoint(entry, path), null, token);
             await File.WriteAllBytesAsync(path, new byte[actualLength], token);
@@ -98,10 +98,10 @@ public sealed class WindowsClipboardDownloadSessionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Zero_byte_file_still_requires_remote_identity_verification(bool verified)
+    public async Task Zero_byte_file_still_requires_remote_identity_verification(bool verified)
     {
         using var scratch = new Scratch();
-        using var session = new WindowsClipboardDownloadSession([Entry() with { Size = 0 }], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry() with { Size = 0 }], async (entry, path, context, token) =>
         {
             Assert.Equal(1, context.Options.MaximumDownloadBytes);
             if (verified) await context.UpdateCheckpointAsync(0, Checkpoint(entry, path), null, token);
@@ -117,11 +117,11 @@ public sealed class WindowsClipboardDownloadSessionTests
     }
 
     [Fact]
-    public void Sizes_above_four_gib_are_not_truncated_and_short_files_are_rejected_without_large_allocations()
+    public async Task Sizes_above_four_gib_are_not_truncated_and_short_files_are_rejected_without_large_allocations()
     {
         using var scratch = new Scratch();
         var size = (1L << 32) + 123;
-        using var session = new WindowsClipboardDownloadSession([Entry() with { Size = size }], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry() with { Size = size }], async (entry, path, context, token) =>
         {
             Assert.Equal(size, entry.Size);
             Assert.Equal(size, context.Options.MaximumDownloadBytes);
@@ -132,12 +132,12 @@ public sealed class WindowsClipboardDownloadSessionTests
     }
 
     [Fact]
-    public void Download_failure_is_preserved_and_not_presented_as_eof_or_retried()
+    public async Task Download_failure_is_preserved_and_not_presented_as_eof_or_retried()
     {
         using var scratch = new Scratch();
         var failure = new IOException("simulated interrupted transfer");
         var calls = 0;
-        using var session = new WindowsClipboardDownloadSession([Entry()], (_, _, _, _) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], (_, _, _, _) =>
         {
             calls++;
             throw failure;
@@ -158,7 +158,7 @@ public sealed class WindowsClipboardDownloadSessionTests
         var cancellationObserved = Signal();
         var finishDownload = Signal();
         string? target = null;
-        var session = new WindowsClipboardDownloadSession([Entry()], async (_, path, _, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (_, path, _, token) =>
         {
             target = path;
             await File.WriteAllBytesAsync(path, [1], token);
@@ -205,7 +205,7 @@ public sealed class WindowsClipboardDownloadSessionTests
         using var scratch = new Scratch();
         var started = Signal();
         string? target = null;
-        using var session = new WindowsClipboardDownloadSession([Entry()], async (_, path, _, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (_, path, _, token) =>
         {
             target = path;
             await File.WriteAllBytesAsync(path, [1], token);
@@ -220,7 +220,8 @@ public sealed class WindowsClipboardDownloadSessionTests
         {
             using var unexpected = await opening.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         });
-        await Until(() => !Directory.Exists(Path.GetDirectoryName(target!)));
+        await session.DisposeAsync();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(target!)));
     }
 
     [Fact]
@@ -242,21 +243,21 @@ public sealed class WindowsClipboardDownloadSessionTests
             Assert.Same(template.BandwidthLimiter, context.BandwidthLimiter);
             await Complete(entry, path, context, token);
         }
-        using var first = new WindowsClipboardDownloadSession(entries, Download, template, cacheParent: scratch.Cache);
-        using var second = new WindowsClipboardDownloadSession(entries, Download, template, cacheParent: scratch.Cache);
+        await using var first = new WindowsClipboardDownloadSession(entries, Download, template, cacheParent: scratch.Cache);
+        await using var second = new WindowsClipboardDownloadSession(entries, Download, template, cacheParent: scratch.Cache);
         entries.Clear(); // Construction must take its own immutable entry-list snapshot.
         using (first.OpenRead(0)) { }
         using (second.OpenRead(0)) { }
         Assert.NotEqual(Path.GetDirectoryName(paths[0]), Path.GetDirectoryName(paths[1]));
-        first.Dispose();
-        await Until(() => !Directory.Exists(Path.GetDirectoryName(paths[0])));
+        await first.DisposeAsync();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(paths[0])));
         Assert.True(File.Exists(paths[1]));
-        second.Dispose();
-        await Until(() => !Directory.Exists(Path.GetDirectoryName(paths[1])));
+        await second.DisposeAsync();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(paths[1])));
     }
 
     [Fact]
-    public void Reparse_cache_parent_is_refused_before_download()
+    public async Task Reparse_cache_parent_is_refused_before_download()
     {
         using var scratch = new Scratch();
         var outside = Path.Combine(scratch.Root, "outside");
@@ -267,7 +268,7 @@ public sealed class WindowsClipboardDownloadSessionTests
             Assert.Skip("Creating symbolic links requires Windows Developer Mode or privilege.");
         }
         var calls = 0;
-        using var session = new WindowsClipboardDownloadSession([Entry()], (_, _, _, _) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], (_, _, _, _) =>
         {
             calls++;
             return Task.CompletedTask;
@@ -278,7 +279,7 @@ public sealed class WindowsClipboardDownloadSessionTests
     }
 
     [Fact]
-    public void Reparse_download_target_is_refused_before_exposure()
+    public async Task Reparse_download_target_is_refused_before_exposure()
     {
         using var scratch = new Scratch();
         var outside = Path.Combine(scratch.Root, "outside.txt");
@@ -291,7 +292,7 @@ public sealed class WindowsClipboardDownloadSessionTests
             Assert.Skip("Creating symbolic links requires Windows Developer Mode or privilege.");
         }
         File.Delete(probe);
-        using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
+        await using var session = new WindowsClipboardDownloadSession([Entry()], async (entry, path, context, token) =>
         {
             await context.UpdateCheckpointAsync(0, Checkpoint(entry, path), null, token);
             File.CreateSymbolicLink(path, outside);
@@ -311,21 +312,11 @@ public sealed class WindowsClipboardDownloadSessionTests
         await context.UpdateCheckpointAsync(entry.Size, Checkpoint(entry, path), null, token);
         await File.WriteAllBytesAsync(path, [1, 2, 3], token);
     }
-    private static async Task Until(Func<bool> condition)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        while (!condition()) await Task.Delay(10, timeout.Token);
-    }
     private sealed class Scratch : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "clipboard-tests-" + Guid.NewGuid().ToString("N"));
         public string Cache => Path.Combine(Root, "cache");
         public Scratch() => Directory.CreateDirectory(Root);
-        public void Dispose()
-        {
-            try { Directory.Delete(Root, recursive: true); }
-            catch (DirectoryNotFoundException) { } // Session cleanup may finish concurrently.
-        }
+        public void Dispose() => Directory.Delete(Root, recursive: true);
     }
 }

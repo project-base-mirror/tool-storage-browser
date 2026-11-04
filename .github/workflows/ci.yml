@@ -48,10 +48,6 @@ jobs:
         shell: pwsh
         run: dotnet test S3Explorer.sln -c Release --no-build --no-restore --nologo -p:ContinuousIntegrationBuild=true
 
-      - name: Enforce focused coverage
-        shell: pwsh
-        run: ./scripts/Test-FocusedCoverage.ps1
-
       - name: Verify real Explorer clipboard copy and paste
         shell: pwsh
         env:
@@ -64,6 +60,10 @@ jobs:
           if ([int]$counters.total -lt 2 -or [int]$counters.passed -ne [int]$counters.total) {
             throw "Explorer tests were empty, skipped, or failed: $($counters.OuterXml)"
           }
+
+      - name: Enforce focused coverage
+        shell: pwsh
+        run: ./scripts/Test-FocusedCoverage.ps1
 
       - name: Preserve Explorer clipboard evidence
         if: always()

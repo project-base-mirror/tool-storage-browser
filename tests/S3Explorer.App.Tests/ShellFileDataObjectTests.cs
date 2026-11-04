@@ -338,6 +338,7 @@ public sealed class ShellFileDataObjectTests
             try
             {
                 await ShellClipboardPublisher.SetAsync(second, TestContext.Current.CancellationToken);
+                Assert.False(ShellClipboardPublisher.IsCurrent(first));
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ShellClipboardPublisher.SetAsync(late, TestContext.Current.CancellationToken, expected: first));
                 await ShellClipboardPublisher.ClearAsync(first);
                 Assert.True(ShellClipboardPublisher.IsCurrent(second));
