@@ -343,7 +343,8 @@ public sealed class ShellFileReadStream : IShellReadStream
 public static class ShellClipboardPublisher
 {
     private static readonly Lazy<Task<Control>> Dispatcher = new(StartDispatcher);
-    private static ShellFileDataObject? current;
+    private sealed record Publication(ShellFileDataObject Data, IntPtr OwnerWindow);
+    private static Publication? current;
     public static async Task SetAsync(ShellFileDataObject data, CancellationToken cancellationToken = default, ShellFileDataObject? expected = null)
     {
         ArgumentNullException.ThrowIfNull(data);
@@ -376,19 +377,25 @@ public static class ShellClipboardPublisher
                 if (expected is not null && OleIsCurrentClipboard(expected) != 0)
                     throw new OperationCanceledException("Clipboard ownership changed before export was ready.", cancellationToken);
                 Marshal.ThrowExceptionForHR(OleSetClipboard(data));
-                current = data;
+                var ownerWindow = GetClipboardOwner();
+                if (ownerWindow == IntPtr.Zero || OleIsCurrentClipboard(data) != 0)
+                    throw new OperationCanceledException("Clipboard ownership changed during publication.", cancellationToken);
+                Volatile.Write(ref current, new Publication(data, ownerWindow));
                 completion.SetResult();
             }
             catch (Exception ex) { completion.SetException(ex); }
         }));
         return completion.Task;
     }
-    // Called from the app's OLE-initialized UI STA. No token supplied by another
-    // process is accepted as proof that this object still owns the clipboard.
+    // OleIsCurrentClipboard must be checked in the publishing apartment. Cross-STA
+    // callers use the native owner HWND plus our immutable publication identity instead
+    // of re-marshalling the CCW or blocking the UI on the publisher's message pump.
+    // All replacement/clear operations still use OleIsCurrentClipboard on its own STA.
     public static bool IsCurrent(ShellFileDataObject data)
     {
-        Application.OleRequired();
-        return OleIsCurrentClipboard(data) == 0;
+        var publication = Volatile.Read(ref current);
+        return publication is not null && ReferenceEquals(publication.Data, data) &&
+            publication.OwnerWindow != IntPtr.Zero && GetClipboardOwner() == publication.OwnerWindow;
     }
 
     public static async Task ClearAsync(ShellFileDataObject? expected)
@@ -400,11 +407,11 @@ public static class ShellClipboardPublisher
         {
             try
             {
-                var candidate = expected ?? current;
+                var candidate = expected ?? current?.Data;
                 if (candidate is not null && OleIsCurrentClipboard(candidate) == 0)
                 {
                     Marshal.ThrowExceptionForHR(OleSetClipboard(null));
-                    if (ReferenceEquals(candidate, current)) current = null;
+                    if (ReferenceEquals(candidate, current?.Data)) Volatile.Write(ref current, null);
                 }
                 completion.SetResult();
             }
@@ -425,7 +432,7 @@ public static class ShellClipboardPublisher
                 using var control = new Control();
                 _ = control.Handle;
                 using var timer = new System.Windows.Forms.Timer { Interval = 1000 };
-                timer.Tick += (_, _) => { if (current is { } data && OleIsCurrentClipboard(data) == 1) current = null; };
+                timer.Tick += (_, _) => { if (current is { } publication && OleIsCurrentClipboard(publication.Data) == 1) Volatile.Write(ref current, null); };
                 timer.Start();
                 ready.SetResult(control);
                 Application.Run();
@@ -439,6 +446,7 @@ public static class ShellClipboardPublisher
     }
     [DllImport("ole32.dll")] private static extern int OleInitialize(IntPtr reserved);
     [DllImport("ole32.dll")] private static extern void OleUninitialize();
+    [DllImport("user32.dll")] private static extern IntPtr GetClipboardOwner();
     [DllImport("ole32.dll")] private static extern int OleSetClipboard([MarshalAs(UnmanagedType.Interface)] ComDataObject? data);
     [DllImport("ole32.dll")] private static extern int OleIsCurrentClipboard([MarshalAs(UnmanagedType.Interface)] ComDataObject data);
 }

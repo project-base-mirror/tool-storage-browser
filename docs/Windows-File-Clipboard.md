@@ -1,6 +1,6 @@
 # Windows 双向文件剪贴板
 
-此文档描述文件剪贴板工作分支的实现与验收边界，不代表已经发布。2026-11-04 的实现环境为 Linux，未安装 .NET SDK；新增测试尚未编译或运行，真实 Explorer 验收仍待 Windows 测试环境完成。
+此文档描述文件剪贴板工作分支的实现与验收边界，不代表已经发布。实现环境为 Linux；云端 Windows 构建和测试在[草稿 PR #6](https://github.com/project-base-mirror/tool-storage-browser/pull/6) 中进行。验收范围区分原生 OLE 往返与真实 Explorer Shell 交互，不代表已完成所有 Windows 版本或生产存储验证。
 
 ## 使用方式
 
@@ -36,13 +36,13 @@
 
 ## 自动测试与真实 Explorer 验收
 
-已有 Windows CI 会构建并运行新增测试，**但本分支未推送，因此没有本次代码的 CI 结果**：
+Windows CI 构建并运行普通测试，再显式启用 Explorer Shell 集成测试；后者要求至少两个用例全部通过，跳过或空运行会失败：
 
     dotnet restore S3Explorer.sln --locked-mode
     dotnet build S3Explorer.sln -c Release --no-restore -warnaserror
     dotnet test S3Explorer.sln -c Release --no-build --no-restore
 
-新增测试覆盖纯清单/路径、延迟下载/校验、HGLOBAL/COM vtable、真实 `OleSetClipboard → OleGetClipboard → IStream.Read` 跨线程往返、重复粘贴与旧所有权。OLE 往返测试不是 Explorer 端到端验收，不能代替以下步骤：
+新增测试覆盖纯清单/路径、延迟下载/校验、HGLOBAL/COM vtable、真实 `OleSetClipboard → OleGetClipboard → IStream.Read` 跨线程往返、重复粘贴与旧所有权。独立的 `ExplorerClipboard` 类别测试通过真实 explorer.exe 窗口及 Shell copy/paste verb 检查双向文件传递，记录 HWND、进程和会话；这是 Shell 自动化，不是实体键盘模拟，也不等同于下列完整验收矩阵：
 
 1. 使用 Windows 10/11 x64 的隔离测试账户及本地 MinIO 或假的存储服务，不使用生产凭据。在独立本地目标目录粘贴单文件、多文件、中文/空格文件名、零字节文件、嵌套目录与空目录，逐字节/哈希比较。
 2. 重复粘贴到两个目录；在首次粘贴中途复制文本或另一组文件，确认旧粘贴继续且新粘贴使用新内容。复制后立即换连接/导航，确认来源不漂移。
