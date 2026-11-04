@@ -24,10 +24,6 @@ public sealed partial class S3StorageService
             throw new TransferExecutionException(new TransferFailureInfo(
                 "此服务商尚未验证原子条件复制；为避免覆盖目标已停止操作。请选择其他目标或明确选择覆盖。",
                 TransferFailureCategory.Validation, Retryable: false));
-        if (protectDestination && profile.ServiceType == S3ServiceType.MinIO && !profile.EnableMultipartCopy)
-            throw new TransferExecutionException(new TransferFailureInfo(
-                "MinIO 的非覆盖复制需要启用分片复制，以便在完成时原子检查目标。",
-                TransferFailureCategory.Validation, Retryable: false));
         var conditionalDelete = S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete;
         if (move && !conditionalDelete.Supported)
             throw new TransferExecutionException(new TransferFailureInfo(
@@ -53,11 +49,27 @@ public sealed partial class S3StorageService
                 throw new TransferExecutionException(new TransferFailureInfo(
                     "复制断点与当前来源或目标不一致，请取消旧任务清理分片后重新复制。", TransferFailureCategory.Conflict));
 
+            if (profile.ServiceType == S3ServiceType.SupabaseStorage && source.ContentLength > MaximumSingleCopyBytes)
+                EnsureMultipartCopySourcePreconditions(profile, source);
+
             var copyTags = S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Tagging.Supported;
-            if (saved is not null || (protectDestination && profile.ServiceType == S3ServiceType.MinIO) ||
+            if (protectDestination && profile.ServiceType == S3ServiceType.MinIO &&
+                source.ContentLength > 0 && !profile.EnableMultipartCopy)
+                throw new TransferExecutionException(new TransferFailureInfo(
+                    "MinIO 的非空对象非覆盖复制需要启用分片复制，以便在完成时原子检查目标。",
+                    TransferFailureCategory.Validation, Retryable: false));
+            if (saved is null && protectDestination && profile.ServiceType == S3ServiceType.MinIO &&
+                source.ContentLength == 0)
+            {
+                await CopyEmptyObjectConditionallyAsync(client, profile, sourceBucket, sourceKey,
+                    destinationBucket, destinationKey, source, cancellationToken, context!).ConfigureAwait(false);
+            }
+            // Supabase's ordinary CopyObject enforces source If-Match. Do not turn a
+            // safe <= 5 GiB copy into an unsafe multipart copy merely for throughput.
+            else if (saved is not null || (protectDestination && profile.ServiceType == S3ServiceType.MinIO) ||
                 (profile.EnableMultipartCopy &&
                 (source.ContentLength > MaximumSingleCopyBytes ||
-                 (context is not null && profile.ServiceType != S3ServiceType.CloudflareR2 &&
+                 (context is not null && profile.ServiceType is not (S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage) &&
                   source.ContentLength >= context.Options.MultipartThresholdBytes))))
             {
                 EnsureMultipartCopySourcePreconditions(profile, source);
@@ -69,7 +81,8 @@ public sealed partial class S3StorageService
                 try
                 {
                     await CopyObjectSimpleAsync(client, sourceBucket, sourceKey, destinationBucket,
-                        destinationKey, source, cancellationToken, context?.Options).ConfigureAwait(false);
+                        destinationKey, source, cancellationToken, context?.Options,
+                        useSourceVersion: profile.ServiceType != S3ServiceType.SupabaseStorage).ConfigureAwait(false);
                 }
                 catch (AmazonS3Exception exception) when (
                     profile.EnableMultipartCopy && S3CompatibilityPolicy.RequiresMultipartCopy(exception))
@@ -142,27 +155,80 @@ public sealed partial class S3StorageService
             (profile.ServiceType == S3ServiceType.CloudflareR2 &&
              (string.IsNullOrWhiteSpace(source.VersionId) || source.VersionId == "null")))
             throw new TransferExecutionException(new TransferFailureInfo(
-                "此服务商不支持分片复制的源 If-Match 条件，且来源没有固定版本；为避免混合内容已停止分片复制。",
+                "此服务商不支持分片复制的源 If-Match 条件，且来源没有固定版本；为避免混合内容已停止分片复制。可改用下载后上传，并保留源对象。",
                 TransferFailureCategory.Validation, Retryable: false));
     }
 
     private static async Task CopyObjectSimpleAsync(
         IAmazonS3 client, string sourceBucket, string sourceKey, string destinationBucket,
         string destinationKey, GetObjectMetadataResponse source, CancellationToken cancellationToken,
-        TransferExecutionOptions? options = null)
+        TransferExecutionOptions? options = null, bool useSourceVersion = true)
     {
         using var lease = await SharedTransferRequestBudget.Default.EnterAsync(cancellationToken).ConfigureAwait(false);
         await client.CopyObjectAsync(new CopyObjectRequest
         {
             SourceBucket = sourceBucket,
             SourceKey = sourceKey,
-            SourceVersionId = source.VersionId,
+            // Supabase does not support S3 version addressing. Its single-copy source
+            // condition is supported, unlike UploadPartCopy's ignored condition.
+            SourceVersionId = useSourceVersion ? source.VersionId : null,
             ETagToMatch = source.ETag,
             DestinationBucket = destinationBucket,
             DestinationKey = destinationKey,
             IfNoneMatch = options?.AllowDestinationOverwrite == false ? "*" : null,
             IfMatch = options?.ExpectedDestinationETag
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task CopyEmptyObjectConditionallyAsync(
+        IAmazonS3 client, ConnectionProfile profile, string sourceBucket, string sourceKey,
+        string destinationBucket, string destinationKey, GetObjectMetadataResponse source,
+        CancellationToken cancellationToken, TransferOperationContext context)
+    {
+        // UploadPartCopy cannot represent a zero-byte source. Verify the source through a
+        // conditional GET, then create the empty destination with the same atomic PUT
+        // conditions used by uploads. A destination HEAD would not protect against races.
+        using var lease = await context.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
+        using var verified = await client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = sourceBucket, Key = sourceKey, VersionId = source.VersionId,
+            EtagToMatch = source.ETag
+        }, cancellationToken).ConfigureAwait(false);
+        if (verified.MissingMeta.GetValueOrDefault() > 0)
+            throw new TransferExecutionException(new TransferFailureInfo(
+                "源对象有未能读取的 Metadata，无法完整保留属性，未写入目标。", TransferFailureCategory.Validation, Retryable: false));
+        if (verified.ContentLength != 0 || verified.ETag != source.ETag || verified.VersionId != source.VersionId ||
+            await verified.ResponseStream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
+            throw new TransferExecutionException(new TransferFailureInfo(
+                "空对象复制前来源内容或身份已变化，未写入目标。", TransferFailureCategory.Conflict, Retryable: false));
+
+        var tags = await client.GetObjectTaggingAsync(new GetObjectTaggingRequest
+        {
+            BucketName = sourceBucket, Key = sourceKey, VersionId = source.VersionId
+        }, cancellationToken).ConfigureAwait(false);
+        using var empty = new MemoryStream(Array.Empty<byte>(), writable: false);
+        var request = new PutObjectRequest
+        {
+            BucketName = destinationBucket, Key = destinationKey, InputStream = empty,
+            AutoCloseStream = false,
+            IfNoneMatch = context.Options.AllowDestinationOverwrite ? null : "*",
+            IfMatch = context.Options.ExpectedDestinationETag,
+            TagSet = tags.Tagging is { Count: > 0 } ? tags.Tagging : null
+        };
+        // Use the headers returned with the verified content, rather than a stale HEAD.
+        // As with ordinary copies, the destination bucket supplies encryption/ACL defaults.
+        request.Headers.ContentType = verified.Headers.ContentType;
+        request.Headers.CacheControl = verified.Headers.CacheControl;
+        request.Headers.ContentEncoding = verified.Headers.ContentEncoding;
+        request.Headers.ContentDisposition = verified.Headers.ContentDisposition;
+        request.Headers.ContentLanguage = verified.Headers.ContentLanguage;
+        // Copy the wire value: the SDK's nullable Expires setter writes a year-0001
+        // date for null, and parsing/reformatting can alter provider-supplied headers.
+        request.Headers["Expires"] = verified.ExpiresString ?? verified.Headers["Expires"];
+        foreach (var name in verified.Metadata.Keys)
+            request.Metadata[name] = verified.Metadata[name];
+        await S3UploadCompatibility.PrepareAsync(profile, request, empty, cancellationToken).ConfigureAwait(false);
+        await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task MultipartCopyAsync(
@@ -310,7 +376,7 @@ public sealed partial class S3StorageService
         request.Headers.ContentEncoding = source.Headers.ContentEncoding;
         request.Headers.ContentDisposition = source.Headers.ContentDisposition;
         request.Headers.ContentLanguage = source.Headers.ContentLanguage;
-        request.Headers.Expires = source.Headers.Expires;
+        request.Headers["Expires"] = source.ExpiresString ?? source.Headers["Expires"];
         foreach (var name in source.Metadata.Keys)
             request.Metadata[name] = source.Metadata[name];
         return request;

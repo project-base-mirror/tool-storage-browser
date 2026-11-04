@@ -150,7 +150,7 @@ public sealed partial class S3StorageService : IS3StorageService
         var response = await client.ListObjectsV2Async(new ListObjectsV2Request
         {
             BucketName = bucket,
-            Prefix = S3Path.NormalizePrefix(prefix),
+            Prefix = prefix,
             Delimiter = "/",
             ContinuationToken = continuationToken,
             MaxKeys = Math.Clamp(pageSize, 1, 1000)
@@ -165,7 +165,7 @@ public sealed partial class S3StorageService : IS3StorageService
             string.Empty));
 
         var objects = (response.S3Objects ?? [])
-            .Where(item => !string.Equals(item.Key, prefix, StringComparison.Ordinal))
+            .Where(item => !prefix.EndsWith('/') || !string.Equals(item.Key, prefix, StringComparison.Ordinal))
             .Select(item => new S3ObjectEntry(
                 item.Key,
                 S3Path.DisplayName(item.Key, false),
@@ -224,8 +224,8 @@ public sealed partial class S3StorageService : IS3StorageService
         var response = await client.ListVersionsAsync(new ListVersionsRequest
         {
             BucketName = bucket,
-            Prefix = string.IsNullOrWhiteSpace(prefix) ? null : prefix,
-            KeyMarker = string.IsNullOrWhiteSpace(keyMarker) ? null : keyMarker,
+            Prefix = string.IsNullOrEmpty(prefix) ? null : prefix,
+            KeyMarker = string.IsNullOrEmpty(keyMarker) ? null : keyMarker,
             VersionIdMarker = string.IsNullOrWhiteSpace(versionIdMarker) ? null : versionIdMarker,
             MaxKeys = Math.Clamp(pageSize, 1, 1000)
         }, cancellationToken).ConfigureAwait(false);
@@ -367,7 +367,7 @@ public sealed partial class S3StorageService : IS3StorageService
             "对象 ACL");
         if (string.IsNullOrWhiteSpace(bucket))
             throw new ArgumentException("Bucket 不能为空。", nameof(bucket));
-        if (string.IsNullOrWhiteSpace(key))
+        if (string.IsNullOrEmpty(key))
             throw new ArgumentException("对象 Key 不能为空。", nameof(key));
 
         if (profile.ServiceType == S3ServiceType.MinIO && mode == ObjectAclMode.PublicRead)
@@ -655,7 +655,7 @@ public sealed partial class S3StorageService : IS3StorageService
             var response = await client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
             {
                 BucketName = bucket,
-                Prefix = string.IsNullOrWhiteSpace(prefix) ? null : prefix.Trim(),
+                Prefix = string.IsNullOrEmpty(prefix) ? null : prefix,
                 KeyMarker = keyMarker,
                 UploadIdMarker = uploadIdMarker,
                 MaxUploads = 1000
@@ -861,7 +861,7 @@ public sealed partial class S3StorageService : IS3StorageService
         EnsureBucketFeature(
             S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.VersionOperations,
             "对象版本恢复");
-        if (string.IsNullOrWhiteSpace(key))
+        if (string.IsNullOrEmpty(key))
             throw new ArgumentException("对象 Key 不能为空。", nameof(key));
         if (string.IsNullOrWhiteSpace(versionId))
             throw new ArgumentException("Version ID 不能为空。", nameof(versionId));

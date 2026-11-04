@@ -9,6 +9,19 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 
 public sealed class S3PermissionCheckerTests
 {
+    [Theory]
+    [InlineData("/leading//back\\slash/%2F/../")]
+    [InlineData(" ")]
+    public async Task MutationProbeNeverNormalizesItsAuthorizedPrefix(string prefix)
+    {
+        var (checker, storage) = CreateChecker();
+        await checker.CheckAsync(Request(StoragePermissionOperation.Publish, allowMutation: true) with { Prefix = prefix },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(prefix, storage.ListPrefix);
+        Assert.StartsWith(prefix + ".s3explorer-permission-probe/", storage.UploadKey);
+        Assert.Equal(storage.UploadKey, storage.DeletedKey);
+    }
+
     [Fact]
     public async Task ReadCheckReportsHeadAndBoundedContentGetSeparately()
     {
@@ -211,6 +224,9 @@ public sealed class S3PermissionCheckerTests
         public bool CancelUpload { get; set; }
         public Exception? ListException { get; set; }
         public List<string> Operations { get; } = [];
+        public string? ListPrefix { get; private set; }
+        public string? UploadKey { get; private set; }
+        public string? DeletedKey { get; private set; }
         public long MaximumDownloadBytes { get; private set; }
         public CancellationToken DeleteCancellationToken { get; private set; }
         public CancellationToken UploadCancellationToken { get; private set; }
@@ -221,7 +237,7 @@ public sealed class S3PermissionCheckerTests
             ArgumentNullException.ThrowIfNull(args);
             return targetMethod.Name switch
             {
-                nameof(IS3StorageService.ListObjectsAsync) => ListObjects(),
+                nameof(IS3StorageService.ListObjectsAsync) => ListObjects(args),
                 nameof(IS3StorageService.GetObjectPropertiesAsync) => GetProperties(args),
                 nameof(IS3StorageService.DownloadFileAsync) => Download(args),
                 nameof(IS3StorageService.UploadFileAsync) => Upload(args),
@@ -231,9 +247,10 @@ public sealed class S3PermissionCheckerTests
             };
         }
 
-        private Task<PagedObjectResult> ListObjects()
+        private Task<PagedObjectResult> ListObjects(object?[] args)
         {
             Operations.Add("list");
+            ListPrefix = (string)args[2]!;
             if (ListException is not null)
                 return Task.FromException<PagedObjectResult>(ListException);
             IReadOnlyList<S3ObjectEntry> items = HasObject
@@ -264,6 +281,7 @@ public sealed class S3PermissionCheckerTests
         private Task Upload(object?[] args)
         {
             Operations.Add("upload");
+            UploadKey = (string)args[2]!;
             UploadCancellationToken = (CancellationToken)args[6]!;
             if (CancelUpload)
                 return Task.FromException(new OperationCanceledException());
@@ -279,6 +297,7 @@ public sealed class S3PermissionCheckerTests
         private Task Delete(object?[] args)
         {
             Operations.Add("delete");
+            DeletedKey = ((IReadOnlyCollection<string>)args[2]!).Single();
             DeleteCancellationToken = (CancellationToken)args[3]!;
             return FailDelete
                 ? Task.FromException(new InvalidOperationException("simulated cleanup failure"))

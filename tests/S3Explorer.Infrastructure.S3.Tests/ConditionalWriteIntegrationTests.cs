@@ -50,6 +50,90 @@ public sealed class ConditionalWriteIntegrationTests
 
     [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
+    public async Task EmptyCreateOnlyCopyPreservesPropertiesAndRejectsExistingDestination()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var profile = ProviderMatrixCase.All.Single(item => item.Id == "minio").Resolve().CreateProfile()
+            with { EnableMultipartCopy = false };
+        using var client = new S3ClientFactory().Create(profile);
+        var service = new S3StorageService(new S3ClientFactory());
+        var bucket = $"s3explorer-empty-copy-{Guid.NewGuid():N}";
+        var context = new TransferOperationContext(new TransferExecutionOptions
+        {
+            AllowDestinationOverwrite = false, RetainFailedTransferState = false
+        }, new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
+        await client.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, token);
+        try
+        {
+            var request = new PutObjectRequest
+            {
+                BucketName = bucket, Key = "source", ContentBody = "",
+                TagSet = [new Tag { Key = "purpose", Value = "empty-copy" }]
+            };
+            request.Headers.ContentType = "application/test";
+            request.Headers.CacheControl = "max-age=123";
+            request.Headers.ContentDisposition = "attachment";
+            request.Headers.ContentLanguage = "en";
+            request.Headers.Expires = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            request.Metadata["custom"] = "preserved";
+            await client.PutObjectAsync(request, token);
+            var original = await client.PutObjectAsync(new PutObjectRequest
+                { BucketName = bucket, Key = "target", ContentBody = "keep-existing" }, token);
+            var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
+                service.CopyObjectAsync(profile, bucket, "source", bucket, "target", context, token));
+            Assert.Equal(TransferFailureCategory.Conflict, failure.Failure.Category);
+            var unchanged = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                { BucketName = bucket, Key = "target" }, token);
+            Assert.Equal(original.ETag, unchanged.ETag);
+
+            await service.CopyObjectAsync(profile, bucket, "source", bucket, "new", context, token);
+            using var copied = await client.GetObjectAsync(new GetObjectRequest
+                { BucketName = bucket, Key = "new" }, token);
+            Assert.Equal(0, copied.ContentLength);
+            Assert.Equal(0, await copied.ResponseStream.ReadAsync(new byte[1], token));
+            Assert.Equal("application/test", copied.Headers.ContentType);
+            Assert.Equal("max-age=123", copied.Headers.CacheControl);
+            Assert.Equal("attachment", copied.Headers.ContentDisposition);
+            Assert.Equal("en", copied.Headers.ContentLanguage);
+            Assert.Equal("Tue, 01 Jan 2030 00:00:00 GMT", copied.ExpiresString);
+            Assert.Equal("preserved", copied.Metadata["x-amz-meta-custom"]);
+            var tags = await client.GetObjectTaggingAsync(new GetObjectTaggingRequest
+                { BucketName = bucket, Key = "new" }, token);
+            Assert.Equal("empty-copy", Assert.Single(tags.Tagging).Value);
+
+            var replacement = context with
+            {
+                Options = context.Options with
+                {
+                    AllowDestinationOverwrite = true, ExpectedDestinationETag = original.ETag
+                }
+            };
+            var changed = await client.PutObjectAsync(new PutObjectRequest
+                { BucketName = bucket, Key = "target", ContentBody = "changed" }, token);
+            await Assert.ThrowsAsync<TransferExecutionException>(() =>
+                service.CopyObjectAsync(profile, bucket, "source", bucket, "target", replacement, token));
+            unchanged = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                { BucketName = bucket, Key = "target" }, token);
+            Assert.Equal(changed.ETag, unchanged.ETag);
+            await service.CopyObjectAsync(profile, bucket, "source", bucket, "target", replacement with
+            {
+                Options = replacement.Options with { ExpectedDestinationETag = changed.ETag }
+            }, token);
+            Assert.Equal(0, (await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                { BucketName = bucket, Key = "target" }, token)).ContentLength);
+            Assert.Equal(0, (await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                { BucketName = bucket, Key = "source" }, token)).ContentLength);
+        }
+        finally
+        {
+            foreach (var key in new[] { "source", "target", "new" })
+                await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = key }, CancellationToken.None);
+            await client.DeleteBucketAsync(new DeleteBucketRequest { BucketName = bucket }, CancellationToken.None);
+        }
+    }
+
+    [ConfiguredProviderFact("minio")]
+    [Trait("Category", "Integration")]
     public async Task ConfirmedEditUsesAtomicEtagConditionAndNeverFallsBackToOverwrite()
     {
         var token = TestContext.Current.CancellationToken;

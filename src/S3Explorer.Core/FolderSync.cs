@@ -434,10 +434,13 @@ public static class FolderSyncSnapshot
         {
             if (!item.Key.StartsWith(rootPrefix, StringComparison.Ordinal))
                 throw new InvalidOperationException($"对象不属于同步根路径：{item.Key}");
-            var relative = item.Key[rootPrefix.Length..].TrimStart('/');
+            var relative = item.Key[rootPrefix.Length..];
             if (relative.Length == 0) continue;
+            var normalized = FolderSyncPath.NormalizeRelative(relative);
+            if (!string.Equals(relative, normalized, StringComparison.Ordinal))
+                throw new InvalidOperationException($"对象 Key 不能无损映射为同步相对路径，已停止同步：{item.Key}");
             result.Add(new FolderSyncFile(
-                FolderSyncPath.NormalizeRelative(relative),
+                relative,
                 item.Size,
                 item.LastModified ?? DateTimeOffset.MinValue,
                 IsSimpleEtag(item.ETag) ? item.ETag?.Trim('"') : null));

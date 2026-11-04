@@ -153,7 +153,7 @@ internal sealed partial class MainForm
                 {
                     if (seenKeys.Add(entry.Key))
                     {
-                        var relative = entry.Name;
+                        var relative = DownloadRelativeKey(entry, entry.Key);
                         var destination = ResolveDownloadDestination(
                             LocalObjectPath.MapRelativeKey(targetRoot, relative), policy.Value, allocated);
                         if (destination is null) { skipped++; continue; }
@@ -166,11 +166,7 @@ internal sealed partial class MainForm
                     {
                         if (child.IsDirectory || !seenKeys.Add(child.Key))
                             continue;
-                        if (!child.Key.StartsWith(entry.Key, StringComparison.Ordinal))
-                            throw new InvalidOperationException("对象 Key 不属于所选文件夹。");
-
-                        var childRelative = child.Key[entry.Key.Length..].TrimStart('/');
-                        var relative = $"{entry.Name}/{childRelative}";
+                        var relative = DownloadRelativeKey(entry, child.Key);
                         var destination = ResolveDownloadDestination(
                             LocalObjectPath.MapRelativeKey(targetRoot, relative), policy.Value, allocated);
                         if (destination is null) { skipped++; continue; }
@@ -281,11 +277,27 @@ internal sealed partial class MainForm
         _logger.Info($"Download queued profile={profile.Name} bucket={bucket} key={entry.Key} bytes={entry.Size}");
     }
 
+    internal static string DownloadRelativeKey(S3ObjectEntry selected, string key) => selected.IsDirectory
+        ? S3Path.LeafName(selected.Key, true) + "/" + ObjectTransferPlanner.GetRelativePath(selected.Key, key)
+        : string.Equals(selected.Key, key, StringComparison.Ordinal)
+            ? S3Path.LeafName(key, false)
+            : throw new InvalidOperationException("对象 Key 不属于所选对象。");
+
+    internal static string SuggestedDownloadFileName(string key)
+    {
+        var name = S3Path.LeafName(key, false);
+        // A user-selected save destination can safely download literal dot keys.
+        // Bulk path mapping still rejects traversal-like segments before writing.
+        return name is "." or ".."
+            ? string.Concat(Enumerable.Repeat("_x002E_", name.Length))
+            : LocalObjectPath.SanitizeSegment(name);
+    }
+
     private async Task DownloadSingleObjectAsync(S3ObjectEntry entry)
     {
         using var save = new SaveFileDialog
         {
-            FileName = entry.Name,
+            FileName = SuggestedDownloadFileName(entry.Key),
             InitialDirectory = _settings.DefaultDownloadDirectory,
             OverwritePrompt = false
         };
@@ -302,16 +314,15 @@ internal sealed partial class MainForm
     {
         if (!EnsureLocation()) return;
         var name = PromptDialog.Show(this, "新建文件夹", "文件夹名称：");
-        if (string.IsNullOrWhiteSpace(name)) return;
-        name = name.Trim().Trim('/');
-        if (name.Length == 0 || name.Any(char.IsControl))
+        if (string.IsNullOrEmpty(name)) return;
+        if (name.Any(char.IsControl))
         {
             MessageBox.Show(this, "文件夹名称无效。", "新建文件夹", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         try
         {
-            await _storage.CreateFolderAsync(_currentProfile!, _currentBucket!, S3Path.Combine(_currentPrefix, name) + "/", CancellationToken.None);
+            await _storage.CreateFolderAsync(_currentProfile!, _currentBucket!, S3Path.FolderMarker(_currentPrefix, name), CancellationToken.None);
             await RefreshAsync();
         }
         catch (Exception exception)
@@ -456,13 +467,15 @@ internal sealed partial class MainForm
         {
             foreach (var entry in payload.Entries)
             {
-                var topName = entry.Name.Trim('/');
+                // Name is a presentation label (empty/dot segments have friendly
+                // labels). Only the literal key can determine a remote target.
+                var topName = S3Path.LeafName(entry.Key, entry.IsDirectory);
                 if (entry.IsDirectory)
                 {
-                    var destinationRoot = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName) + "/";
+                    var destinationRoot = ObjectTransferPlanner.BuildDirectoryDestinationKey(destinationPrefix, topName);
                     ObjectTransferPlanner.ValidateDestination(
                         payload.SourceBucket, entry.Key, true, destinationBucket, destinationRoot);
-                    await foreach (var child in EnumerateAllObjectsAsync(entry.Key))
+                    await foreach (var child in EnumerateAllObjectsAsync(entry.Key, includeFolderMarkers: true))
                     {
                         if (child.IsDirectory) continue;
                         var relative = ObjectTransferPlanner.GetRelativePath(entry.Key, child.Key);
@@ -571,10 +584,10 @@ internal sealed partial class MainForm
             return;
         }
         var entry = selected[0];
-        var name = PromptDialog.Show(this, "重命名对象", "新名称：", entry.Name);
-        if (string.IsNullOrWhiteSpace(name) || name == entry.Name) return;
-        var parent = entry.Key[..Math.Max(0, entry.Key.LastIndexOf('/') + 1)];
-        var targetKey = parent + name.Trim('/');
+        var originalName = S3Path.LeafName(entry.Key, false);
+        var name = PromptDialog.Show(this, "重命名对象", "新名称：", originalName);
+        if (string.IsNullOrEmpty(name) || name == originalName) return;
+        var targetKey = S3Path.RenameLeaf(entry.Key, name);
         try
         {
             SetBusy("正在重命名（Copy + Delete）...");

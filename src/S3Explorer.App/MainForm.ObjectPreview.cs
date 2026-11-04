@@ -152,16 +152,24 @@ internal sealed partial class MainForm
             throw new InvalidOperationException(originalProtection);
         if (ObjectPreviewPolicy.ProtectedObjectReadOnlyReason(current) is { } currentProtection)
             throw new InvalidOperationException(currentProtection);
+        if (ObjectPreviewPolicy.UnpreservableMetadataReadOnlyReason(original) is { } originalMetadata)
+            throw new InvalidOperationException(originalMetadata);
+        if (ObjectPreviewPolicy.UnpreservableMetadataReadOnlyReason(current) is { } currentMetadata)
+            throw new InvalidOperationException(currentMetadata);
         if (string.IsNullOrWhiteSpace(original.ETag) ||
             !string.Equals(original.ETag, current.ETag, StringComparison.Ordinal) ||
             !string.Equals(original.VersionId, current.VersionId, StringComparison.Ordinal) ||
             original.Size != current.Size || original.LastModified != current.LastModified ||
             original.ContentType != current.ContentType || original.CacheControl != current.CacheControl ||
             original.ContentEncoding != current.ContentEncoding || original.ContentDisposition != current.ContentDisposition ||
-            original.ExpiresUtc != current.ExpiresUtc ||
+            original.ExpiresUtc != current.ExpiresUtc || original.ExpiresHeader != current.ExpiresHeader ||
+            original.ContentLanguage != current.ContentLanguage || original.WebsiteRedirectLocation != current.WebsiteRedirectLocation ||
+            original.MissingMetadataCount != current.MissingMetadataCount ||
             original.ServerSideEncryptionMethod != current.ServerSideEncryptionMethod ||
             original.EncryptionKeyId != current.EncryptionKeyId || original.CustomerEncryptionMethod != current.CustomerEncryptionMethod ||
+            original.BucketKeyEnabled != current.BucketKeyEnabled ||
             original.ObjectLockMode != current.ObjectLockMode || original.ObjectLockLegalHoldStatus != current.ObjectLockLegalHoldStatus ||
+            original.ObjectLockRetainUntilDate != current.ObjectLockRetainUntilDate ||
             ObjectPreviewPolicy.ExistingStorageClass(original.StorageClass) != ObjectPreviewPolicy.ExistingStorageClass(current.StorageClass) ||
             original.Metadata.Count != current.Metadata.Count || original.Metadata.Any(pair =>
                 !current.Metadata.Any(other => string.Equals(pair.Key, other.Key, StringComparison.OrdinalIgnoreCase) && pair.Value == other.Value)))

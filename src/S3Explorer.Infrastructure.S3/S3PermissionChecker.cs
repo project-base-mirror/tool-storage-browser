@@ -300,7 +300,6 @@ public sealed class S3PermissionChecker(IS3StorageService storage) : IStoragePer
 
     private static string NormalizePrefix(string? prefix)
     {
-        var normalized = (prefix ?? string.Empty).Replace('\\', '/').Trim('/');
-        return normalized.Length == 0 ? string.Empty : normalized + "/";
+        return S3Path.NormalizePrefix(prefix);
     }
 }

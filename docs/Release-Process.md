@@ -64,7 +64,9 @@ pwsh .\scripts\Test-Publish.ps1 -SkipPackageBuild
 dotnet list .\S3Explorer.sln package --vulnerable --include-transitive
 ```
 
-MSI 安装、上一版本覆盖升级、已安装 GUI/CLI 启动和卸载使用手动工作流 `Installer lifecycle (manual)`；它不绑定 PR 或 `main` 推送。安装器或升级逻辑变化时，在正式 tag 前至少执行一次，并保留两个安装类型的日志产物。
+MSI 安装、事务回滚、自定义目录保留、已安装 GUI/CLI 启动和卸载使用 `Installer lifecycle` 工作流；涉及安装器、更新器或生命周期测试的 PR 自动执行，也可手动触发。工作流在隔离的 Windows runner 上从当前代码构建真实应用负载和测试专用 MSI（`0.0.1` → `0.0.2`），不下载任何历史 Release 资产，不创建 tag 或 Release。仅生成到 `artifacts/` 的失败包在 `InstallExecute` 之后、`InstallFinalize` 之前故意失败，要求返回 1603，日志证明旧包已移除、新包执行阶段已完成并开始回滚，然后校验旧产品注册、每个文件的 SHA-256、增删改哨兵文件、注册表安装目录和快捷方式恢复，且 GUI/CLI 仍可启动。随后不传 `APPLICATIONFOLDER` 完成升级，确认带空格及中文的原目录保留，并校验卸载清理。
+
+两个安装类型均须保留 `result.json`、MSI 日志和回滚前后文件清单。只有当前提交的 Windows 工作流实际成功，才能声称这些运行时检查通过；Python 结构检查不能代替 MSI 回滚证据。合成版本共用当前应用负载，因此此门禁不证明历史版本应用/数据迁移兼容性。需要历史包对照时另行准备用户授权的本地包，不自动下载大文件。
 
 `Test-LocalMinio.ps1` 是上传下载等真实 S3 行为的本地门禁。默认启动名称唯一、版本固定的隔离 MinIO 容器，测试结束后只删除自己创建的容器；也可同时传入 `-Endpoint`、`-AccessKey`、`-SecretKey` 使用已有测试实例。缺少 Docker 或连接参数时必须让门禁失败，不能把“未执行”报告成通过。普通 `dotnet test` 中未配置的集成用例显示为 `Skipped`。
 
