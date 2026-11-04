@@ -237,6 +237,7 @@ public sealed partial class MainFormInteractionTests
             using var launched = Process.Start(new ProcessStartInfo("explorer.exe", $"/n,\"{path}\"") { UseShellExecute = true });
             var timer = Stopwatch.StartNew();
             string? lastNavigationError = null;
+            var waitingForVisibility = new HashSet<IntPtr>();
             while (timer.Elapsed < TimeSpan.FromSeconds(10))
             {
                 dynamic windows = shell.Windows();
@@ -259,8 +260,16 @@ public sealed partial class MainFormInteractionTests
                             using var process = Process.GetProcessById((int)pid);
                             Assert.Equal("explorer", process.ProcessName.ToLowerInvariant());
                             Assert.Equal(current.SessionId, process.SessionId);
-                            Assert.True(ExplorerIsWindowVisible(hwnd), "Matched Explorer window is not visible on the interactive desktop.");
-                            log($"Verified Explorer window hwnd=0x{hwnd.ToInt64():X}, pid={pid}, session={process.SessionId}, exact path={actual}");
+                            if (!ExplorerIsWindowVisible(hwnd))
+                            {
+                                // Shell registers the navigated window before it finishes showing it.
+                                // Keep the visibility requirement, but allow the bounded discovery poll
+                                // to observe the same verified window becoming ready.
+                                if (waitingForVisibility.Add(hwnd))
+                                    log($"Waiting for matched Explorer window to become visible: hwnd=0x{hwnd.ToInt64():X}, pid={pid}, session={process.SessionId}, exact path={actual}, elapsed={timer.ElapsedMilliseconds}ms");
+                                continue;
+                            }
+                            log($"Verified visible Explorer window hwnd=0x{hwnd.ToInt64():X}, pid={pid}, session={process.SessionId}, exact path={actual}, elapsed={timer.ElapsedMilliseconds}ms, visibilityWaited={waitingForVisibility.Contains(hwnd)}");
                             retained = true;
                             return new ExplorerTestWindow(shell, candidate, path, log);
                         }
@@ -275,6 +284,8 @@ public sealed partial class MainFormInteractionTests
                 finally { if (Marshal.IsComObject(windows)) Marshal.ReleaseComObject(windows); }
                 await Task.Delay(100, TestContext.Current.CancellationToken);
             }
+            if (waitingForVisibility.Count > 0)
+                log($"Explorer readiness timeout: matched {waitingForVisibility.Count} window(s) with the exact path/process/session, but no matched window became visible within 10 seconds.");
             if (lastNavigationError is not null) log("Last Explorer discovery COM error: " + lastNavigationError);
             if (Marshal.IsComObject(shell)) Marshal.ReleaseComObject(shell);
             throw new InvalidOperationException($"Explorer integration opted in, but no visible explorer.exe window in session {current.SessionId} navigated to {path} within 10 seconds. This runner requires an interactive Windows shell.");
