@@ -1,6 +1,6 @@
 # 2026-11-04 审计后续修复
 
-此前的 [PR #3](https://github.com/project-base-mirror/tool-storage-browser/pull/3) 已合入 `main`，合并提交为 `c7dfed6aa156f666945ded31a0852bc47cb7d1c2`。合并树与经过测试的 PR head 完全一致，合并后的 [Validate](https://github.com/project-base-mirror/tool-storage-browser/actions/runs/41783713593) 也已通过。本记录描述后续独立分支，不表示这些后续变化已经合入或发布。
+此前的 [PR #3](https://github.com/project-base-mirror/tool-storage-browser/pull/3) 已合入 `main`，合并提交为 `c7dfed6aa156f666945ded31a0852bc47cb7d1c2`。合并树与经过测试的 PR head 完全一致，合并后的 [Validate](https://github.com/project-base-mirror/tool-storage-browser/actions/runs/41783713593) 也已通过。本记录所述后续修复也已通过 [PR #4](https://github.com/project-base-mirror/tool-storage-browser/pull/4) 合入 `main`，合并提交 `f5fb5ecf54d6f43504c7277185426749999f63cd`；未发布。更新的实现与限制见 [安全工作流继续修复](Safe-Workflows-2026-11-04.md)。
 
 ## Metadata：编辑后另存，不覆盖原对象
 

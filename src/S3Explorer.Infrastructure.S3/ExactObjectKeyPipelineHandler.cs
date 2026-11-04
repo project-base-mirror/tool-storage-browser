@@ -14,18 +14,20 @@ namespace S3Explorer.Infrastructure.S3;
 internal sealed class ExactObjectKeyS3Client : AmazonS3Client, IAmazonS3
 {
     private readonly bool _validateCompatibleKeys;
+    private readonly AWSCredentials _credentials;
     private readonly S3ServiceType _serviceType;
 
     public ExactObjectKeyS3Client(AWSCredentials credentials, AmazonS3Config config,
-        bool followTemporaryRedirects, S3ServiceType serviceType)
+        bool followTemporaryRedirects, S3ServiceType serviceType, bool hasCustomHostHeader = false)
         : base(credentials, DisableTransportRedirects(config))
     {
         _serviceType = serviceType;
+        _credentials = credentials;
         _validateCompatibleKeys = MinioObjectKeyPolicy.AppliesTo(serviceType);
         if (_validateCompatibleKeys)
             RuntimePipeline.AddHandlerBefore<Marshaller>(new CompatibleObjectKeyValidationHandler(serviceType));
         RuntimePipeline.AddHandlerBefore<Signer>(new ExactObjectKeyPipelineHandler());
-        RuntimePipeline.ReplaceHandler<AmazonS3RedirectHandler>(new ExactObjectKeyRedirectHandler(followTemporaryRedirects));
+        RuntimePipeline.ReplaceHandler<AmazonS3RedirectHandler>(new ExactObjectKeyRedirectHandler(followTemporaryRedirects, serviceType, hasCustomHostHeader));
     }
 
     // The SDK's presign methods are nonvirtual and bypass the runtime pipeline.
@@ -37,21 +39,26 @@ internal sealed class ExactObjectKeyS3Client : AmazonS3Client, IAmazonS3
     public new string GetPreSignedURL(GetPreSignedUrlRequest request)
     {
         ValidatePresignedUrl(request);
-        return base.GetPreSignedURL(request);
+        return request.Key?.StartsWith('/') == true
+            ? ExactObjectKeyPresigner.Sign(request, (AmazonS3Config)Config, _credentials.GetCredentials())
+            : base.GetPreSignedURL(request);
     }
 
-    public new Task<string> GetPreSignedURLAsync(GetPreSignedUrlRequest request)
+    public new async Task<string> GetPreSignedURLAsync(GetPreSignedUrlRequest request)
     {
         ValidatePresignedUrl(request);
-        return base.GetPreSignedURLAsync(request);
+        if (request.Key?.StartsWith('/') != true)
+            return await base.GetPreSignedURLAsync(request).ConfigureAwait(false);
+        var credentials = await _credentials.GetCredentialsAsync().ConfigureAwait(false);
+        return ExactObjectKeyPresigner.Sign(request, (AmazonS3Config)Config, credentials);
     }
 
     private void ValidatePresignedUrl(GetPreSignedUrlRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (_validateCompatibleKeys) MinioObjectKeyPolicy.Validate(_serviceType, request.Key);
-        if (request.Key?.StartsWith('/') == true)
-            throw new NotSupportedException("当前 SDK 无法安全生成以 / 开头的对象 Key 的预签名 URL；请使用应用内下载。");
+        ExactObjectKeyPresigner.ValidatePortableKey(request.Key);
+        if (request.Key?.StartsWith('/') == true) ExactObjectKeyPresigner.ValidateRequest(request);
     }
 
     private static AmazonS3Config DisableTransportRedirects(AmazonS3Config config)
@@ -84,18 +91,40 @@ internal sealed class ExactObjectKeyPipelineHandler : PipelineHandler
     private const string EndpointLabelPrefix = "{S3ExplorerEndpoint";
     private static readonly ConditionalWeakTable<IRequest, PathState> States = new();
 
-    private sealed record PathState(string OriginalTemplate, string[] Labels, Uri RootEndpoint);
+    private sealed record PathState(string OriginalTemplate, string[] Labels, Uri OriginalEndpoint, Uri RootEndpoint);
 
     public override void InvokeSync(IExecutionContext executionContext)
     {
-        PreserveLeadingSlash(executionContext.RequestContext.Request);
-        base.InvokeSync(executionContext);
+        var request = executionContext.RequestContext.Request;
+        PreserveLeadingSlash(request);
+        try { base.InvokeSync(executionContext); }
+        catch { RestoreForRetry(request); throw; }
     }
 
-    public override Task<T> InvokeAsync<T>(IExecutionContext executionContext)
+    public override async Task<T> InvokeAsync<T>(IExecutionContext executionContext)
     {
-        PreserveLeadingSlash(executionContext.RequestContext.Request);
-        return base.InvokeAsync<T>(executionContext);
+        var request = executionContext.RequestContext.Request;
+        PreserveLeadingSlash(request);
+        try { return await base.InvokeAsync<T>(executionContext).ConfigureAwait(false); }
+        catch { RestoreForRetry(request); throw; }
+    }
+
+    private static void RestoreForRetry(IRequest request)
+    {
+        // BucketRegionDetector parses Endpoint while an exception unwinds.
+        // Give it the unmodified bucket boundary before the next attempt is
+        // resolved and signed. Otherwise path-style requests look bucketless.
+        if (!States.TryGetValue(request, out var previous)) return;
+        if (ReferenceEquals(request.Endpoint, previous.RootEndpoint)) request.Endpoint = previous.OriginalEndpoint;
+        RestoreEndpointPath(request);
+    }
+
+    internal static void RestoreEndpointPath(IRequest request)
+    {
+        if (!States.TryGetValue(request, out var previous)) return;
+        request.ResourcePath = previous.OriginalTemplate;
+        foreach (var label in previous.Labels) request.PathResources.Remove(label);
+        States.Remove(request);
     }
 
     internal static void PreserveLeadingSlash(IRequest request)
@@ -141,8 +170,9 @@ internal sealed class ExactObjectKeyPipelineHandler : PipelineHandler
             }
             var originalTemplate = request.ResourcePath;
             request.ResourcePath = "/" + string.Join('/', labels) + "/{Key+}";
+            var originalEndpoint = request.Endpoint;
             request.Endpoint = new Uri(request.Endpoint.GetLeftPart(UriPartial.Authority) + "/");
-            States.Add(request, new PathState(originalTemplate, labels, request.Endpoint));
+            States.Add(request, new PathState(originalTemplate, labels, originalEndpoint, request.Endpoint));
         }
 
         // Also check on retries. The endpoint is already root after the first
@@ -153,31 +183,5 @@ internal sealed class ExactObjectKeyPipelineHandler : PipelineHandler
             request.Endpoint, request.ResourcePath, false, request.PathResources);
         if (!string.Equals(wirePath, canonicalPath, StringComparison.Ordinal))
             throw new NotSupportedException("无法无损签名特殊对象 Key，已停止操作以防止访问其他对象。");
-    }
-}
-
-internal sealed class ExactObjectKeyRedirectHandler(bool followTemporaryRedirects) : AmazonS3RedirectHandler
-{
-    protected override void FinalizeForRedirect(IExecutionContext executionContext, string redirectedLocation)
-    {
-        if (!followTemporaryRedirects)
-            RefuseRedirect(executionContext, "当前连接已禁用临时重定向；请配置正确的 Endpoint 后重试。");
-        // S3's redirect handler signs directly, bypassing the runtime pre-signer.
-        // A redirected authority/path can require a different bucket boundary;
-        // refuse this unsupported route rather than silently target an alias.
-        var request = executionContext.RequestContext.Request;
-        if (request.PathResources is not null &&
-            request.PathResources.TryGetValue("{Key+}", out var key) && key.StartsWith('/'))
-            RefuseRedirect(executionContext, "以 / 开头的对象 Key 不支持自动重定向；请配置正确的区域 Endpoint 后重试。");
-        base.FinalizeForRedirect(executionContext, redirectedLocation);
-    }
-
-    private static void RefuseRedirect(IExecutionContext executionContext, string message)
-    {
-        // The base handler normally disposes this after FinalizeForRedirect.
-        // Refusal throws before that point, so release the body/connection here.
-        executionContext.ResponseContext.HttpResponse?.ResponseBody?.Dispose();
-        executionContext.ResponseContext.HttpResponse = null;
-        throw new NotSupportedException(message);
     }
 }

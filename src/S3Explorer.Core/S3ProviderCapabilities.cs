@@ -7,9 +7,13 @@ public sealed record S3ProviderCapabilities(
 {
     // A header being accepted is not evidence that the provider enforces it.
     // Automatic move is enabled only for the verified atomic delete contract.
-    public BucketFeatureSupport ConditionalDelete => ServiceType == S3ServiceType.AmazonS3
-        ? BucketFeatureSupport.Yes("AWS S3 支持 DeleteObject If-Match 条件。")
-        : BucketFeatureSupport.No("此服务商未验证可靠的条件删除，已禁用自动移动；请复制后人工核对再删除源对象。");
+    public BucketFeatureSupport ConditionalDelete => ServiceType switch
+    {
+        S3ServiceType.AmazonS3 => BucketFeatureSupport.Yes("AWS S3 支持 DeleteObject If-Match 条件。"),
+        S3ServiceType.SupabaseStorage => BucketFeatureSupport.No(
+            "Supabase S3 未提供可靠的条件删除，已禁用自动移动。请先复制并人工核对；或在应用外使用 Supabase 原生移动 API（≤5 GB，需单独配置 REST 身份，新对象所有者会变为操作发起人）。"),
+        _ => BucketFeatureSupport.No("此服务商未验证可靠的条件删除，已禁用自动移动；请复制后人工核对再删除源对象。")
+    };
 
 }
 

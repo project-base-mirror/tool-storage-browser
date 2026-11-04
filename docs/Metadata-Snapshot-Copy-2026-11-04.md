@@ -17,9 +17,17 @@ In-place and batch metadata rewrites remain disabled. ETags identify content, no
 - Missing/unrepresentable metadata and an unparseable stored Expires header are refused.
 - Destination key is preserved exactly, including leading/repeated slashes and spaces. `If-None-Match: *` checks **current** destination absence. A historical key whose current version is a delete marker may receive a new copy; no historical version is deleted.
 
-The destination preserves the edited snapshot's five supported headers and user metadata, plus source Content-Language, website redirect, storage class, and explicit SSE-S3. Tags use server-side COPY. AWS CopyObject also defaults annotations to COPY. The new object receives a new creation time/version and its own lifecycle/policy evaluation; this is not a clone of all system-generated state.
+The destination preserves the edited snapshot's five supported headers and user metadata, plus source Content-Language, website redirect, storage class, and explicit SSE-S3. Tags use server-side COPY of the source version's values **at execution time**; a version ID does not freeze tags or other independently mutable object settings. AWS CopyObject also defaults annotations to COPY. The new object receives a new creation time/version and its own lifecycle/policy evaluation; this is not a clone of all system-generated state.
 
 A conflict, timeout, cancellation, or permission failure never triggers an unguarded write, multipart fallback, or deletion. If the copy response is lost, the new key might already exist. Refresh the destination before retrying; a retry remains create-only.
+
+## Preservation and recovery improvements
+
+- Property loading and Metadata save-as preserve the header and metadata **strings returned by the SDK**, including leading/trailing whitespace in values. The application no longer applies upload-default trimming to an existing snapshot. This does not promise preservation of arbitrary raw HTTP bytes that the SDK or HTTP stack already normalized. Existing upload-default normalization is unchanged; metadata validation still rejects header injection, duplicates, and values exceeding the 2 KiB limit.
+- Saving commits an active metadata grid cell before reading it, avoiding silent loss of the final edit. Merely reading or closing the editor does not issue storage writes.
+- Suggested new keys respect S3's 1,024-byte UTF-8 limit without splitting Unicode characters or suggesting the source key itself. Short source keys, including slashes and spaces, remain exact prefixes of the suggestion.
+- Destination 409/412 responses and uncertain post-dispatch timeouts, cancellation, and server failures now explain how to inspect the destination before another attempt. The application never falls back to an overwrite or deletes either key. Because the AWS SDK can retry internally, even a final 412 can follow an earlier successful attempt whose response was lost. AWS status and request ID remain available in the error dialog.
+- Version history provides recovery, not a compare-and-swap token for the current metadata revision. This improvement intentionally does not re-enable in-place or batch replacement.
 
 ## SDK regression
 
@@ -36,6 +44,7 @@ New isolated tests cover request marshalling, exact keys, immutable source ident
 - [AWS CopyObject API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html): destination conditions, source versions/conditions, default tag and annotation copying, ACL reset, encryption overrides, redirect special handling.
 - [AWS conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html): create-only current-version semantics and conflict handling.
 - [AWS object metadata](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html): immutable user metadata and missing-metadata reporting.
+- [AWS versioning workflows](https://docs.aws.amazon.com/AmazonS3/latest/userguide/versioning-workflows.html): new versions preserve old objects, while tag changes do not create a new version.
 - [AWS object ownership](https://docs.aws.amazon.com/AmazonS3/latest/userguide/about-object-ownership.html): BucketOwnerEnforced and accepted ACL headers.
 - [AWS HEAD response SDK contract](https://docs.aws.amazon.com/sdkfornet/v4/apidocs/items/S3/TGetObjectMetadataResponse.html): MissingMeta, encryption/lock fields and permission-dependent visibility.
 - [SDK HEAD unmarshaller](https://github.com/aws/aws-sdk-net/blob/main/sdk/src/Services/S3/Custom/Model/Internal/MarshallTransformations/GetObjectMetadataResponseUnmarshaller.cs) and [HeadersCollection](https://github.com/aws/aws-sdk-net/blob/main/sdk/src/Services/S3/Custom/Model/HeadersCollection.cs): Expires handling.

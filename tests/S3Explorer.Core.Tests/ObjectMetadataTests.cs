@@ -28,6 +28,39 @@ public sealed class ObjectMetadataTests
     }
 
     [Fact]
+    public void MetadataCopyValidationPreservesValuesWithoutChangingUploadNormalization()
+    {
+        var input = new ObjectWriteHeaders(" text/plain ", " max-age=10 ", " gzip ", " inline ",
+            Metadata: new Dictionary<string, string>
+            {
+                ["x-amz-meta-build"] = " 42 ",
+                ["space"] = " \u00a0 ",
+                ["empty"] = ""
+            });
+        var copy = input.ValidateForMetadataCopy();
+        Assert.Equal(input.ContentType, copy.ContentType);
+        Assert.Equal(input.CacheControl, copy.CacheControl);
+        Assert.Equal(input.ContentEncoding, copy.ContentEncoding);
+        Assert.Equal(input.ContentDisposition, copy.ContentDisposition);
+        Assert.Equal(" 42 ", copy.Metadata!["build"]);
+        Assert.Equal(" \u00a0 ", copy.Metadata["space"]);
+        Assert.Equal("", copy.Metadata["empty"]);
+        Assert.Equal("42", input.ValidateAndNormalize().Metadata!["build"]);
+        Assert.Equal("text/plain", input.ValidateAndNormalize().ContentType);
+    }
+
+    [Fact]
+    public void PreservedMetadataStillRejectsInjectionAndCountsUntrimmedBytes()
+    {
+        Assert.Throws<ArgumentException>(() => new ObjectWriteHeaders(CacheControl: "ok\r\nInjected: yes")
+            .ValidateForMetadataCopy());
+        Assert.Throws<ArgumentException>(() => ObjectMetadataValidator.ValidatePreservingValues(
+            new Dictionary<string, string> { ["key"] = "\r\nInjected: yes" }));
+        Assert.Throws<ArgumentException>(() => ObjectMetadataValidator.ValidatePreservingValues(
+            new Dictionary<string, string> { ["key"] = new string(' ', 2048) }));
+    }
+
+    [Fact]
     public void MetadataReplacementIsDisabledUntilContentAndAllAttributesCanBePreservedAtomically()
     {
         foreach (var provider in Enum.GetValues<S3ServiceType>())

@@ -26,7 +26,7 @@ public sealed partial class S3StorageService
         DateTimeOffset? expiresUtc = DateTimeOffset.TryParse(rawExpires, CultureInfo.InvariantCulture,
             DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
             out var parsedExpires) ? parsedExpires : null;
-        var metadata = ObjectMetadataValidator.Validate(response.Metadata.Keys.ToDictionary(
+        var metadata = ObjectMetadataValidator.ValidatePreservingValues(response.Metadata.Keys.ToDictionary(
             name => name,
             name => response.Metadata[name],
             StringComparer.OrdinalIgnoreCase));
@@ -41,9 +41,9 @@ public sealed partial class S3StorageService
             response.StorageClass?.Value,
             response.VersionId,
             metadata,
-            NullIfWhiteSpace(response.Headers.CacheControl),
-            NullIfWhiteSpace(response.Headers.ContentEncoding),
-            NullIfWhiteSpace(response.Headers.ContentDisposition),
+            response.Headers.CacheControl,
+            response.Headers.ContentEncoding,
+            response.Headers.ContentDisposition,
             expiresUtc)
         {
             ServerSideEncryptionMethod = response.ServerSideEncryptionMethod?.Value,
@@ -97,7 +97,7 @@ public sealed partial class S3StorageService
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateMetadataCopy(profile, source, destinationKey, headers);
-        var normalized = headers.ValidateAndNormalize();
+        var normalized = headers.ValidateForMetadataCopy();
 
         // A version-pinned snapshot is intentional here. It is written to a DIFFERENT,
         // create-only key, never to the current source key. ETag alone is not a metadata
@@ -156,7 +156,29 @@ public sealed partial class S3StorageService
         request.Headers.ContentLanguage = actual.ContentLanguage;
         // Never fall back to unguarded COPY or multipart COPY: those paths have a
         // different preservation contract. Tags (and AWS annotations) copy server-side.
-        await client.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await client.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode is
+            System.Net.HttpStatusCode.PreconditionFailed or System.Net.HttpStatusCode.Conflict)
+        {
+            // A prior SDK attempt may have committed before its response was lost.
+            // Even a later 412 is not proof that this operation never created a copy.
+            throw new ObjectMetadataCopyException(ObjectMetadataCopyFailure.ConditionNotMet, exception);
+        }
+        catch (AmazonS3Exception exception) when (
+            (int)exception.StatusCode == 0 || (int)exception.StatusCode >= 500)
+        {
+            throw new ObjectMetadataCopyException(ObjectMetadataCopyFailure.OutcomeUnknown, exception);
+        }
+        catch (AmazonS3Exception) { throw; }
+        catch (Exception exception) when (exception is
+            TimeoutException or HttpRequestException or IOException or OperationCanceledException or
+            Amazon.Runtime.AmazonClientException)
+        {
+            throw new ObjectMetadataCopyException(ObjectMetadataCopyFailure.OutcomeUnknown, exception);
+        }
     }
 
     private static void ValidateMetadataCopy(
@@ -167,7 +189,7 @@ public sealed partial class S3StorageService
         ObjectMetadataCopyPolicy.ValidateDestination(source, destinationKey);
         if (headers.Tags is { Count: > 0 })
             throw new ArgumentException("Metadata 快照另存会由服务端保留源 Tags，不能在此操作中替换 Tags。", nameof(headers));
-        _ = headers.ValidateAndNormalize();
+        _ = headers.ValidateForMetadataCopy();
     }
 
     public async Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(
@@ -339,10 +361,6 @@ public sealed partial class S3StorageService
         if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromDays(7))
             throw new ArgumentOutOfRangeException(nameof(lifetime), "有效期必须大于 0 且不超过 7 天。");
         MinioObjectKeyPolicy.Validate(profile.ServiceType, key);
-        // The SDK's presigner bypasses the normal runtime pipeline, including
-        // our pre-signing leading-slash fix. Never return a URL for its alias.
-        if (key.StartsWith('/'))
-            throw new NotSupportedException("当前 SDK 无法安全生成以 / 开头的对象 Key 的预签名 URL；请使用应用内下载。");
 
         using var client = _factory.Create(profile);
         return client.GetPreSignedURL(new GetPreSignedUrlRequest
