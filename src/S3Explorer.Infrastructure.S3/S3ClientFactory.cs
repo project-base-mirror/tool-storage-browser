@@ -114,7 +114,8 @@ public sealed class S3ClientFactory
             var handler = new SocketsHttpHandler
             {
                 AllowAutoRedirect = clientConfig.AllowAutoRedirect,
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+                // S3 object bytes and HEAD Content-Length must never be transformed.
+                AutomaticDecompression = DecompressionMethods.None
             };
             handler.SslOptions.RemoteCertificateValidationCallback =
                 static (_, _, _, _) => true;

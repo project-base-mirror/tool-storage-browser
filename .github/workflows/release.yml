@@ -153,4 +153,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/Verify-RemoteRelease.ps1 -Tag $env:RELEASE_TAG
+        run: ./scripts/Verify-RemoteRelease.ps1 -Tag $env:RELEASE_TAG -SkipPages

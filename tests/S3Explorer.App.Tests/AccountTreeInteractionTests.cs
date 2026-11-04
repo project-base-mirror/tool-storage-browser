@@ -7,6 +7,113 @@ namespace S3Explorer.App.Tests;
 public sealed partial class MainFormInteractionTests
 {
     [Fact]
+    public async Task TreeSaveRefreshesCredentialSelectorsAndCdnAlongWithResolvedProfiles()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            var rotated = new CredentialProfile
+            {
+                Name = "rotated", Provider = CredentialProviderKind.S3Compatible,
+                Kind = CredentialKind.AccessKeyPair, AccessKeyId = "new-access", Secret = "new-secret"
+            };
+            var cdn = new CdnProfile { Name = "CLI CDN", BaseUrl = "https://cdn.example.test" };
+            fixture.Configuration.Credentials = [rotated];
+            fixture.Configuration.Cdn = new([cdn], []);
+            await fixture.Store.SaveConfigurationAsync(fixture.Store.Saved with
+            {
+                Profiles = fixture.Store.Saved.Profiles.Select(value => value.Id == fixture.Second.Id
+                    ? value with { AccessKey = rotated.AccessKeyId, SecretKey = rotated.Secret } : value).ToArray()
+            });
+
+            await InvokeAccountTask(fixture.Form, "MoveProfileToGroupAsync", fixture.First, fixture.Group.Id);
+
+            Assert.Equal(rotated, Assert.Single(GetField<IReadOnlyList<CredentialProfile>>(fixture.Form, "_credentials")));
+            Assert.Equal(cdn.Id, Assert.Single(GetField<CdnConfiguration>(fixture.Form, "_cdnConfiguration").Profiles).Id);
+            Assert.Equal("new-secret", GetField<IReadOnlyList<ConnectionProfile>>(fixture.Form, "_profiles")
+                .Single(value => value.Id == fixture.Second.Id).SecretKey);
+        });
+    }
+
+    [Fact]
+    public async Task TreeMoveKeepsConnectionsAddedAfterTheGuiSnapshot()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            var added = fixture.First with { Id = Guid.NewGuid(), Name = "CLI added", SortOrder = 2 };
+            await fixture.Store.SaveConfigurationAsync(fixture.Store.Saved with
+            {
+                Profiles = fixture.Store.Saved.Profiles.Append(added).ToArray()
+            });
+
+            await InvokeAccountTask(fixture.Form, "MoveProfileToGroupAsync", fixture.First, fixture.Group.Id);
+
+            Assert.Contains(fixture.Store.Saved.Profiles, value => value.Id == added.Id);
+            Assert.Equal(added.Id, Assert.IsType<ConnectionProfile>(fixture.Account(added.Id).Tag).Id);
+            Assert.Equal(fixture.Group.Id, fixture.Store.Saved.Profiles.Single(value => value.Id == fixture.First.Id).GroupId);
+        });
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 0)]
+    [InlineData(true, true, false, 0)]
+    [InlineData(true, false, true, 0)]
+    [InlineData(true, false, false, 1)]
+    public async Task StartupAutoConnectHonorsSettingExactIdAndCredentialReadiness(
+        bool enabled, bool missing, bool incomplete, int expectedCalls)
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            if (incomplete)
+            {
+                var profiles = fixture.Store.Saved.Profiles.Select(value => value.Id == fixture.Second.Id
+                    ? value with { AccessKey = "", SecretKey = "" } : value).ToArray();
+                await fixture.Store.SaveConfigurationAsync(fixture.Store.Saved with { Profiles = profiles });
+                SetField(fixture.Form, "_profiles", profiles);
+                InvokeInstance(fixture.Form, "PopulateProfiles");
+            }
+            SetField(fixture.Form, "_settings", new AppSettings
+            {
+                AutoConnectLastProfile = enabled,
+                LastProfileId = missing ? Guid.NewGuid() : fixture.Second.Id
+            });
+            var calls = 0;
+            fixture.Storage.Buckets = () =>
+            {
+                calls++;
+                return Task.FromResult<IReadOnlyList<BucketInfo>>([]);
+            };
+
+            await InvokeAccountTask(fixture.Form, "AutoConnectLastProfileAsync");
+
+            Assert.Equal(expectedCalls, calls);
+            if (expectedCalls > 0)
+                Assert.Equal(fixture.Second.Id, GetField<ConnectionProfile>(fixture.Form, "_currentProfile").Id);
+            else
+                Assert.Null(GetField<ConnectionProfile?>(fixture.Form, "_currentProfile"));
+        });
+    }
+
+    [Fact]
+    public async Task SuccessfulConnectionPersistsLastProfileForNextStartup()
+    {
+        await RunMessagePumpAsync(async _ =>
+        {
+            await using var fixture = await AccountTreeFixture.CreateAsync();
+            SetField(fixture.Form, "_settings", new AppSettings { LastProfileId = fixture.First.Id });
+            fixture.Storage.Buckets = () => Task.FromResult<IReadOnlyList<BucketInfo>>([]);
+
+            await InvokeAccountTask(fixture.Form, "LoadBucketsAsync", fixture.Second, fixture.Account(fixture.Second.Id));
+
+            Assert.Equal(fixture.Second.Id, GetField<AppSettings>(fixture.Form, "_settings").LastProfileId);
+            var saved = await GetField<AppSettingsStore>(fixture.Form, "_settingsStore").LoadAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(fixture.Second.Id, saved.LastProfileId);
+        });
+    }
+
+    [Fact]
     public async Task AccountsAndBlankSpaceExposeCreationAndToolbarDisablesInvalidMoves()
     {
         await RunMessagePumpAsync(async host =>
@@ -232,6 +339,7 @@ public sealed partial class MainFormInteractionTests
         public ConnectionProfile Second { get; } = TestAccount("Second", 1);
         public ConnectionGroup Group { get; } = new() { Name = "Test group" };
         public RecordingProfileStore Store { get; }
+        public RecordingExplorerStore Configuration { get; }
         public FakeStorageProxy Storage { get; }
         public MainForm Form { get; }
         public TreeView Tree => GetField<TreeView>(Form, "_tree");
@@ -242,10 +350,12 @@ public sealed partial class MainFormInteractionTests
         {
             Directory.CreateDirectory(_directory);
             Store = new RecordingProfileStore(new([First, Second], [Group]));
+            Configuration = new RecordingExplorerStore(Store);
             var storage = DispatchProxy.Create<IS3StorageService, FakeStorageProxy>();
             Storage = (FakeStorageProxy)(object)storage;
             _queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(_directory, "tasks.json")), new NeverRunExecutor());
-            Form = CreateForm(_queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(_directory, "logs")), Store, storage: storage);
+            Form = CreateForm(_queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(_directory, "logs")), Store,
+                storage: storage, configurationStore: Configuration);
             _ = Form.Handle;
             _ = Tree.Handle;
             SetField(Form, "_profiles", Store.Saved.Profiles);
@@ -276,11 +386,33 @@ public sealed partial class MainFormInteractionTests
             nodes.Cast<TreeNode>().SelectMany(node => new[] { node }.Concat(MainFormNodes(node.Nodes)));
     }
 
+    private sealed class RecordingExplorerStore(RecordingProfileStore profiles) : IExplorerConfigurationStore
+    {
+        public CdnConfiguration Cdn { get; set; } = CdnConfiguration.Empty;
+        public IReadOnlyList<CredentialProfile> Credentials { get; set; } = [];
+        public Task<ExplorerConfiguration> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExplorerConfiguration(profiles.Saved, Cdn, Credentials));
+        public async Task SaveAsync(ExplorerConfiguration configuration, CancellationToken cancellationToken = default)
+        {
+            await profiles.SaveConfigurationAsync(configuration.Storage, cancellationToken);
+            Cdn = configuration.Cdn;
+            Credentials = configuration.CredentialVault;
+        }
+        public async Task<ExplorerConfiguration> UpdateAsync(
+            Func<ExplorerConfiguration, ExplorerConfiguration> update, CancellationToken cancellationToken = default)
+        {
+            var next = update(await LoadAsync(cancellationToken));
+            await SaveAsync(next, cancellationToken);
+            return next;
+        }
+    }
+
     private sealed class RecordingProfileStore(ConnectionProfileConfiguration initial) : IProfileStore
     {
         public ConnectionProfileConfiguration Saved { get; private set; } = initial;
         public Func<Task>? BeforeSave { get; set; }
         public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(Saved.Profiles);
+        public Task<ConnectionProfileConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default) => Task.FromResult(Saved);
         public Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default) =>
             SaveConfigurationAsync(Saved with { Profiles = profiles.ToArray() }, cancellationToken);
         public async Task SaveConfigurationAsync(ConnectionProfileConfiguration configuration, CancellationToken cancellationToken = default)

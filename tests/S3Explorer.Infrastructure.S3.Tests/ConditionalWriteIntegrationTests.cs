@@ -10,6 +10,46 @@ public sealed class ConditionalWriteIntegrationTests
 {
     [ConfiguredProviderFact("minio")]
     [Trait("Category", "Integration")]
+    public async Task CreateOnlySmallServerCopyPreservesExistingTargetAndCopiesToAbsentTarget()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var profile = ProviderMatrixCase.All.Single(item => item.Id == "minio").Resolve().CreateProfile()
+            with { EnableMultipartCopy = true };
+        using var client = new S3ClientFactory().Create(profile);
+        var service = new S3StorageService(new S3ClientFactory());
+        var bucket = $"s3explorer-copy-condition-{Guid.NewGuid():N}";
+        var context = new TransferOperationContext(new TransferExecutionOptions
+        {
+            AllowDestinationOverwrite = false, RetainFailedTransferState = false
+        }, new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
+        await client.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, token);
+        try
+        {
+            await client.PutObjectAsync(new PutObjectRequest
+                { BucketName = bucket, Key = "source", ContentBody = "source" }, token);
+            var original = await client.PutObjectAsync(new PutObjectRequest
+                { BucketName = bucket, Key = "target", ContentBody = "keep-existing" }, token);
+            var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
+                service.CopyObjectAsync(profile, bucket, "source", bucket, "target", context, token));
+            Assert.Equal(TransferFailureCategory.Conflict, failure.Failure.Category);
+            var unchanged = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                { BucketName = bucket, Key = "target" }, token);
+            Assert.Equal(original.ETag, unchanged.ETag);
+            await service.CopyObjectAsync(profile, bucket, "source", bucket, "new", context, token);
+            using var copied = await client.GetObjectAsync(new GetObjectRequest { BucketName = bucket, Key = "new" }, token);
+            using var reader = new StreamReader(copied.ResponseStream);
+            Assert.Equal("source", await reader.ReadToEndAsync(token));
+        }
+        finally
+        {
+            foreach (var key in new[] { "source", "target", "new" })
+                await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = key }, CancellationToken.None);
+            await client.DeleteBucketAsync(new DeleteBucketRequest { BucketName = bucket }, CancellationToken.None);
+        }
+    }
+
+    [ConfiguredProviderFact("minio")]
+    [Trait("Category", "Integration")]
     public async Task ConfirmedEditUsesAtomicEtagConditionAndNeverFallsBackToOverwrite()
     {
         var token = TestContext.Current.CancellationToken;

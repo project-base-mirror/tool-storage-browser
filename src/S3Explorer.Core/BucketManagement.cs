@@ -88,7 +88,12 @@ public sealed record BucketPropertiesSnapshot(
     BucketAclSnapshot Acl,
     BucketPublicAccessBlockSnapshot? PublicAccessBlock,
     BucketObjectOwnershipMode? ObjectOwnership,
-    BucketCapabilities Capabilities);
+    BucketCapabilities Capabilities)
+{
+    // Missing/denied state is distinct from an empty/default configuration.
+    public IReadOnlyDictionary<string, string> ReadErrors { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+}
 
 public sealed record BucketEmptySummary(
     long ObjectCount,

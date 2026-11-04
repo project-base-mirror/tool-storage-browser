@@ -129,7 +129,7 @@ Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release
 
 ## 6. 等待并核验 Pages
 
-推送 `main` 后，`Deploy project homepage` 会校验并部署 `docs/site/`。等待 Release 与 Pages 两个工作流都成功，然后先运行默认的轻量远端验收：
+推送 `main` 后，`Deploy project homepage` 先校验清单与已公开 Release 资产/digest。若匹配的新 Release 尚未就绪，保留旧站点而不部署提前发布的清单；`Publish GitHub Release` 成功完成后会重新触发 Pages。Release 内部验收使用 `-SkipPages`，避免与尚未开始的 Pages 相互等待。等待 Release 与 Pages 两个工作流都成功，然后先运行默认的轻量远端验收：
 
 ```powershell
 pwsh .\scripts\Verify-RemoteRelease.ps1 -Tag vX.Y.Z

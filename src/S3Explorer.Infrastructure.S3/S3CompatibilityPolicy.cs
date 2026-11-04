@@ -12,8 +12,8 @@ public static class S3CompatibilityPolicy
     private const long AlignmentBytes = 8L * 1024 * 1024;
 
     public static bool IsRestrictedListBuckets(AmazonS3Exception exception) =>
-        exception.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized ||
-        IsCode(exception, "AccessDenied", "AllAccessDisabled", "UnauthorizedOperation");
+        exception.StatusCode != HttpStatusCode.Unauthorized &&
+        IsCode(exception, "AccessDenied", "UnauthorizedOperation");
 
     public static bool ShouldFallbackToSingleDelete(AmazonS3Exception exception) =>
         exception.StatusCode is HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented or HttpStatusCode.Forbidden ||

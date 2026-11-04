@@ -20,7 +20,8 @@ public sealed partial class S3StorageService
         RemoteObjectIdentity remote,
         long segmentSize,
         TransferOperationContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onCommitted = null)
     {
         if (segmentSize <= 0) throw new ArgumentOutOfRangeException(nameof(segmentSize));
         var segmentCount = checked((int)(remote.Length / segmentSize + (remote.Length % segmentSize == 0 ? 0 : 1)));
@@ -130,6 +131,7 @@ public sealed partial class S3StorageService
         checkpoint = checkpoint with { IntegritySummary = integrity };
         await context.UpdateCheckpointAsync(confirmedBytes, checkpoint, context.MultipartCheckpoint, cancellationToken).ConfigureAwait(false);
         ResumableDownloadFile.Commit(temporaryPath, localPath, remote.Length, context.Options.AllowDestinationOverwrite);
+        onCommitted?.Invoke();
         context.ReportProgress(new TransferProgress(remote.Length, remote.Length));
     }
 

@@ -14,12 +14,17 @@ internal sealed class S3TransferTaskExecutor(
         var task = context.Task;
         var profile = await ResolveProfileAsync(task, cancellationToken).ConfigureAwait(false);
         var transfer = runtime.CreateContext(context);
+        // Discovery-time conflict checks are advisory. Enforce the selected policy again
+        // in the atomic destination write, including server-side copy and move.
+        transfer = transfer with
+        {
+            Options = transfer.Options with { AllowDestinationOverwrite = task.ConflictPolicy == ObjectConflictPolicy.Overwrite }
+        };
         using var sleepLease = WindowsSleepInhibitor.Acquire();
 
         switch (task.Direction)
         {
             case TransferDirection.Upload:
-                transfer = transfer with { Options = transfer.Options with { AllowDestinationOverwrite = task.ConflictPolicy == ObjectConflictPolicy.Overwrite } };
                 if (!File.Exists(task.LocalPath))
                     throw new FileNotFoundException("上传源文件不存在。", task.LocalPath);
                 await CaptureDestinationSnapshotAsync(context, profile, cancellationToken)
@@ -30,7 +35,6 @@ internal sealed class S3TransferTaskExecutor(
                 return;
 
             case TransferDirection.Download:
-                transfer = transfer with { Options = transfer.Options with { AllowDestinationOverwrite = task.ConflictPolicy == ObjectConflictPolicy.Overwrite } };
                 var directory = Path.GetDirectoryName(task.LocalPath);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
                 if (string.IsNullOrWhiteSpace(task.VersionId))

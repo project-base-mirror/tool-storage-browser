@@ -250,6 +250,15 @@ internal sealed partial class MainForm
         ConnectionProfile? initialProfile = null,
         string? initialBucket = null)
     {
+        var baseline = new ExplorerConfiguration(
+            new ConnectionProfileConfiguration(_profiles, _profileGroups), _cdnConfiguration, _credentials);
+        async Task PersistCertificateAndRebaseAsync(Guid id, CdnCertificateCheckResult result, CancellationToken token)
+        {
+            await PersistCdnCertificateResultAsync(id, result, token);
+            // This dialog already knows about its own immediate certificate write. Rebase
+            // only that field, never unrelated records refreshed from another process.
+            baseline = baseline with { Cdn = CdnCertificatePersistence.Apply(baseline.Cdn, id, result) };
+        }
         using var dialog = new CdnConfigurationDialog(
             _profiles,
             _cdnConfiguration,
@@ -259,7 +268,7 @@ internal sealed partial class MainForm
             _cdnCertificateInspector,
             _storage,
             _cdnDeliveryService,
-            PersistCdnCertificateResultAsync,
+            PersistCertificateAndRebaseAsync,
             _profileGroups,
             _bucketDiscoveryCache,
             CheckCdnProfileAsync);
@@ -268,17 +277,15 @@ internal sealed partial class MainForm
 
         try
         {
-            var updated = await _configurationStore.UpdateAsync(current => current with
+            await _profileConfigurationGate.WaitAsync();
+            try
             {
-                Cdn = dialog.Configuration
-            });
-            _profiles = updated.Storage.Profiles;
-            _profileGroups = updated.Storage.Groups;
-            _credentials = updated.CredentialVault;
-            _cdnConfiguration = updated.Cdn;
-            if (_currentProfile is not null)
-                _currentProfile = _profiles.FirstOrDefault(value => value.Id == _currentProfile.Id);
-            UpdateCommandStates();
+                var proposed = baseline with { Cdn = dialog.Configuration };
+                var updated = await _configurationStore.UpdateAsync(current =>
+                    ExplorerConfigurationMerger.Merge(baseline, proposed, current));
+                ApplyConfiguration(updated);
+            }
+            finally { _profileConfigurationGate.Release(); }
             MessageBox.Show(
                 this,
                 "CDN 配置和 Bucket/前缀关联已保存。",
@@ -298,11 +305,19 @@ internal sealed partial class MainForm
         CdnCertificateCheckResult result,
         CancellationToken cancellationToken)
     {
-        var profile = _cdnConfiguration.Profiles.FirstOrDefault(value => value.Id == profileId);
-        var updated = CdnCertificatePersistence.Apply(_cdnConfiguration, profileId, result);
-        await _cdnConfigurationStore.SaveAsync(updated, cancellationToken);
-        _cdnConfiguration = updated;
-        _logger.Info($"CDN certificate result saved immediately. Profile={profile!.Name}; CheckedAt={result.CheckedAt:O}");
+        await _profileConfigurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            var baseline = new ExplorerConfiguration(
+                new ConnectionProfileConfiguration(_profiles, _profileGroups), _cdnConfiguration, _credentials);
+            var proposed = baseline with { Cdn = CdnCertificatePersistence.Apply(baseline.Cdn, profileId, result) };
+            var updated = await _configurationStore.UpdateAsync(current =>
+                ExplorerConfigurationMerger.Merge(baseline, proposed, current), cancellationToken);
+            ApplyConfiguration(updated);
+            var profile = updated.Cdn.Profiles.Single(value => value.Id == profileId);
+            _logger.Info($"CDN certificate result saved immediately. Profile={profile.Name}; CheckedAt={result.CheckedAt:O}");
+        }
+        finally { _profileConfigurationGate.Release(); }
     }
 
     private async Task<CdnProfileCheckOutcome> CheckCdnProfileAsync(

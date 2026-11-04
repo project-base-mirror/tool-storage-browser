@@ -30,6 +30,7 @@ internal sealed record CliTransferSettings
 
     public TransferExecutionOptions ToExecutionOptions() => new()
     {
+        RetainFailedTransferState = false,
         MultipartThresholdBytes = MultipartThresholdBytes,
         PartSizeBytes = PartSizeBytes,
         MultipartConcurrency = MultipartConcurrency,
@@ -71,8 +72,8 @@ internal sealed class CliTransferRuntime
 
     public static CliTransferRuntime Create(CliArguments args) => new(CliTransferSettings.Parse(args));
 
-    public TransferOperationContext CreateContext() => new(
-        Settings.ToExecutionOptions(), _bandwidthLimiter, null, null, _ => { },
+    public TransferOperationContext CreateContext(bool allowDestinationOverwrite = true) => new(
+        Settings.ToExecutionOptions() with { AllowDestinationOverwrite = allowDestinationOverwrite }, _bandwidthLimiter, null, null, _ => { },
         (_, _, _, _) => Task.CompletedTask);
 
     public Task ForEachAsync<T>(

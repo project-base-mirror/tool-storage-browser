@@ -11,6 +11,36 @@ public sealed class ConnectionArchiveServiceTests
 {
     private readonly ConnectionArchiveService _service = new();
 
+    [Fact]
+    public void ReplacingSharedCredentialRefreshesUnselectedExistingProfiles()
+    {
+        var (existing, oldCredential) = CreateUnifiedProfile();
+        existing = existing with { Name = "keep existing" };
+        var importedCredential = oldCredential with
+        {
+            Id = Guid.NewGuid(), AccessKeyId = "new-access", Secret = "new-secret", SessionToken = "new-session"
+        };
+        var imported = existing with
+        {
+            Id = Guid.NewGuid(), Name = "imported", CredentialId = importedCredential.Id,
+            AccessKey = importedCredential.AccessKeyId, SecretKey = importedCredential.Secret,
+            SessionToken = importedCredential.SessionToken
+        };
+        var package = _service.Import(_service.Export([imported], true, "test-password", credentials: [importedCredential]), "test-password");
+
+        var merged = _service.MergePackage([existing], CdnConfiguration.Empty, [oldCredential], package,
+            [imported.Id], importCredentials: true, ConnectionImportConflictStrategy.Replace);
+
+        Assert.Equal(oldCredential.Id, Assert.Single(merged.Credentials).Id);
+        var retained = merged.Profiles.Single(value => value.Id == existing.Id);
+        Assert.Equal("new-access", retained.AccessKey);
+        Assert.Equal("new-secret", retained.SecretKey);
+        Assert.Equal("new-session", retained.SessionToken);
+        var persisted = new ExplorerConfiguration(new(merged.Profiles, []), merged.CdnConfiguration, merged.Credentials)
+            .ToPersistentSnapshot().ResolveCredentialReferences();
+        Assert.Equal(retained.SecretKey, persisted.Storage.Profiles.Single(value => value.Id == existing.Id).SecretKey);
+    }
+
     [Theory]
     [InlineData(UploadSigningMode.Auto)]
     [InlineData(UploadSigningMode.Streaming)]

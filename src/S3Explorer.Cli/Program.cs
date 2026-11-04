@@ -789,14 +789,11 @@ internal static class Program
                 IReadOnlyList<string> keys;
                 if (args.Flag("recursive"))
                 {
-                    keys = (await RecursiveObjectListing.ListFilesAsync(
-                        location.Prefix, 1000, ObjectListingLimits.DefaultCacheLimit,
-                        (prefix, token, ct) => storage.ListObjectsAsync(profile, location.Bucket!, prefix, token, 1000, ct),
-                        cancellationToken))
-                        .Select(item => item.Key)
-                        .Append(location.Prefix)
-                        .Distinct(StringComparer.Ordinal)
-                        .ToArray();
+                    keys = await ObjectDeletionListing.ListKeysAsync(
+                        location.Prefix, ObjectListingLimits.DefaultCacheLimit,
+                        (token, ct) => storage.ListObjectsForDeletionAsync(
+                            profile, location.Bucket!, location.Prefix, token, 1000, ct),
+                        cancellationToken);
                 }
                 else keys = [location.Prefix];
                 foreach (var chunk in keys.Chunk(1000))
@@ -973,12 +970,12 @@ internal static class Program
         CancellationToken cancellationToken)
     {
         var executed = 0;
-        await transfer.ForEachAsync(
-            plan.Items.Where(item => item.Action != FolderSyncAction.None),
-            async (item, token) =>
+        var operations = plan.Items.Where(item => item.Action != FolderSyncAction.None).ToArray();
+        LocalObjectPath.ValidateSyncDestinations(job.LocalDirectory, operations);
+        await transfer.ForEachAsync(operations, async (item, token) =>
         {
             var remoteKey = S3Path.Combine(job.Prefix, item.RelativePath);
-            var localPath = LocalObjectPath.MapRelativeKey(job.LocalDirectory, item.RelativePath);
+            var localPath = LocalObjectPath.ResolveSyncPath(job.LocalDirectory, item);
             switch (item.Action)
             {
                 case FolderSyncAction.Upload:
@@ -1092,11 +1089,11 @@ internal static class Program
                 location.Prefix, 1000, ObjectListingLimits.DefaultCacheLimit,
                 (prefix, token, ct) => storage.ListObjectsAsync(profile, location.Bucket!, prefix, token, 1000, ct),
                 cancellationToken);
-            await transfer.ForEachAsync(items, async (item, token) =>
+            var downloads = CliDownloadPlanner.Plan(target, location.Prefix, items);
+            await transfer.ForEachAsync(downloads, async (item, token) =>
             {
-                var relative = item.Key[location.Prefix.Length..].TrimStart('/');
-                await storage.DownloadFileAsync(profile, location.Bucket!, item.Key,
-                    LocalObjectPath.MapRelativeKey(target, relative), transfer.CreateContext(), token);
+                await storage.DownloadFileAsync(profile, location.Bucket!, item.ObjectKey,
+                    item.LocalPath, transfer.CreateContext(allowDestinationOverwrite: false), token);
             }, cancellationToken);
             return items.Count;
         }

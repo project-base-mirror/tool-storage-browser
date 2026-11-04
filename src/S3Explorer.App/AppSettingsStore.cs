@@ -17,6 +17,7 @@ internal sealed record AppSettings
     public bool ConfirmDelete { get; init; } = true;
     public bool ConfirmOverwrite { get; init; } = true;
     public bool AutoConnectLastProfile { get; init; }
+    public Guid? LastProfileId { get; init; }
     public bool CheckForUpdatesOnStartup { get; init; } = true;
     public bool KeepRunningInTray { get; init; } = true;
     public bool ShowTrayTransferNotifications { get; init; } = true;
@@ -44,6 +45,7 @@ internal sealed record AppSettings
             : defaults.ObjectColumnWidths;
         return this with
         {
+            LastProfileId = LastProfileId == Guid.Empty ? null : LastProfileId,
             WindowWidth = Math.Clamp(WindowWidth, 960, 10000),
             WindowHeight = Math.Clamp(WindowHeight, 600, 10000),
             LeftPanelWidth = Math.Clamp(LeftPanelWidth, 180, 4000),
@@ -61,7 +63,7 @@ internal sealed record AppSettings
                 ObjectListingLimits.MaximumCacheLimit),
             ConcurrentTransfers = Math.Clamp(ConcurrentTransfers, 1, 32),
             MultipartConcurrency = Math.Clamp(MultipartConcurrency, 1, 32),
-            MultipartThresholdMb = Math.Clamp(MultipartThresholdMb, 5, 10240),
+            MultipartThresholdMb = Math.Clamp(MultipartThresholdMb, 5, 5120),
             PartSizeMb = Math.Clamp(PartSizeMb, 5, 512),
             RetryCount = Math.Clamp(RetryCount, 0, 20),
             RetryDelaySeconds = Math.Clamp(RetryDelaySeconds, 0, 300),

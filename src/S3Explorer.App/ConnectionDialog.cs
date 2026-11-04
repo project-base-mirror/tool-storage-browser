@@ -12,16 +12,28 @@ internal sealed class ConnectionDialog : Form
     private sealed record ConnectionDraft(
         string Endpoint,
         string Region,
+        string SignatureRegion,
         bool UseHttps,
         AddressingStyle AddressingStyle,
-        UploadSigningMode UploadSigningMode);
+        UploadSigningMode UploadSigningMode,
+        Guid? CredentialId,
+        CredentialSourceKind CredentialSource,
+        string AwsProfileName,
+        string AwsSourceProfileName,
+        string AwsRoleArn,
+        string AwsRoleSessionName,
+        string AwsRoleSourceIdentity,
+        Guid? AwsExternalIdCredentialId,
+        int AwsSessionDurationSeconds,
+        string AwsWebIdentityTokenFile);
 
     private readonly IS3StorageService _storage;
-    private readonly TextBox _name = new();
+    private readonly TextBox _name = new() { Name = "ConnectionNameTextBox" };
     private readonly ComboBox _accountType = new() { Name = "AccountTypeComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _provider = new() { Name = "ProviderComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _endpoint = new() { Name = "EndpointTextBox" };
     private readonly ComboBox _region = new() { Name = "RegionComboBox", DropDownStyle = ComboBoxStyle.DropDown };
+    private readonly TextBox _signatureRegion = new() { Name = "SignatureRegionTextBox" };
     private readonly ComboBox _credentialSource = new()
     {
         Name = "CredentialSourceComboBox",
@@ -72,14 +84,14 @@ internal sealed class ConnectionDialog : Form
     private readonly RadioButton _auto = new() { Text = "自动", Checked = true, AutoSize = true };
     private readonly RadioButton _virtual = new() { Text = "Virtual Hosted", AutoSize = true };
     private readonly RadioButton _path = new() { Text = "Path Style", AutoSize = true };
-    private readonly CheckBox _https = new() { Text = "使用 HTTPS", Checked = true, AutoSize = true };
+    private readonly CheckBox _https = new() { Name = "UseHttpsCheckBox", Text = "使用 HTTPS", Checked = true, AutoSize = true };
     private readonly CheckBox _ignoreCert = new() { Text = "忽略证书错误（仅测试）", AutoSize = true, ForeColor = Color.DarkRed };
     private readonly TextBox _hostHeader = new();
     private readonly CheckBox _followRedirects = new() { Text = "处理临时重定向", Checked = true, AutoSize = true };
     private readonly CheckBox _multiDelete = new() { Text = "Multi-Object Delete", Checked = true, AutoSize = true };
     private readonly CheckBox _multipartCopy = new() { Text = "Multipart Copy", Checked = true, AutoSize = true };
     private readonly ComboBox _uploadSigning = new() { Name = "UploadSigningComboBox", DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly ComboBox _storageClass = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _storageClass = new() { Name = "StorageClassComboBox", DropDownStyle = ComboBoxStyle.DropDown };
     private readonly TextBox _defaultBucket = new();
     private readonly TextBox _externalBuckets = new()
     {
@@ -142,7 +154,7 @@ internal sealed class ConnectionDialog : Form
         _credentials = credentials?.ToList() ?? [];
         _saveNewCredentialAsync = saveNewCredentialAsync;
         _newCredential.Enabled = _newAwsExternalIdCredential.Enabled = saveNewCredentialAsync is not null;
-        Profile = profile ?? ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3);
+        Profile = profile ?? (ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3) with { SignatureRegion = string.Empty });
         // Only legacy inline-key profiles need the old endpoint-based type repair.
         // A current vault-backed or credential-free profile keeps its explicit provider.
         if (Profile.CredentialId is null && Profile.HasStoredCredentials)
@@ -278,6 +290,8 @@ internal sealed class ConnectionDialog : Form
         _advancedGroup.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         var advanced = NewFormTable();
         var advancedRow = 0;
+        AddField(advanced, ref advancedRow, FieldLabel("签名 Region 覆盖："), _signatureRegion);
+        AddHint(advanced, ref advancedRow, "留空或 auto 时按 Region 与服务商默认值签名；显式填写会覆盖 Region。已有自定义值会保留。");
         AddField(advanced, ref advancedRow, FieldLabel("默认进入 Bucket："), _defaultBucket);
         AddField(advanced, ref advancedRow, FieldLabel("外部 Bucket："), _externalBuckets);
         AddHint(advanced, ref advancedRow, "每行一个 Bucket；适用于没有 ListBuckets 权限的最小权限账户。");
@@ -420,6 +434,7 @@ internal sealed class ConnectionDialog : Form
             _name.Text = profile.Name;
             _endpoint.Text = profile.Endpoint;
             _region.Text = string.IsNullOrWhiteSpace(profile.Region) ? definition.DefaultRegion : profile.Region;
+            _signatureRegion.Text = profile.SignatureRegion;
             SelectChoice(_credentialSource, profile.CredentialSource);
             _awsProfileName.Text = profile.AwsProfileName;
             _awsSourceProfileName.Text = profile.AwsSourceProfileName;
@@ -441,8 +456,7 @@ internal sealed class ConnectionDialog : Form
             _multiDelete.Checked = profile.EnableMultiObjectDelete;
             _multipartCopy.Checked = profile.EnableMultipartCopy;
             SelectChoice(_uploadSigning, profile.UploadSigningMode);
-            _storageClass.SelectedItem = profile.DefaultStorageClass;
-            if (_storageClass.SelectedIndex < 0) _storageClass.SelectedIndex = 0;
+            _storageClass.Text = profile.DefaultStorageClass;
             _connectionTimeout.Value = Math.Clamp(profile.ConnectionTimeoutSeconds, 1, 120);
             _timeout.Value = Math.Clamp(profile.RequestTimeoutSeconds, 5, 3600);
         }
@@ -497,10 +511,6 @@ internal sealed class ConnectionDialog : Form
                 _ => "Region 同时用于服务区域与 SigV4 签名。"
             };
 
-            if (serviceType != S3ServiceType.AmazonS3)
-                SelectChoice(_credentialSource, CredentialSourceKind.StoredKeys);
-            _credentialSource.Enabled = serviceType == S3ServiceType.AmazonS3;
-
             if (applyPreset && _activeServiceType != serviceType)
             {
                 if (_connectionDrafts.TryGetValue(serviceType, out var draft))
@@ -517,6 +527,10 @@ internal sealed class ConnectionDialog : Form
                 ClearConnectionTestResult();
             }
 
+            // Restoring a provider draft must also restore its authentication source.
+            if (serviceType != S3ServiceType.AmazonS3)
+                SelectChoice(_credentialSource, CredentialSourceKind.StoredKeys);
+            _credentialSource.Enabled = serviceType == S3ServiceType.AmazonS3;
             _activeServiceType = serviceType;
             PopulateCredentialChoices(
                 serviceType,
@@ -556,6 +570,16 @@ internal sealed class ConnectionDialog : Form
         var preset = ConnectionProfile.CreatePreset(serviceType);
         _endpoint.Text = preset.Endpoint;
         _region.Text = preset.Region;
+        _signatureRegion.Clear();
+        SelectChoice(_credentialSource, preset.CredentialSource);
+        PopulateCredentialChoices(serviceType, null, null);
+        _awsProfileName.Clear();
+        _awsSourceProfileName.Clear();
+        _awsRoleArn.Clear();
+        _awsRoleSessionName.Clear();
+        _awsRoleSourceIdentity.Clear();
+        _awsSessionDuration.Value = preset.AwsSessionDurationSeconds;
+        _awsWebIdentityTokenFile.Clear();
         _https.Checked = preset.UseHttps;
         _path.Checked = preset.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = preset.AddressingStyle == AddressingStyle.VirtualHosted;
@@ -566,15 +590,36 @@ internal sealed class ConnectionDialog : Form
     private ConnectionDraft CaptureConnectionDraft() => new(
         _endpoint.Text,
         _region.Text,
+        _signatureRegion.Text,
         _https.Checked,
         _path.Checked ? AddressingStyle.PathStyle :
             _virtual.Checked ? AddressingStyle.VirtualHosted : AddressingStyle.Auto,
-        SelectedValue(_uploadSigning, UploadSigningMode.Auto));
+        SelectedValue(_uploadSigning, UploadSigningMode.Auto),
+        SelectedNullableGuid(_credential),
+        SelectedValue(_credentialSource, CredentialSourceKind.StoredKeys),
+        _awsProfileName.Text,
+        _awsSourceProfileName.Text,
+        _awsRoleArn.Text,
+        _awsRoleSessionName.Text,
+        _awsRoleSourceIdentity.Text,
+        SelectedNullableGuid(_awsExternalIdCredential),
+        (int)_awsSessionDuration.Value,
+        _awsWebIdentityTokenFile.Text);
 
     private void ApplyConnectionDraft(ConnectionDraft draft)
     {
         _endpoint.Text = draft.Endpoint;
         _region.Text = draft.Region;
+        _signatureRegion.Text = draft.SignatureRegion;
+        SelectChoice(_credentialSource, draft.CredentialSource);
+        PopulateCredentialChoices(SelectedServiceType(), draft.CredentialId, draft.AwsExternalIdCredentialId);
+        _awsProfileName.Text = draft.AwsProfileName;
+        _awsSourceProfileName.Text = draft.AwsSourceProfileName;
+        _awsRoleArn.Text = draft.AwsRoleArn;
+        _awsRoleSessionName.Text = draft.AwsRoleSessionName;
+        _awsRoleSourceIdentity.Text = draft.AwsRoleSourceIdentity;
+        _awsSessionDuration.Value = draft.AwsSessionDurationSeconds;
+        _awsWebIdentityTokenFile.Text = draft.AwsWebIdentityTokenFile;
         _https.Checked = draft.UseHttps;
         _path.Checked = draft.AddressingStyle == AddressingStyle.PathStyle;
         _virtual.Checked = draft.AddressingStyle == AddressingStyle.VirtualHosted;
@@ -715,21 +760,22 @@ internal sealed class ConnectionDialog : Form
     {
         if (_loading || _applyingSelection || !_https.Enabled || !Uri.TryCreate(_endpoint.Text.Trim(), UriKind.Absolute, out var uri)) return;
         var targetScheme = _https.Checked ? Uri.UriSchemeHttps : Uri.UriSchemeHttp;
-        if (string.Equals(uri.Scheme, targetScheme, StringComparison.OrdinalIgnoreCase)) return;
-        var builder = new UriBuilder(uri) { Scheme = targetScheme, Port = -1 };
-        _endpoint.Text = builder.Uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        if (uri.Scheme is not ("http" or "https") ||
+            string.Equals(uri.Scheme, targetScheme, StringComparison.OrdinalIgnoreCase)) return;
+        // Change only the scheme. UriBuilder normalizes away explicit default ports,
+        // which would lose :80 or :443 during a later round trip through that scheme.
+        _endpoint.Text = targetScheme + _endpoint.Text.Trim()[uri.Scheme.Length..];
     }
 
     private ConnectionProfile ReadProfile()
     {
         var serviceType = SelectedServiceType();
         var definition = S3ProviderCatalog.Get(serviceType);
-        var region = definition.RegionInput == RegionInputMode.Hidden
-            ? definition.DefaultRegion
-            : _region.Text.Trim();
+        // A hidden Region may still carry an imported or previously saved override.
+        var region = _region.Text.Trim();
         if (region.Length == 0)
             region = definition.DefaultRegion;
-        var signingRegion = S3ProviderCatalog.ResolveSigningRegion(serviceType, region);
+        var signingRegion = _signatureRegion.Text.Trim();
         var endpoint = _endpoint.Text.Trim();
         var externalBuckets = _externalBuckets.Lines
             .Select(bucket => bucket.Trim())
@@ -810,7 +856,7 @@ internal sealed class ConnectionDialog : Form
         try
         {
             var candidate = ReadProfile();
-            candidate.Validate();
+            candidate.ValidateConfiguration();
             if (!ConfirmInsecureTls(candidate))
             {
                 DialogResult = DialogResult.None;
@@ -920,12 +966,15 @@ internal sealed class ConnectionDialog : Form
             .Where(value => value.IsCompatibleWith(serviceType))
             .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        // Never silently choose an account identity when the prior reference is
+        // absent or incompatible with a newly selected provider.
+        _credential.Items.Add(new Choice<Guid?>(
+            null,
+            compatibleCredentials.Length == 0
+                ? $"（没有与 {S3ProviderCatalog.Get(serviceType).DisplayName} 兼容的 Access Key 凭据）"
+                : "（未选择 Access Key 凭据）"));
         foreach (var credential in compatibleCredentials)
             _credential.Items.Add(new Choice<Guid?>(credential.Id, $"{credential.Name} · {credential.Fingerprint}"));
-        if (compatibleCredentials.Length == 0)
-            _credential.Items.Add(new Choice<Guid?>(
-                null,
-                $"（没有与 {S3ProviderCatalog.Get(serviceType).DisplayName} 兼容的 Access Key 凭据）"));
         SelectNullableGuid(_credential, selectedCredentialId);
 
         _awsExternalIdCredential.Items.Clear();

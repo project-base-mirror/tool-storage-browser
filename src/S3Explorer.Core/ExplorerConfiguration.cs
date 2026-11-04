@@ -25,7 +25,13 @@ public sealed record ExplorerConfiguration(
         ArgumentNullException.ThrowIfNull(Storage);
         ArgumentNullException.ThrowIfNull(Cdn);
         ArgumentNullException.ThrowIfNull(CredentialVault);
+        if (Cdn.Profiles is null || Cdn.Bindings is null ||
+            Cdn.Profiles.Any(profile => profile is null) || Cdn.Bindings.Any(binding => binding is null) ||
+            CredentialVault.Any(credential => credential is null))
+            throw new InvalidDataException("统一配置包含空集合或空记录。");
 
+        try { Storage.ValidateConfiguration(); }
+        catch (ArgumentException exception) { throw new InvalidDataException(exception.Message, exception); }
         var credentials = new CredentialVault(CredentialVault);
         foreach (var profile in Storage.Profiles)
             ValidateStorageProfile(profile, credentials);
@@ -134,6 +140,19 @@ public sealed record ExplorerConfiguration(
             ?? throw new InvalidDataException($"CDN 配置“{profile.Name}”引用了不存在的控制凭据：{credentialId}");
         if (!CdnProviderCatalog.IsCredentialCompatible(profile.ProviderId, credential))
             throw new InvalidDataException($"凭据“{credential.Name}”与 CDN 控制面 Provider“{profile.ProviderId}”不兼容。");
+    }
+
+    public static ConnectionProfile ResolveStorageCredentialReferences(
+        ConnectionProfile profile, IReadOnlyList<CredentialProfile> credentials)
+    {
+        var vault = new CredentialVault(credentials);
+        ValidateStorageProfile(profile, vault);
+        var resolved = ResolveStorageProfile(profile, vault);
+        if (resolved.CredentialSource == CredentialSourceKind.StoredKeys && resolved.CredentialId is null)
+            resolved.ValidateConfiguration();
+        else
+            resolved.Validate();
+        return resolved;
     }
 
     private static ConnectionProfile ResolveStorageProfile(

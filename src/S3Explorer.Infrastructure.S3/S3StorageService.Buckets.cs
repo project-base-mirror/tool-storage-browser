@@ -51,28 +51,46 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, CancellationToken cancellationToken)
     {
         var capabilities = S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket;
+        var errors = new Dictionary<string, string>(StringComparer.Ordinal);
+        async Task<T> ReadFeatureAsync<T>(string name, Func<Task<T>> read, T unavailable)
+        {
+            try { return await read().ConfigureAwait(false); }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                errors[name] = SensitiveDataRedactor.Redact(exception.Message);
+                return unavailable;
+            }
+        }
         var policy = capabilities.Policy.Supported
-            ? await GetBucketPolicyAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            ? await ReadFeatureAsync("Policy", () => GetBucketPolicyAsync(profile, bucket, cancellationToken), (string?)null).ConfigureAwait(false)
             : null;
         var acl = capabilities.Acl.Supported
-            ? await GetBucketAclAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            ? await ReadFeatureAsync("ACL", () => GetBucketAclAsync(profile, bucket, cancellationToken),
+                new BucketAclSnapshot("未读取", BucketAclMode.Private, [])).ConfigureAwait(false)
             : new BucketAclSnapshot("未查询", BucketAclMode.Private, []);
         var publicAccessBlock = capabilities.PublicAccessBlock.Supported
-            ? await GetBucketPublicAccessBlockAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            ? await ReadFeatureAsync("Public Access Block", () => GetBucketPublicAccessBlockAsync(profile, bucket, cancellationToken),
+                (BucketPublicAccessBlockSnapshot?)null).ConfigureAwait(false)
             : null;
         var objectOwnership = capabilities.ObjectOwnership.Supported
-            ? await GetBucketObjectOwnershipAsync(profile, bucket, cancellationToken).ConfigureAwait(false)
+            ? await ReadFeatureAsync("Object Ownership", () => GetBucketObjectOwnershipAsync(profile, bucket, cancellationToken),
+                (BucketObjectOwnershipMode?)null).ConfigureAwait(false)
             : null;
         var versioning = capabilities.Versioning.Supported
-            ? (await GetBucketVersioningAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).ToString()
+            ? await ReadFeatureAsync("Versioning", async () =>
+                (await GetBucketVersioningAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).ToString(), "未读取").ConfigureAwait(false)
             : capabilities.Versioning.Reason;
         var encryption = capabilities.Encryption.Supported
-            ? (await GetBucketEncryptionAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).Summary
+            ? await ReadFeatureAsync("Encryption", async () =>
+                (await GetBucketEncryptionAsync(profile, bucket, cancellationToken).ConfigureAwait(false)).Summary, "未读取").ConfigureAwait(false)
             : capabilities.Encryption.Reason;
         return new BucketPropertiesSnapshot(
             bucket, profile.Endpoint, profile.ServiceType, profile.EffectiveSignatureRegion,
             versioning, encryption,
-            policy is not null, acl, publicAccessBlock, objectOwnership, capabilities);
+            policy is not null, acl, publicAccessBlock, objectOwnership, capabilities)
+        {
+            ReadErrors = errors
+        };
     }
 
     public async Task<string?> GetBucketPolicyAsync(
@@ -160,6 +178,8 @@ public sealed partial class S3StorageService
         ConnectionProfile profile, string bucket, BucketAclMode mode, CancellationToken cancellationToken)
     {
         EnsureBucketFeature(S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket.Acl, "Bucket ACL");
+        if (profile.ServiceType == S3ServiceType.MinIO && mode == BucketAclMode.PublicRead)
+            throw new NotSupportedException("MinIO 不支持公开读取 ACL；请显式配置 Bucket Policy。");
         using var client = _factory.Create(profile);
         await client.PutBucketAclAsync(new PutBucketAclRequest
         {
@@ -645,12 +665,7 @@ public sealed partial class S3StorageService
         var versionScan = await CollectVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
         foreach (var batch in versionScan.Items.Chunk(1000))
         {
-            var request = new DeleteObjectsRequest
-            {
-                BucketName = bucket,
-                Objects = batch.ToList()
-            };
-            await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            await DeleteBucketEntriesAsync(client, profile, bucket, batch, cancellationToken).ConfigureAwait(false);
         }
         deletedVersions = versionScan.VersionCount;
         deletedMarkers = versionScan.DeleteMarkerCount;
@@ -667,12 +682,8 @@ public sealed partial class S3StorageService
             if (objects.Count == 0)
                 break;
 
-            var request = new DeleteObjectsRequest
-            {
-                BucketName = bucket,
-                Objects = objects.Select(item => new KeyVersion { Key = item.Key }).ToList()
-            };
-            await client.DeleteObjectsAsync(request, cancellationToken).ConfigureAwait(false);
+            await DeleteBucketEntriesAsync(client, profile, bucket,
+                objects.Select(item => new KeyVersion { Key = item.Key }).ToArray(), cancellationToken).ConfigureAwait(false);
             deletedObjects += objects.Count;
         }
 
@@ -684,6 +695,35 @@ public sealed partial class S3StorageService
                 .ConfigureAwait(false);
         return new BucketEmptyResult(
             deletedObjects, deletedVersions, deletedMarkers, uploads.Count);
+    }
+
+    private static async Task DeleteBucketEntriesAsync(
+        IAmazonS3 client, ConnectionProfile profile, string bucket,
+        IReadOnlyCollection<KeyVersion> entries, CancellationToken cancellationToken)
+    {
+        if (S3CompatibilityPolicy.ShouldUseMultiObjectDelete(profile))
+        {
+            try
+            {
+                var response = await client.DeleteObjectsAsync(new DeleteObjectsRequest
+                {
+                    BucketName = bucket,
+                    Objects = entries.ToList()
+                }, cancellationToken).ConfigureAwait(false);
+                if (response.DeleteErrors is { Count: > 0 } errors)
+                    throw new InvalidOperationException($"删除失败：{errors[0].Key}，{errors[0].Code}。");
+                return;
+            }
+            catch (AmazonS3Exception exception) when (S3CompatibilityPolicy.ShouldFallbackToSingleDelete(exception))
+            {
+                // Use the same compatibility fallback as ordinary deletion.
+            }
+        }
+        foreach (var entry in entries)
+            await client.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = bucket, Key = entry.Key, VersionId = entry.VersionId
+            }, cancellationToken).ConfigureAwait(false);
     }
 
 }

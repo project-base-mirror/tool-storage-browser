@@ -145,6 +145,7 @@ internal static class AutomationCommands
         }
         var deleteMode = ParseDeleteMode(args.Optional("delete-mode"));
         var accessMode = ParseAccessMode(args.Optional("access"));
+        ValidateAccessMode(profile, accessMode);
         if (accessMode != PublishAccessMode.Preserve && !args.Flag("dry-run") && !args.Flag("yes"))
             throw new CliUsageException("修改对象 ACL 必须显式提供 --yes；程序不会修改 Bucket Policy 或 Public Access Block。");
 
@@ -805,6 +806,15 @@ internal static class AutomationCommands
             "mirror" => PublishDeleteMode.Mirror,
             _ => throw new CliUsageException("--delete-mode 只能是 none 或 mirror。")
         };
+
+    internal static void ValidateAccessMode(ConnectionProfile profile, PublishAccessMode mode)
+    {
+        if (profile.ServiceType == S3ServiceType.MinIO && mode == PublishAccessMode.AnonymousRead)
+            throw new CliUsageException("MinIO 不支持 public-read ACL；请显式配置 Bucket Policy，并使用 --access preserve。");
+        if (mode != PublishAccessMode.Preserve &&
+            !S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Acl.CanWrite)
+            throw new CliUsageException("此服务商未验证对象 ACL 写入；请使用 --access preserve。");
+    }
 
     private static ObjectAclMode ToObjectAclMode(PublishAccessMode value) => value switch
     {

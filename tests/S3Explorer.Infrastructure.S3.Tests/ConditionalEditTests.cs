@@ -8,6 +8,23 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 
 public sealed class ConditionalEditTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("cached-old-version")]
+    public async Task MetadataReplacementRejectsBeforeCredentialsOrNetworkForEveryProvider(string? versionId)
+    {
+        var service = new S3StorageService(new S3ClientFactory());
+        foreach (var provider in Enum.GetValues<S3ServiceType>())
+        {
+            // Intentionally no credentials/valid endpoint: creating a client would fail.
+            var profile = ConnectionProfile.CreatePreset(provider) with { Endpoint = "not-an-endpoint" };
+            var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
+                service.ReplaceObjectMetadataAsync(profile, "bucket", "key", versionId,
+                    new ObjectWriteHeaders(ContentType: "text/plain"), TestContext.Current.CancellationToken));
+            Assert.Equal(S3ProviderCapabilityRegistry.For(provider).Object.MetadataRewrite.Reason, error.Message);
+        }
+    }
+
     [Fact]
     public async Task PreviewLimitNeverAcceptsSilentlyTruncatedResponse()
     {

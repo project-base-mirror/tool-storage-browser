@@ -7,6 +7,23 @@ namespace S3Explorer.App.Tests;
 public sealed class ObjectPropertiesDialogLayoutTests
 {
     [Fact]
+    public void MetadataReplacementIsReadOnlyWithAnExplanation()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ObjectPropertiesDialog(Properties(), "https://s3.amazonaws.com",
+                profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
+            Assert.False(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataButton")).Enabled);
+            Assert.True(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
+            var grid = Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid"));
+            Assert.True(grid.ReadOnly);
+            Assert.False(grid.AllowUserToAddRows);
+            Assert.False(grid.AllowUserToDeleteRows);
+            Assert.Contains("保留", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+        });
+    }
+
+    [Fact]
     public void GeneralFieldsAndDownloadActionsRemainReadableAtLargeText()
     {
         RunSta(() =>

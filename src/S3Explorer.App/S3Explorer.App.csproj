@@ -11,6 +11,13 @@
     <ApplicationIcon>Assets\S3Explorer.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Embedded in single-file builds as well as multi-file installer payloads. -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>S3Explorer.SelfContained</_Parameter1>
+      <_Parameter2>$(SelfContained)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\S3Explorer.Core\S3Explorer.Core.csproj" />
     <ProjectReference Include="..\S3Explorer.Infrastructure.Configuration\S3Explorer.Infrastructure.Configuration.csproj" />
     <ProjectReference Include="..\S3Explorer.Infrastructure.Cdn\S3Explorer.Infrastructure.Cdn.csproj" />

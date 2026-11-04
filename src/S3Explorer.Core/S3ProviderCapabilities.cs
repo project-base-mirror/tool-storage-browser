@@ -5,15 +5,19 @@ public sealed record S3ProviderCapabilities(
     BucketCapabilities Bucket,
     ObjectCapabilities Object)
 {
-    // Pinned Community MinIO silently ignores If-Match on DeleteObject. Other
-    // providers retain their conditional request contract, not a live-test guarantee.
-    public BucketFeatureSupport ConditionalDelete => ServiceType == S3ServiceType.MinIO
-        ? BucketFeatureSupport.No("MinIO Community 不保证条件删除，已禁用自动移动；请复制后人工核对再删除源对象。")
-        : BucketFeatureSupport.Yes("依赖服务端遵守 DeleteObject If-Match 条件。");
+    // A header being accepted is not evidence that the provider enforces it.
+    // Automatic move is enabled only for the verified atomic delete contract.
+    public BucketFeatureSupport ConditionalDelete => ServiceType == S3ServiceType.AmazonS3
+        ? BucketFeatureSupport.Yes("AWS S3 支持 DeleteObject If-Match 条件。")
+        : BucketFeatureSupport.No("此服务商未验证可靠的条件删除，已禁用自动移动；请复制后人工核对再删除源对象。");
+
 }
 
 public static class S3ProviderCapabilityRegistry
 {
+    private static BucketFeatureSupport UnsafeMetadataRewrite => BucketFeatureSupport.No(
+        "暂不支持安全的原地 Metadata 替换：需保证对象并发身份并完整保留加密与未编辑属性。请使用服务商原生工具。");
+
     private static readonly IReadOnlyDictionary<S3ServiceType, S3ProviderCapabilities> Entries =
         Enum.GetValues<S3ServiceType>().ToDictionary(value => value, Create);
     private static readonly IReadOnlyCollection<S3ProviderCapabilities> RegisteredCapabilities =
@@ -48,7 +52,7 @@ public static class S3ProviderCapabilityRegistry
                 BucketFeatureSupport.Yes()),
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes(),
-                BucketFeatureSupport.Yes(),
+                UnsafeMetadataRewrite,
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
@@ -58,7 +62,7 @@ public static class S3ProviderCapabilityRegistry
             serviceType,
             new BucketCapabilities(
                 BucketFeatureSupport.Yes("MinIO 支持 Bucket Policy"),
-                BucketFeatureSupport.Yes("MinIO 支持 S3 ACL；服务端策略可能限制公开 ACL"),
+                BucketFeatureSupport.Yes("MinIO ACL 仅支持 private；公开访问请使用 Bucket Policy"),
                 BucketFeatureSupport.No("MinIO 不提供 AWS Public Access Block API"),
                 BucketFeatureSupport.No("MinIO 不提供 AWS Object Ownership API"),
                 BucketFeatureSupport.No("MinIO Community 不支持 Bucket 级 CORS；请使用服务端全局 CORS，AIStor 用户可改用自定义兼容类型"),
@@ -74,8 +78,8 @@ public static class S3ProviderCapabilityRegistry
                 BucketFeatureSupport.Yes()),
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes("MinIO 支持 S3 Object Tagging API"),
-                BucketFeatureSupport.Yes("MinIO 支持通过原地 Copy 替换对象 Metadata"),
-                BucketFeatureSupport.Yes("MinIO 支持 S3 Object ACL；服务端策略可能限制公开 ACL"),
+                UnsafeMetadataRewrite,
+                BucketFeatureSupport.Yes("MinIO Object ACL 仅支持 private；公开访问请使用 Bucket Policy"),
                 BucketFeatureSupport.Yes("使用当前连接的签名配置生成预签名 URL"),
                 BucketFeatureSupport.Yes("MinIO 已验证对象版本浏览、下载、恢复与删除"),
                 BucketFeatureSupport.No("当前客户端尚未验证 MinIO Object Lock 创建与管理流程"))),
@@ -84,7 +88,7 @@ public static class S3ProviderCapabilityRegistry
             serviceType,
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes("阿里云 OSS S3 兼容接口支持对象 Tagging"),
-                BucketFeatureSupport.Yes("阿里云 OSS S3 兼容接口支持原地 Copy Metadata"),
+                UnsafeMetadataRewrite,
                 BucketFeatureSupport.No("阿里云 OSS S3 兼容接口的对象 ACL 尚未纳入持续验证"),
                 BucketFeatureSupport.Yes("使用当前连接的签名配置生成预签名 URL"),
                 BucketFeatureSupport.No("阿里云 OSS S3 兼容接口的对象版本操作尚未验证"),

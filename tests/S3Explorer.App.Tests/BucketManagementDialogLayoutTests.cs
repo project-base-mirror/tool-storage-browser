@@ -41,6 +41,35 @@ public sealed class BucketManagementDialogLayoutTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MinioAclSnapshotDoesNotSelectRemovedPublicOption(bool readDenied)
+    {
+        RunSta(() =>
+        {
+            var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO) with { Name = "test" };
+            using var dialog = new BucketManagementDialog(null!, profile, "bucket", BucketManagementPage.Cors);
+            var snapshot = new BucketPropertiesSnapshot(
+                "bucket", profile.Endpoint, profile.ServiceType, profile.EffectiveSignatureRegion,
+                "Disabled", "None", false, new BucketAclSnapshot("owner", BucketAclMode.PublicRead, []),
+                null, null, S3ProviderCapabilityRegistry.For(profile.ServiceType).Bucket)
+            {
+                ReadErrors = readDenied
+                    ? new Dictionary<string, string> { ["ACL"] = "Access denied" }
+                    : new Dictionary<string, string>()
+            };
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(BucketManagementDialog).GetField("_properties", flags)!.SetValue(dialog, snapshot);
+            typeof(BucketManagementDialog).GetMethod("ApplyProperties", flags)!.Invoke(dialog, null);
+            var choices = (ComboBox)typeof(BucketManagementDialog).GetField("_aclMode", flags)!.GetValue(dialog)!;
+            var save = (Button)typeof(BucketManagementDialog).GetField("_aclSave", flags)!.GetValue(dialog)!;
+            Assert.Single(choices.Items);
+            Assert.Equal(0, choices.SelectedIndex);
+            Assert.Equal(!readDenied, save.Enabled);
+        });
+    }
+
     private static Button FindButton(Control root, string name) =>
         Assert.IsType<Button>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
 

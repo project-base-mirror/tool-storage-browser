@@ -46,6 +46,18 @@ public sealed class SettingsDialogLayoutTests
         });
     }
 
+    [Fact]
+    public void MultipartThresholdControlClampsLegacySettingsToFiveGiB()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new SettingsDialog(new AppSettings { MultipartThresholdMb = 10240 });
+            var threshold = Find<NumericUpDown>(dialog, "MultipartThresholdMb");
+            Assert.Equal(5120m, threshold.Maximum);
+            Assert.Equal(5120m, threshold.Value);
+        });
+    }
+
     private static T Find<T>(Control root, string name) where T : Control =>
         Assert.IsType<T>(Assert.Single(root.Controls.Find(name, searchAllChildren: true)));
 

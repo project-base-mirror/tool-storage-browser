@@ -9,6 +9,15 @@ namespace S3Explorer.Cli.Tests;
 public sealed class AutomationCommandsPublishTests
 {
     [Fact]
+    public void MinioAnonymousPublishFailsBeforeTransferringAnyFiles()
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.MinIO);
+        Assert.Throws<CliUsageException>(() => AutomationCommands.ValidateAccessMode(profile, PublishAccessMode.AnonymousRead));
+        AutomationCommands.ValidateAccessMode(profile, PublishAccessMode.Preserve);
+        AutomationCommands.ValidateAccessMode(profile, PublishAccessMode.Private);
+    }
+
+    [Fact]
     public async Task MirrorPublishesManifestBeforeDeletingRemoteOnlyObjects()
     {
         await using var context = await PublishTestContext.CreateAsync();

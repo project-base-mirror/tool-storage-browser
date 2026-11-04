@@ -126,7 +126,7 @@ internal static class TransferTaskDetailsFormatter
     }
 
     private static string S3Uri(string profile, string bucket, string key) =>
-        $"s3://{profile}/{bucket}/{key.TrimStart('/')}";
+        new S3Location(profile, bucket, key).ToString();
 
     private static string Value(object? value) =>
         value is null || string.IsNullOrWhiteSpace(value.ToString()) ? "—" : value.ToString()!;

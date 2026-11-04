@@ -192,21 +192,21 @@ internal sealed partial class MainForm
     }
 
     private async Task UpdateProfileConfigurationAsync(
-        Func<ConnectionProfileConfiguration, ConnectionProfileConfiguration> update, bool refreshTree = true)
+        Func<ConnectionProfileConfiguration, ConnectionProfileConfiguration> update, bool refreshTree = true,
+        ConnectionProfileConfiguration? baseline = null)
     {
         await _profileConfigurationGate.WaitAsync();
         try
         {
-            var current = new ConnectionProfileConfiguration(_profiles, _profileGroups);
+            var current = baseline ?? new ConnectionProfileConfiguration(_profiles, _profileGroups);
             var proposed = update(current).Normalize();
-            proposed.Validate();
+            proposed.ValidateConfiguration();
             if (proposed.Profiles.SequenceEqual(current.Profiles) && proposed.Groups.SequenceEqual(current.Groups)) return;
-            await _profileStore.SaveConfigurationAsync(proposed);
-            _profiles = proposed.Profiles;
-            _profileGroups = proposed.Groups;
-            if (_currentProfile is not null)
-                _currentProfile = _profiles.FirstOrDefault(profile => profile.Id == _currentProfile.Id);
-            if (refreshTree) PopulateProfiles();
+            var saved = await _configurationStore.UpdateAsync(latest => latest with
+            {
+                Storage = ExplorerConfigurationMerger.MergeStorage(current, proposed, latest.Storage)
+            });
+            ApplyConfiguration(saved, refreshTree);
         }
         finally { _profileConfigurationGate.Release(); }
     }

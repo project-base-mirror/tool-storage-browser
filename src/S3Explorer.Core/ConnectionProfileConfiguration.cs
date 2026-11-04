@@ -48,7 +48,12 @@ public sealed record ConnectionProfileConfiguration(
         return new(profiles, groups);
     }
 
-    public void Validate()
+    public void Validate() => Validate(requireCredentials: true);
+
+    /// <summary>Validates stored structure, including imported profiles awaiting credentials.</summary>
+    public void ValidateConfiguration() => Validate(requireCredentials: false);
+
+    private void Validate(bool requireCredentials)
     {
         if (Profiles is null || Groups is null)
             throw new InvalidDataException("连接配置包含空集合。");
@@ -56,6 +61,7 @@ public sealed record ConnectionProfileConfiguration(
         var groupNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in Groups)
         {
+            if (group is null) throw new InvalidDataException("连接配置包含空分组。");
             group.Validate();
             if (!groupIds.Add(group.Id))
                 throw new InvalidDataException($"连接分组 ID 重复：{group.Id}。");
@@ -67,7 +73,10 @@ public sealed record ConnectionProfileConfiguration(
         var profileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var profile in Profiles)
         {
-            profile.Validate();
+            if (profile is null) throw new InvalidDataException("连接配置包含空连接。");
+            if (requireCredentials) profile.Validate(); else profile.ValidateConfiguration();
+            if (profile.Id == Guid.Empty)
+                throw new InvalidDataException("连接 ID 不能为空。");
             if (!profileIds.Add(profile.Id))
                 throw new InvalidDataException($"连接 ID 重复：{profile.Id}。");
             if (!profileNames.Add(profile.Name.Trim()))

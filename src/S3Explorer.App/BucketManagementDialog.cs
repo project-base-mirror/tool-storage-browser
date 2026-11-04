@@ -79,7 +79,8 @@ internal sealed partial class BucketManagementDialog : Form
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
 
-        _aclMode.Items.AddRange(["私有", "公开读取"]);
+        _aclMode.Items.Add("私有");
+        if (_profile.ServiceType != S3ServiceType.MinIO) _aclMode.Items.Add("公开读取");
         _aclMode.SelectedIndex = 0;
         _ownership.Items.AddRange(Enum.GetValues<BucketObjectOwnershipMode>().Cast<object>().ToArray());
 
@@ -235,8 +236,10 @@ internal sealed partial class BucketManagementDialog : Form
         text.AppendLine($"签名 Region：{value.Region}");
         text.AppendLine($"版本控制：{value.VersioningStatus}");
         text.AppendLine($"加密：{value.EncryptionSummary}");
-        text.AppendLine($"Policy：{(value.HasPolicy ? "已配置" : "未配置")}");
-        text.AppendLine($"ACL：{value.Acl.Summary}");
+        text.AppendLine($"Policy：{(value.ReadErrors.ContainsKey("Policy") ? "未读取" : value.HasPolicy ? "已配置" : "未配置")}");
+        text.AppendLine($"ACL：{(value.ReadErrors.ContainsKey("ACL") ? "未读取" : value.Acl.Summary)}");
+        foreach (var error in value.ReadErrors)
+            text.AppendLine($"{error.Key} 读取失败：{error.Value}");
         text.AppendLine();
         text.AppendLine("服务能力：");
         AppendCapability(text, "Bucket Policy", value.Capabilities.Policy);
@@ -260,8 +263,10 @@ internal sealed partial class BucketManagementDialog : Form
         SetControls(value.Capabilities.Policy.Supported, _policy, _policyReload, _policyFormat);
         SetControls(value.Capabilities.Policy.CanWrite, _policySave, _policyDelete);
 
-        _aclSummary.Text = $"所有者：{value.Acl.Owner}；当前：{value.Acl.Summary}；{value.Capabilities.Acl.Reason}";
-        _aclMode.SelectedIndex = value.Acl.Mode == BucketAclMode.PublicRead ? 1 : 0;
+        _aclSummary.Text = value.ReadErrors.TryGetValue("ACL", out var aclError)
+            ? $"ACL 未读取：{aclError}"
+            : $"所有者：{value.Acl.Owner}；当前：{value.Acl.Summary}；{value.Capabilities.Acl.Reason}";
+        _aclMode.SelectedIndex = value.Acl.Mode == BucketAclMode.PublicRead && _aclMode.Items.Count > 1 ? 1 : 0;
         _aclGrants.Items.Clear();
         foreach (var grant in value.Acl.Grants)
         {
@@ -270,7 +275,7 @@ internal sealed partial class BucketManagementDialog : Form
             _aclGrants.Items.Add(item);
         }
         SetControls(value.Capabilities.Acl.Supported, _aclMode);
-        SetControls(value.Capabilities.Acl.CanWrite, _aclSave);
+        SetControls(value.Capabilities.Acl.CanWrite && !value.ReadErrors.ContainsKey("ACL"), _aclSave);
 
         var pab = value.PublicAccessBlock;
         _blockPublicAcls.Checked = pab?.BlockPublicAcls ?? false;
@@ -279,10 +284,10 @@ internal sealed partial class BucketManagementDialog : Form
         _restrictPublicBuckets.Checked = pab?.RestrictPublicBuckets ?? false;
         var pabSupported = value.Capabilities.PublicAccessBlock.Supported;
         SetControls(pabSupported, _blockPublicAcls, _ignorePublicAcls, _blockPublicPolicy, _restrictPublicBuckets);
-        SetControls(value.Capabilities.PublicAccessBlock.CanWrite, _accessSave);
+        SetControls(value.Capabilities.PublicAccessBlock.CanWrite && !value.ReadErrors.ContainsKey("Public Access Block"), _accessSave);
         var ownershipSupported = value.Capabilities.ObjectOwnership.Supported;
         SetControls(ownershipSupported, _ownership);
-        SetControls(value.Capabilities.ObjectOwnership.CanWrite, _ownershipSave);
+        SetControls(value.Capabilities.ObjectOwnership.CanWrite && !value.ReadErrors.ContainsKey("Object Ownership"), _ownershipSave);
         if (value.ObjectOwnership is not null) _ownership.SelectedItem = value.ObjectOwnership.Value;
         _accessReason.Text = $"Public Access Block：{value.Capabilities.PublicAccessBlock.Reason}\r\nObject Ownership：{value.Capabilities.ObjectOwnership.Reason}";
         ApplyConfigurationCapabilities(value.Capabilities);

@@ -139,6 +139,10 @@ public interface IS3StorageService
     Task<BucketEmptySummary> ScanBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptyResult> EmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
+    /// <summary>Flat raw object listing including directory marker objects, for deletion only.</summary>
+    Task<PagedObjectResult> ListObjectsForDeletionAsync(ConnectionProfile profile, string bucket, string prefix,
+        string? continuationToken, int pageSize, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("此存储实现不支持包含目录标记的完整删除列表。");
     Task<PagedObjectVersionResult> ListObjectVersionsAsync(ConnectionProfile profile, string bucket, string prefix, string? keyMarker, string? versionIdMarker, int pageSize, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, TransferOperationContext transfer, CancellationToken cancellationToken);
     Task UploadFileAsync(ConnectionProfile profile, string bucket, string key, string localPath, string storageClass, ObjectWriteHeaders headers, TransferOperationContext transfer, CancellationToken cancellationToken);
@@ -158,10 +162,14 @@ public interface IS3StorageService
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
         TransferOperationContext context, CancellationToken cancellationToken) =>
-        CopyObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken);
+        context.Options.AllowDestinationOverwrite && context.Options.ExpectedDestinationETag is null
+            ? CopyObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken)
+            : Task.FromException(new NotSupportedException("此存储实现不能保证条件复制/移动，已停止操作。"));
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
         TransferOperationContext context, CancellationToken cancellationToken) =>
-        MoveObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken);
+        context.Options.AllowDestinationOverwrite && context.Options.ExpectedDestinationETag is null
+            ? MoveObjectAsync(profile, sourceBucket, sourceKey, destinationBucket, destinationKey, cancellationToken)
+            : Task.FromException(new NotSupportedException("此存储实现不能保证条件复制/移动，已停止操作。"));
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task ReplaceObjectMetadataAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectWriteHeaders headers, CancellationToken cancellationToken);
     Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
