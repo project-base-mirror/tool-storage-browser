@@ -2,20 +2,56 @@ using Amazon.Runtime;
 using Amazon.Runtime.Internal;
 using Amazon.S3;
 using Amazon.S3.Internal;
+using Amazon.S3.Model;
 using Amazon.Util;
+using S3Explorer.Core;
 using System.Runtime.CompilerServices;
 
 namespace S3Explorer.Infrastructure.S3;
 
 // Use the SDK's supported pipeline extension point before signing. Never repair
 // HttpRequestMessage.RequestUri afterwards: that would invalidate the signature.
-internal sealed class ExactObjectKeyS3Client : AmazonS3Client
+internal sealed class ExactObjectKeyS3Client : AmazonS3Client, IAmazonS3
 {
-    public ExactObjectKeyS3Client(AWSCredentials credentials, AmazonS3Config config, bool followTemporaryRedirects)
+    private readonly bool _validateCompatibleKeys;
+    private readonly S3ServiceType _serviceType;
+
+    public ExactObjectKeyS3Client(AWSCredentials credentials, AmazonS3Config config,
+        bool followTemporaryRedirects, S3ServiceType serviceType)
         : base(credentials, DisableTransportRedirects(config))
     {
+        _serviceType = serviceType;
+        _validateCompatibleKeys = MinioObjectKeyPolicy.AppliesTo(serviceType);
+        if (_validateCompatibleKeys)
+            RuntimePipeline.AddHandlerBefore<Marshaller>(new CompatibleObjectKeyValidationHandler(serviceType));
         RuntimePipeline.AddHandlerBefore<Signer>(new ExactObjectKeyPipelineHandler());
         RuntimePipeline.ReplaceHandler<AmazonS3RedirectHandler>(new ExactObjectKeyRedirectHandler(followTemporaryRedirects));
+    }
+
+    // The SDK's presign methods are nonvirtual and bypass the runtime pipeline.
+    // Explicit interface implementations protect the interface returned by our
+    // factory, while the new methods protect callers using this concrete type.
+    string IAmazonS3.GetPreSignedURL(GetPreSignedUrlRequest request) => GetPreSignedURL(request);
+    Task<string> IAmazonS3.GetPreSignedURLAsync(GetPreSignedUrlRequest request) => GetPreSignedURLAsync(request);
+
+    public new string GetPreSignedURL(GetPreSignedUrlRequest request)
+    {
+        ValidatePresignedUrl(request);
+        return base.GetPreSignedURL(request);
+    }
+
+    public new Task<string> GetPreSignedURLAsync(GetPreSignedUrlRequest request)
+    {
+        ValidatePresignedUrl(request);
+        return base.GetPreSignedURLAsync(request);
+    }
+
+    private void ValidatePresignedUrl(GetPreSignedUrlRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (_validateCompatibleKeys) MinioObjectKeyPolicy.Validate(_serviceType, request.Key);
+        if (request.Key?.StartsWith('/') == true)
+            throw new NotSupportedException("当前 SDK 无法安全生成以 / 开头的对象 Key 的预签名 URL；请使用应用内下载。");
     }
 
     private static AmazonS3Config DisableTransportRedirects(AmazonS3Config config)
@@ -24,6 +60,21 @@ internal sealed class ExactObjectKeyS3Client : AmazonS3Client
         // its back. Allowed ordinary redirects are re-signed by the SDK instead.
         config.AllowAutoRedirect = false;
         return config;
+    }
+}
+
+internal sealed class CompatibleObjectKeyValidationHandler(S3ServiceType serviceType) : PipelineHandler
+{
+    public override void InvokeSync(IExecutionContext executionContext)
+    {
+        MinioObjectKeyPolicy.ValidateRequest(executionContext.RequestContext.OriginalRequest, serviceType);
+        base.InvokeSync(executionContext);
+    }
+
+    public override Task<T> InvokeAsync<T>(IExecutionContext executionContext)
+    {
+        MinioObjectKeyPolicy.ValidateRequest(executionContext.RequestContext.OriginalRequest, serviceType);
+        return base.InvokeAsync<T>(executionContext);
     }
 }
 

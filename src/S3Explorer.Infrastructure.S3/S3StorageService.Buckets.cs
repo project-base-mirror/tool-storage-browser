@@ -663,6 +663,7 @@ public sealed partial class S3StorageService
         long deletedVersions = 0;
         long deletedMarkers = 0;
         var versionScan = await CollectVersionsAsync(client, bucket, cancellationToken).ConfigureAwait(false);
+        foreach (var entry in versionScan.Items) MinioObjectKeyPolicy.Validate(profile.ServiceType, entry.Key);
         foreach (var batch in versionScan.Items.Chunk(1000))
         {
             await DeleteBucketEntriesAsync(client, profile, bucket, batch, cancellationToken).ConfigureAwait(false);
@@ -701,6 +702,7 @@ public sealed partial class S3StorageService
         IAmazonS3 client, ConnectionProfile profile, string bucket,
         IReadOnlyCollection<KeyVersion> entries, CancellationToken cancellationToken)
     {
+        foreach (var entry in entries) MinioObjectKeyPolicy.Validate(profile.ServiceType, entry.Key);
         if (S3CompatibilityPolicy.ShouldUseMultiObjectDelete(profile))
         {
             try

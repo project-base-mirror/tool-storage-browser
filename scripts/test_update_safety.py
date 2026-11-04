@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline structural guards; Windows runtime/MSI tests remain required."""
 from pathlib import Path
+import re
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -54,6 +55,54 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('Assert-FixturePayload -Generation current', lifecycle)
         self.assertIn('Refusing lifecycle test: related product', lifecycle)
         self.assertIn('-ReuseRegisteredDirectory:([bool]$PreviousMsi)', lifecycle)
+
+    def test_lifecycle_shortcuts_use_unicode_shell_reader(self):
+        lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
+        self.assertIn('000214F9-0000-0000-C000-000000000046', lifecycle)
+        self.assertIn('UnmanagedType.LPWStr', lifecycle)
+        self.assertIn('[S3Explorer.Lifecycle.ShortcutInspector]::Read', lifecycle)
+        self.assertNotIn('$shell.CreateShortcut', lifecycle)
+        self.assertIn('Copy-Item -LiteralPath $startMenuShortcutPath', lifecycle)
+
+    def test_rollback_log_parser_checks_order_and_codes_in_both_languages(self):
+        lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
+        section = lifecycle.split('$patterns = @(', 1)[1].split('    )', 1)[0]
+        patterns = re.findall(r"^\s*'([^']+)'[,]?$", section, flags=re.MULTILINE)
+        self.assertEqual(6, len(patterns))
+
+        def accepts(lines):
+            log = '\n'.join(lines)
+            offset = 0
+            for pattern in patterns:
+                match = re.search(pattern, log[offset:])
+                if match is None:
+                    return False
+                offset += match.end()
+            return True
+
+        for lines in (
+            [
+                'Action ended 06:50:11: RemoveExistingProducts. Return value 1.',
+                'Action ended 06:50:11: InstallExecute. Return value 1.',
+                'Action start 06:50:11: LifecycleForceRollback.',
+                'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
+                'Action ended 06:50:11: LifecycleForceRollback. Return value 3.',
+                'Rollback: Removing files',
+            ],
+            [
+                '操作结束 6:50:11: RemoveExistingProducts。返回值 1。',
+                '操作结束 6:50:11: InstallExecute。返回值 1。',
+                '操作开始 6:50:11: LifecycleForceRollback。',
+                'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
+                '操作结束 6:50:11: LifecycleForceRollback。返回值 3。',
+                'Rollback: 正在回退操作',
+            ],
+        ):
+            self.assertTrue(accepts(lines))
+            self.assertFalse(accepts(lines[:1] + lines[2:]))
+            self.assertFalse(accepts([lines[1], lines[0]] + lines[2:]))
+            self.assertFalse(accepts(lines[:1] + [lines[1].replace('1', '3')] + lines[2:]))
+            self.assertFalse(accepts(lines[:-1]))
 
     def test_portable_flavor_survives_single_file_packaging(self):
         project = ET.parse(ROOT / 'src/S3Explorer.App/S3Explorer.App.csproj').getroot()

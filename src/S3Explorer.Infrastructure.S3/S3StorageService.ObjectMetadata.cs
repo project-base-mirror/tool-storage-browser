@@ -338,6 +338,7 @@ public sealed partial class S3StorageService
             "预签名 URL");
         if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromDays(7))
             throw new ArgumentOutOfRangeException(nameof(lifetime), "有效期必须大于 0 且不超过 7 天。");
+        MinioObjectKeyPolicy.Validate(profile.ServiceType, key);
         // The SDK's presigner bypasses the normal runtime pipeline, including
         // our pre-signing leading-slash fix. Never return a URL for its alias.
         if (key.StartsWith('/'))

@@ -58,6 +58,75 @@ function Invoke-Msi {
     return $exitCode
 }
 
+# Read shortcuts through the Unicode Shell interface. WScript.Shell's legacy
+# TargetPath accessor can replace characters outside the Windows ANSI code page.
+# https://learn.microsoft.com/windows/win32/api/shobjidl_core/nn-shobjidl_core-ishelllinkw
+if (-not ("S3Explorer.Lifecycle.ShortcutInspector" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+
+namespace S3Explorer.Lifecycle
+{
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLink { }
+
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr findData, uint flags);
+        void GetIDList(out IntPtr idList);
+        void SetIDList(IntPtr idList);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
+        void GetHotkey(out short hotkey);
+        void SetHotkey(short hotkey);
+        void GetShowCmd(out int command);
+        void SetShowCmd(int command);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+
+    public sealed class ShortcutInfo
+    {
+        public string TargetPath { get; set; }
+        public string WorkingDirectory { get; set; }
+        public string IconLocation { get; set; }
+    }
+
+    public static class ShortcutInspector
+    {
+        public static ShortcutInfo Read(string path)
+        {
+            var instance = new ShellLink();
+            try
+            {
+                ((IPersistFile)instance).Load(path, 0); // STGM_READ; never resolve or modify.
+                var link = (IShellLinkW)instance;
+                var target = new StringBuilder(32768);
+                var workingDirectory = new StringBuilder(32768);
+                var icon = new StringBuilder(32768);
+                link.GetPath(target, target.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
+                link.GetWorkingDirectory(workingDirectory, workingDirectory.Capacity);
+                link.GetIconLocation(icon, icon.Capacity, out var iconIndex);
+                return new ShortcutInfo { TargetPath = target.ToString(), WorkingDirectory = workingDirectory.ToString(), IconLocation = icon.ToString() };
+            }
+            finally { Marshal.FinalReleaseComObject(instance); }
+        }
+    }
+}
+'@
+}
+
 function Test-InstalledApplication {
     param(
         [switch]$RequireUpdater,
@@ -79,12 +148,17 @@ function Test-InstalledApplication {
             throw "Installed start menu shortcut is missing: $startMenuShortcutPath"
         }
 
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($startMenuShortcutPath)
+        $shortcutEvidence = Join-Path $runRoot "shortcut-$([Guid]::NewGuid().ToString('N'))"
+        Copy-Item -LiteralPath $startMenuShortcutPath -Destination "$shortcutEvidence.lnk"
+        $shortcut = [S3Explorer.Lifecycle.ShortcutInspector]::Read($startMenuShortcutPath)
+        $shortcut | ConvertTo-Json | Set-Content -LiteralPath "$shortcutEvidence.json" -Encoding utf8
         $expectedTarget = [IO.Path]::GetFullPath($gui)
         $actualTarget = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
         if ($actualTarget -ine $expectedTarget) {
             throw "Start menu shortcut target '$actualTarget' does not match '$expectedTarget'."
+        }
+        if ([IO.Path]::GetFullPath([string]$shortcut.WorkingDirectory).TrimEnd('\') -ine $InstallDirectory) {
+            throw "Start menu shortcut working directory does not match the custom directory."
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$shortcut.IconLocation) -and
             [string]$shortcut.IconLocation -match '(?i)\\Windows\\Installer\\') {
@@ -204,12 +278,14 @@ function Assert-RollbackLog {
     $log = Get-Content -LiteralPath $Path -Raw
     # A generic 1603 is insufficient: require removal and replacement to finish before
     # our precise failure action, followed by rollback, rather than a launch-condition error.
+    # Windows Installer localizes action status lines to the package language (zh-CN).
+    # Match equivalent English/Chinese lines while retaining exact actions/return codes/order.
     $patterns = @(
-        'Action ended [^\r\n]*RemoveExistingProducts\. Return value 1\.',
-        'Action ended [^\r\n]*InstallExecute\. Return value 1\.',
-        'Action start [^\r\n]*LifecycleForceRollback\.',
+        '(?:Action ended [^\r\n]*RemoveExistingProducts\. Return value 1\.|操作结束 [^\r\n]*RemoveExistingProducts。返回值 1。)',
+        '(?:Action ended [^\r\n]*InstallExecute\. Return value 1\.|操作结束 [^\r\n]*InstallExecute。返回值 1。)',
+        '(?:Action start [^\r\n]*LifecycleForceRollback\.|操作开始 [^\r\n]*LifecycleForceRollback。)',
         'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
-        'Action ended [^\r\n]*LifecycleForceRollback\. Return value 3\.',
+        '(?:Action ended [^\r\n]*LifecycleForceRollback\. Return value 3\.|操作结束 [^\r\n]*LifecycleForceRollback。返回值 3。)',
         '(?i)Rollback:'
     )
     $offset = 0

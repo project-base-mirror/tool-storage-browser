@@ -765,6 +765,9 @@ public sealed partial class S3StorageService : IS3StorageService
     {
         if (keys.Count == 0)
             return;
+        // Validate the entire user selection before its first batch or fallback.
+        // A later unsafe key must not leave an earlier batch already deleted.
+        foreach (var key in keys) MinioObjectKeyPolicy.Validate(profile.ServiceType, key);
 
         using var client = _factory.Create(profile);
         if (!S3CompatibilityPolicy.ShouldUseMultiObjectDelete(profile))
@@ -831,6 +834,7 @@ public sealed partial class S3StorageService : IS3StorageService
         if (unique.Length != versions.Count)
             throw new ArgumentException("对象版本列表包含空值或重复项。", nameof(versions));
         if (unique.Length == 0) return;
+        foreach (var item in unique) MinioObjectKeyPolicy.Validate(profile.ServiceType, item.Key);
         using var client = _factory.Create(profile);
         foreach (var batch in unique.Chunk(1000))
         {

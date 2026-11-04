@@ -12,6 +12,8 @@ public sealed partial class S3StorageService
         string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
         bool move, CancellationToken cancellationToken, TransferOperationContext? context = null)
     {
+        MinioObjectKeyPolicy.Validate(profile.ServiceType, sourceKey);
+        MinioObjectKeyPolicy.Validate(profile.ServiceType, destinationKey);
         if (sourceBucket == destinationBucket && sourceKey == destinationKey)
             throw new TransferExecutionException(new TransferFailureInfo(
                 "来源与目标相同。", TransferFailureCategory.Validation));
