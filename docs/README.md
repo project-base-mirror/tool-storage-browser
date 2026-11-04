@@ -17,6 +17,7 @@
 
 ## S3 兼容性与测试
 
+- [`Windows-File-Clipboard.md`](Windows-File-Clipboard.md)：Windows 双向文件剪贴板工作分支的行为、缓存/取消边界和待完成的真实 Explorer 验收。
 - [`S3-Provider-Matrix.md`](S3-Provider-Matrix.md)：Amazon S3、MinIO、OSS 等 Provider 的能力与真实验证矩阵。
 - [`MinIO-Testing.md`](MinIO-Testing.md)：隔离 MinIO、真实 CRUD、Multipart、故障与 UI 回归步骤。
 - [`Audit-Fixes-2026-11-04.md`](Audit-Fixes-2026-11-04.md)：已合入的二十项安全审计修复与当时的验证边界。

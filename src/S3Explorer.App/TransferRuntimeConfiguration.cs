@@ -38,4 +38,13 @@ internal sealed class TransferRuntimeConfiguration
             context.ReportProgress,
             context.UpdateCheckpointAsync);
     }
+
+    // Shell clipboard transfers are ephemeral, not restartable queue jobs, but must share the
+    // application's bandwidth limiter and the storage pipeline's normal integrity checks.
+    public TransferOperationContext CreateClipboardContext()
+    {
+        lock (_sync)
+            return new TransferOperationContext(_options, _bandwidthLimiter, null, null,
+                _ => { }, (_, _, _, _) => Task.CompletedTask);
+    }
 }

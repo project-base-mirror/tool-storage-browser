@@ -9,6 +9,14 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 public sealed class ConditionalEditTests
 {
     [Theory]
+    [InlineData(2147483648L, 0L, 131072)]
+    [InlineData(4294967297L, 0L, 131072)]
+    [InlineData(4294967297L, 4294967290L, 7)]
+    [InlineData(0L, 0L, 131072)]
+    public void BoundedLargeDownloadsLimitBeforeConvertingToInt(long limit, long completed, int expected) =>
+        Assert.Equal(expected, S3StorageService.BoundedDownloadReadLength(128 * 1024, limit, completed));
+
+    [Theory]
     [InlineData(null)]
     [InlineData("cached-old-version")]
     public async Task MetadataReplacementRejectsBeforeCredentialsOrNetworkForEveryProvider(string? versionId)

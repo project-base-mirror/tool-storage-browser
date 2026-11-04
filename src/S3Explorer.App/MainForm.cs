@@ -160,6 +160,7 @@ internal sealed partial class MainForm : Form
         _clipboardWriter = clipboardWriter ?? ClipboardTextWriter.SetTextAsync;
         Disposed += (_, _) =>
         {
+            DisposeFileClipboard();
             _cdnCopyCancellation?.Cancel();
             _updateCancellation.Cancel();
         };
@@ -245,10 +246,13 @@ internal sealed partial class MainForm : Form
         file.DropDownItems.Add(new ToolStripMenuItem("退出", null, (_, _) => RequestExit()));
 
         var edit = new ToolStripMenuItem("编辑(&E)");
+        edit.DropDownOpening += (_, _) => UpdateCommandStates();
+        Activated += (_, _) => UpdateCommandStates();
         edit.DropDownItems.Add(new ToolStripMenuItem("全选", null, (_, _) => SelectAllObjects(), Keys.Control | Keys.A));
-        edit.DropDownItems.Add(Command("clipboard-copy", "复制", (_, _) => CopySelectionToObjectClipboard(false), Keys.Control | Keys.C));
-        edit.DropDownItems.Add(Command("clipboard-cut", "剪切", (_, _) => CopySelectionToObjectClipboard(true), Keys.Control | Keys.X));
+        edit.DropDownItems.Add(Command("clipboard-copy", "复制", async (_, _) => await CopySelectionToObjectClipboardAsync(false), Keys.Control | Keys.C));
+        edit.DropDownItems.Add(Command("clipboard-cut", "剪切", async (_, _) => await CopySelectionToObjectClipboardAsync(true), Keys.Control | Keys.X));
         edit.DropDownItems.Add(Command("clipboard-paste", "粘贴", async (_, _) => await PasteObjectClipboardAsync(), Keys.Control | Keys.V));
+        edit.DropDownItems.Add(Command("clipboard-cancel", "取消文件剪贴板 / 下载", async (_, _) => await CancelFileClipboardAsync()));
         edit.DropDownItems.Add(new ToolStripSeparator());
         edit.DropDownItems.Add(Command("copy-path", "复制对象路径", (_, _) => CopySelectedPaths()));
         edit.DropDownItems.Add(Command("copy-url", "复制对象 URL", (_, _) => CopySelectedUrls()));
@@ -492,8 +496,8 @@ internal sealed partial class MainForm : Form
 
     private void BuildObjectContextMenu()
     {
-        _objectMenu.Items.Add("复制", UiIcons.Create(UiIconKind.Copy, 16), (_, _) => CopySelectionToObjectClipboard(false));
-        _objectMenu.Items.Add("剪切", UiIcons.Create(UiIconKind.Move, 16), (_, _) => CopySelectionToObjectClipboard(true));
+        _objectMenu.Items.Add("复制", UiIcons.Create(UiIconKind.Copy, 16), async (_, _) => await CopySelectionToObjectClipboardAsync(false));
+        _objectMenu.Items.Add("剪切", UiIcons.Create(UiIconKind.Move, 16), async (_, _) => await CopySelectionToObjectClipboardAsync(true));
         _objectMenu.Items.Add("粘贴", UiIcons.Create(UiIconKind.Copy, 16), async (_, _) => await PasteObjectClipboardAsync());
         _objectMenu.Items.Add(new ToolStripSeparator());
         _objectMenu.Items.Add("复制到...", UiIcons.Create(UiIconKind.Copy, 16), async (_, _) => await CopyOrMoveSelectedAsync(false));
@@ -520,7 +524,7 @@ internal sealed partial class MainForm : Form
                 : S3ProviderCapabilityRegistry.For(_currentProfile.ServiceType).Object;
             _objectMenu.Items[0].Enabled = any;
             _objectMenu.Items[1].Enabled = any;
-            _objectMenu.Items[2].Enabled = _objectClipboard is not null && EnsureClipboardProfile(false);
+            _objectMenu.Items[2].Enabled = CanPasteFiles();
             _objectMenu.Items[4].Enabled = any;
             _objectMenu.Items[5].Enabled = any;
             _objectMenu.Items[11].Enabled = oneFile && capabilities?.VersionOperations.Supported == true;
@@ -714,8 +718,8 @@ internal sealed partial class MainForm : Form
         {
             if (args.Control && args.Shift && args.KeyCode == Keys.C) { args.Handled = true; await CopyOrMoveSelectedAsync(false); }
             else if (args.Control && args.Shift && args.KeyCode == Keys.X) { args.Handled = true; await CopyOrMoveSelectedAsync(true); }
-            else if (args.Control && args.KeyCode == Keys.C) { args.Handled = true; CopySelectionToObjectClipboard(false); }
-            else if (args.Control && args.KeyCode == Keys.X) { args.Handled = true; CopySelectionToObjectClipboard(true); }
+            else if (args.Control && args.KeyCode == Keys.C) { args.Handled = true; await CopySelectionToObjectClipboardAsync(false); }
+            else if (args.Control && args.KeyCode == Keys.X) { args.Handled = true; await CopySelectionToObjectClipboardAsync(true); }
             else if (args.Control && args.KeyCode == Keys.V) { args.Handled = true; await PasteObjectClipboardAsync(); }
             else if (args.KeyCode == Keys.Delete) { args.Handled = true; await DeleteSelectedAsync(); }
             else if (args.KeyCode == Keys.F2) { args.Handled = true; await RenameSelectedAsync(); }
@@ -740,6 +744,7 @@ internal sealed partial class MainForm : Form
         };
         _speedTimer.Tick += (_, _) =>
         {
+            _ = OwnsObjectClipboard();
             _uploadSpeed.Text = $"↑ {FileSizeFormatter.Format((long)_transfers.UploadBytesPerSecond)}/s";
             _downloadSpeed.Text = $"↓ {FileSizeFormatter.Format((long)_transfers.DownloadBytesPerSecond)}/s";
             UpdateTrayStatus();
@@ -3002,7 +3007,7 @@ internal sealed partial class MainForm : Form
         SetEnabled("delete-toolbar", any);
         SetEnabled("clipboard-copy", any);
         SetEnabled("clipboard-cut", any);
-        SetEnabled("clipboard-paste", inBucket && EnsureClipboardProfile(false));
+        SetEnabled("clipboard-paste", inBucket && CanPasteFiles());
         SetEnabled("copy-object", any);
         SetEnabled("copy-toolbar", any);
         SetEnabled("move-object", any);
@@ -3096,6 +3101,7 @@ internal sealed partial class MainForm : Form
                     break;
             }
 
+            await AwaitShutdownStepAsync(ShutdownFileClipboardAsync(), "取消文件剪贴板并清理缓存");
             await AwaitShutdownStepAsync(SaveSettingsAsync(), "保存应用设置");
             await AwaitShutdownStepAsync(_cdnJobQueue.DisposeAsync().AsTask(), "保存 CDN 任务队列");
             await AwaitShutdownStepAsync(_transferQueue.DisposeAsync().AsTask(), "保存传输队列");

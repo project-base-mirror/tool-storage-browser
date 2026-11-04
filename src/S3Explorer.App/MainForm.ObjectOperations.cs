@@ -51,13 +51,19 @@ internal sealed partial class MainForm
                 path,
                 TransferDirection.Upload);
             var chunk = new List<UploadBatchItem>(256);
+            var emptyDirectories = new List<string>();
             var skipped = 0;
             try
             {
-                foreach (var file in EnumerateFilesSafely(path, (directory, exception) =>
+                foreach (var file in SafeLocalFileTraversal.EnumerateFiles(path, (directory, exception) =>
                          {
                              skipped++;
                              _logger.Error($"Folder upload discovery skipped directory={directory}", exception);
+                         }, directory =>
+                         {
+                             if (emptyDirectories.Count >= WindowsFileClipboardManifest.DefaultItemLimit)
+                                 throw new InvalidOperationException("空目录数量超过保护上限，请分批上传。");
+                             emptyDirectories.Add(directory);
                          }))
                 {
                     var info = new FileInfo(file);
@@ -75,6 +81,14 @@ internal sealed partial class MainForm
                 }
                 if (chunk.Count > 0)
                     await _transfers.AddUploadBatchItemsAsync(batch, chunk);
+                // A folder containing no files still needs an S3 marker. Ordinary files retain the
+                // resumable queue path; zero-byte markers use the same conditional upload pipeline.
+                foreach (var directory in emptyDirectories)
+                {
+                    var relative = Path.GetRelativePath(path, directory).Replace('\\', '/');
+                    var folderKey = prefix + rootName + (relative == "." ? "/" : "/" + relative + "/");
+                    await UploadEmptyDirectoryMarkerAsync(profile, bucket, folderKey);
+                }
             }
             catch (Exception exception)
             {
@@ -95,6 +109,25 @@ internal sealed partial class MainForm
         }
         SetTransferVisibility(true);
         _requestStatus.Text = $"上传已入队，跳过 {skippedFiles:N0} 个单文件（文件夹跳过数见批次详情）";
+    }
+
+    private async Task UploadEmptyDirectoryMarkerAsync(ConnectionProfile profile, string bucket, string key)
+    {
+        if (await _storage.ObjectExistsAsync(profile, bucket, key, CancellationToken.None)) return;
+        var temporary = Path.GetTempFileName();
+        try
+        {
+            var context = _transferRuntime.CreateClipboardContext();
+            context = context with { Options = context.Options with
+            {
+                AllowDestinationOverwrite = false,
+                RetainFailedTransferState = false
+            } };
+            // Create-only also protects an object that appears after the existence lookup.
+            await _storage.UploadFileAsync(profile, bucket, key, temporary, profile.DefaultStorageClass,
+                context, CancellationToken.None);
+        }
+        finally { File.Delete(temporary); }
     }
 
     private async Task EnqueueUploadAsync(ConnectionProfile profile, string bucket, string localPath, string key, ObjectConflictPolicy conflictPolicy = ObjectConflictPolicy.Overwrite)
@@ -400,24 +433,27 @@ internal sealed partial class MainForm
         finally { SetIdle(); }
     }
 
-    private void CopySelectionToObjectClipboard(bool move)
-    {
-        if (!EnsureLocation()) return;
-        var selected = SelectedEntries();
-        if (selected.Count == 0) return;
-        _objectClipboard = new ObjectClipboardPayload(
-            _currentProfile!.Id, _currentProfile.Name, _currentBucket!,
-            selected.Select(entry => new ObjectClipboardEntry(
-                entry.Key, entry.Name, entry.IsDirectory, entry.Size)).ToArray(), move);
-        _requestStatus.Text = $"已{(move ? "剪切" : "复制")} {selected.Count:N0} 个对象";
-        UpdateCommandStates();
-    }
-
     private async Task PasteObjectClipboardAsync()
     {
-        if (!EnsureLocation() || _objectClipboard is null || !EnsureClipboardProfile()) return;
-        await QueueObjectTransferAsync(
-            _objectClipboard, _currentBucket!, _currentPrefix, ObjectConflictPolicy.Ask);
+        if (!EnsureLocation()) return;
+        await RunUiCommandAsync("粘贴文件", async () =>
+        {
+            if (OwnsObjectClipboard())
+            {
+                if (_objectClipboard is null || !EnsureClipboardProfile()) return;
+                await QueueObjectTransferAsync(_objectClipboard, _currentBucket!, _currentPrefix, ObjectConflictPolicy.Ask);
+                return;
+            }
+            // Never interpret text/URLs or stale in-memory object selections as files.
+            // A CF_HDROP cut is deliberately treated as a copy: uploading never deletes local sources.
+            if (!Clipboard.ContainsFileDropList()) return;
+            var paths = Clipboard.GetFileDropList().Cast<string>().ToArray();
+            if (paths.Length > WindowsFileClipboardManifest.DefaultItemLimit)
+                throw new InvalidOperationException("剪贴板项目过多，请分批上传。");
+            if (paths.Any(path => !Path.IsPathFullyQualified(path) || (!File.Exists(path) && !Directory.Exists(path))))
+                throw new IOException("剪贴板中有文件或目录已不存在或无法访问，请重新复制。");
+            await UploadPathsAsync(paths);
+        });
     }
 
     private async Task CopyOrMoveSelectedAsync(bool move)
@@ -566,7 +602,7 @@ internal sealed partial class MainForm
 
     private bool EnsureClipboardProfile(bool showMessage = true)
     {
-        var valid = _objectClipboard is not null &&
+        var valid = OwnsObjectClipboard() && _objectClipboard is not null &&
             _currentProfile?.Id == _objectClipboard.ProfileId &&
             _currentBucket is not null;
         if (!valid && showMessage)

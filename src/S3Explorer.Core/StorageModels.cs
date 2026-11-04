@@ -145,7 +145,7 @@ public interface IS3StorageService
     Task<BucketEmptySummary> ScanBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<BucketEmptyResult> EmptyBucketAsync(ConnectionProfile profile, string bucket, CancellationToken cancellationToken);
     Task<PagedObjectResult> ListObjectsAsync(ConnectionProfile profile, string bucket, string prefix, string? continuationToken, int pageSize, CancellationToken cancellationToken);
-    /// <summary>Flat raw object listing including directory marker objects, for deletion only.</summary>
+    /// <summary>Flat raw object listing including directory markers, for deletion or lossless transfer discovery.</summary>
     Task<PagedObjectResult> ListObjectsForDeletionAsync(ConnectionProfile profile, string bucket, string prefix,
         string? continuationToken, int pageSize, CancellationToken cancellationToken) =>
         throw new NotSupportedException("此存储实现不支持包含目录标记的完整删除列表。");
