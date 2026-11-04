@@ -68,7 +68,7 @@ class UpdateSafetyTests(unittest.TestCase):
         lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
         section = lifecycle.split('$patterns = @(', 1)[1].split('    )', 1)[0]
         patterns = re.findall(r"^\s*'([^']+)'[,]?$", section, flags=re.MULTILINE)
-        self.assertEqual(6, len(patterns))
+        self.assertEqual(7, len(patterns))
 
         def accepts(lines):
             log = '\n'.join(lines)
@@ -87,7 +87,8 @@ class UpdateSafetyTests(unittest.TestCase):
                 'Action start 06:50:11: LifecycleForceRollback.',
                 'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
                 'Action ended 06:50:11: LifecycleForceRollback. Return value 3.',
-                'Rollback: Removing files',
+                'MSI (s): Executing op: Header(Signature=1397708873,Version=500,ScriptType=2,ScriptAttributes=1)',
+                'MSI (s): Executing op: RollbackInfo(,RollbackAction=Rollback,RollbackDescription=Rolling back action: [1],)',
             ],
             [
                 '操作结束 6:50:11: RemoveExistingProducts。返回值 1。',
@@ -95,7 +96,8 @@ class UpdateSafetyTests(unittest.TestCase):
                 '操作开始 6:50:11: LifecycleForceRollback。',
                 'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
                 '操作结束 6:50:11: LifecycleForceRollback。返回值 3。',
-                'Rollback: 正在回退操作',
+                'MSI (s): Executing op: Header(Signature=1397708873,Version=500,ScriptType=2,ScriptAttributes=1)',
+                'MSI (s): Executing op: RollbackInfo(,RollbackAction=Rollback,RollbackDescription=正在回退操作: [1],)',
             ],
         ):
             self.assertTrue(accepts(lines))
@@ -103,6 +105,11 @@ class UpdateSafetyTests(unittest.TestCase):
             self.assertFalse(accepts([lines[1], lines[0]] + lines[2:]))
             self.assertFalse(accepts(lines[:1] + [lines[1].replace('1', '3')] + lines[2:]))
             self.assertFalse(accepts(lines[:-1]))
+            self.assertFalse(accepts(lines[:5] + [lines[5].replace('ScriptType=2', 'ScriptType=1')] + lines[6:]))
+            self.assertFalse(accepts(lines[:5] + ['Rollback: progress text alone is insufficient']))
+            self.assertFalse(accepts(lines[5:] + lines[:5]))
+            self.assertFalse(accepts(lines[:5] + [line.replace('Executing op:', 'Planned op:') for line in lines[5:]]))
+            self.assertFalse(accepts(lines[:5] + [lines[5]]))
 
     def test_portable_flavor_survives_single_file_packaging(self):
         project = ET.parse(ROOT / 'src/S3Explorer.App/S3Explorer.App.csproj').getroot()

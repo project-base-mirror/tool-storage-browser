@@ -280,13 +280,16 @@ function Assert-RollbackLog {
     # our precise failure action, followed by rollback, rather than a launch-condition error.
     # Windows Installer localizes action status lines to the package language (zh-CN).
     # Match equivalent English/Chinese lines while retaining exact actions/return codes/order.
+    # /qn does not emit the interactive "Rollback:" progress text. Require execution of
+    # the rollback script (ScriptType=2) and its RollbackInfo after the deliberate failure.
     $patterns = @(
         '(?:Action ended [^\r\n]*RemoveExistingProducts\. Return value 1\.|操作结束 [^\r\n]*RemoveExistingProducts。返回值 1。)',
         '(?:Action ended [^\r\n]*InstallExecute\. Return value 1\.|操作结束 [^\r\n]*InstallExecute。返回值 1。)',
         '(?:Action start [^\r\n]*LifecycleForceRollback\.|操作开始 [^\r\n]*LifecycleForceRollback。)',
         'S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE',
         '(?:Action ended [^\r\n]*LifecycleForceRollback\. Return value 3\.|操作结束 [^\r\n]*LifecycleForceRollback。返回值 3。)',
-        '(?i)Rollback:'
+        'Executing op: Header\([^\r\n]*\bScriptType=2,',
+        'Executing op: RollbackInfo\([^\r\n]*RollbackAction=Rollback,'
     )
     $offset = 0
     foreach ($pattern in $patterns) {
