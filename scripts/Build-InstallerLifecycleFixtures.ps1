@@ -78,9 +78,8 @@ foreach ($stage in @("previous", "current", "rollback")) {
         $action.SetAttribute("Error", "S3EXPLORER_LIFECYCLE_FORCE_ROLLBACK_AFTER_INSTALL_EXECUTE")
         $null = $package.AppendChild($action)
         $sequence = $source.CreateElement("InstallExecuteSequence", $namespace)
-        $execute = $source.CreateElement("InstallExecute", $namespace)
-        $execute.SetAttribute("After", "PublishProduct")
-        $null = $sequence.AppendChild($execute)
+        # Referencing InstallExecute pulls in WiX 5's standard action at sequence 6500.
+        # Do not redeclare it: that conflicts with the standard library's virtual symbol.
         $custom = $source.CreateElement("Custom", $namespace)
         $custom.SetAttribute("Action", "LifecycleForceRollback")
         $custom.SetAttribute("After", "InstallExecute")

@@ -16,7 +16,10 @@ public sealed record S3ClientOptionsSnapshot(
     bool AllowAutoRedirect,
     bool IgnoreCertificateErrors,
     string CustomHostHeader,
-    string CredentialSource);
+    string CredentialSource)
+{
+    public bool FollowTemporaryRedirects { get; init; }
+}
 
 public sealed record S3ClientCreation(
     IAmazonS3 Client,
@@ -38,7 +41,7 @@ public sealed class S3ClientFactory
         profile.Validate();
         var config = CreateConfig(profile);
         var resolution = _credentialResolver.Resolve(profile, allowInteractiveSso);
-        var client = new AmazonS3Client(resolution.Credentials, config);
+        var client = new ExactObjectKeyS3Client(resolution.Credentials, config, profile.FollowTemporaryRedirects);
         if (!string.IsNullOrWhiteSpace(profile.CustomHostHeader))
         {
             var customHost = profile.CustomHostHeader.Trim();
@@ -66,7 +69,9 @@ public sealed class S3ClientFactory
             UseHttp = endpoint.Scheme == Uri.UriSchemeHttp,
             Timeout = TimeSpan.FromSeconds(profile.RequestTimeoutSeconds),
             MaxErrorRetry = 3,
-            AllowAutoRedirect = profile.FollowTemporaryRedirects,
+            // Only the SDK may follow/re-sign an allowed 307, after key safety
+            // checks. HttpClient must never silently follow Location itself.
+            AllowAutoRedirect = false,
             RequestChecksumCalculation = profile.ServiceType == S3ServiceType.AmazonS3
                 ? RequestChecksumCalculation.WHEN_SUPPORTED
                 : RequestChecksumCalculation.WHEN_REQUIRED,
@@ -104,7 +109,10 @@ public sealed class S3ClientFactory
             config.AllowAutoRedirect,
             profile.IgnoreCertificateErrors,
             profile.CustomHostHeader.Trim(),
-            profile.CredentialSourceDisplayName);
+            profile.CredentialSourceDisplayName)
+        {
+            FollowTemporaryRedirects = profile.FollowTemporaryRedirects
+        };
     }
 
     private sealed class CompatibilityHttpClientFactory : HttpClientFactory

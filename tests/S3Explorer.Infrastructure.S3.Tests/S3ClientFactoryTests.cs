@@ -6,6 +6,25 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 
 public sealed class S3ClientFactoryTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RedirectPolicyIsSeparateFromHttpClientAutomaticRedirects(bool follow)
+    {
+        var profile = ConnectionProfile.CreatePreset(S3ServiceType.Custom) with
+        {
+            Name = "test", Endpoint = "https://s3.example.test", AccessKey = "test", SecretKey = "test",
+            FollowTemporaryRedirects = follow
+        };
+        var factory = new S3ClientFactory();
+        var snapshot = factory.Describe(profile);
+        Assert.Equal(follow, snapshot.FollowTemporaryRedirects);
+        Assert.False(snapshot.AllowAutoRedirect);
+        Assert.False(factory.CreateConfig(profile).AllowAutoRedirect);
+        using var client = factory.Create(profile);
+        Assert.False(client.Config.AllowAutoRedirect);
+    }
+
     [Fact]
     public void AdvancedCompatibilityOptionsMapToSdkConfiguration()
     {

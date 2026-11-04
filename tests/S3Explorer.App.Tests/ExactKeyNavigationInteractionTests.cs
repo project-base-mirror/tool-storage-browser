@@ -32,6 +32,7 @@ public sealed partial class MainFormInteractionTests
             var storage = DispatchProxy.Create<IS3StorageService, ExactKeyStorageProxy>();
             var recorder = (ExactKeyStorageProxy)(object)storage;
             await using var queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(root, "tasks.json")), new NeverRunExecutor());
+            await queue.InitializeAsync();
             using var form = CreateForm(queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(root, "logs")),
                 new SingleProfileStore(profile), storage: storage);
             SetField(form, "_profiles", new[] { profile });

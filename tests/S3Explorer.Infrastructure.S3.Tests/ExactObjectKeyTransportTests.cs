@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Xml.Linq;
 using Amazon.Runtime;
+using Amazon.S3.Model.Internal.MarshallTransformations;
 using Amazon.S3.Model;
 using S3Explorer.Core;
 using Xunit;
@@ -10,6 +11,140 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 
 public sealed class ExactObjectKeyTransportTests
 {
+    [Theory]
+    [InlineData("https://s3.example.test/bucket", "/bucket//leading//file")]
+    [InlineData("https://bucket.s3.example.test/", "//leading//file")]
+    [InlineData("https://s3.example.test/api%20path/%7BKey%2B%7D/%E4%B8%AD/bucket", "/api path/{Key+}/中/bucket//leading//file")]
+    [InlineData("https://s3.example.test/api%2Fpath/%25/bucket", "/api/path/%/bucket//leading//file")]
+    public void PreSigningFixPreservesEndpointSegmentsAndIsIdempotent(string endpoint, string expectedPath)
+    {
+        var original = new GetObjectMetadataRequest { BucketName = "bucket", Key = "/leading//file" };
+        var request = GetObjectMetadataRequestMarshaller.Instance.Marshall(original);
+        request.Endpoint = new Uri(endpoint);
+        var expectedWirePath = request.Endpoint.AbsolutePath.TrimEnd('/') + "/" + original.Key;
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        var template = request.ResourcePath;
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        Assert.Equal(template, request.ResourcePath);
+        Assert.Equal(expectedWirePath, AmazonServiceClient.ComposeUrl(request).AbsolutePath);
+        Assert.Equal(expectedPath, Uri.UnescapeDataString(AmazonServiceClient.ComposeUrl(request).AbsolutePath));
+        Assert.Equal(original.Key, request.PathResources["{Key+}"]);
+        Assert.Equal("/leading//file", original.Key);
+        Assert.Equal(AmazonServiceClient.ComposeUrl(request).AbsolutePath,
+            Amazon.Util.AWSSDKUtils.CanonicalizeResourcePathV2(request.Endpoint, request.ResourcePath, false, request.PathResources));
+    }
+
+    [Fact]
+    public void RegionRetryRebuildsFromOriginalTemplateAndNeverDuplicatesBucket()
+    {
+        var request = GetObjectMetadataRequestMarshaller.Instance.Marshall(new GetObjectMetadataRequest
+        {
+            BucketName = "bucket", Key = "///leading"
+        });
+        request.Endpoint = new Uri("https://old.example.test/bucket");
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        request.Endpoint = new Uri("https://new.example.test/bucket");
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        Assert.Equal("/bucket////leading", AmazonServiceClient.ComposeUrl(request).AbsolutePath);
+        Assert.Equal("new.example.test", request.Endpoint.Host);
+        request.Endpoint = new Uri("https://bucket.virtual.example.test/");
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        Assert.Equal("/{Key+}", request.ResourcePath);
+        Assert.Single(request.PathResources);
+        Assert.Equal("////leading", AmazonServiceClient.ComposeUrl(request).AbsolutePath);
+    }
+
+    [Fact]
+    public void NormalObjectRequestIsNotChanged()
+    {
+        var request = GetObjectMetadataRequestMarshaller.Instance.Marshall(new GetObjectMetadataRequest
+        {
+            BucketName = "bucket", Key = "normal//file"
+        });
+        var endpoint = new Uri("https://s3.example.test/bucket");
+        request.Endpoint = endpoint;
+        ExactObjectKeyPipelineHandler.PreserveLeadingSlash(request);
+        Assert.Same(endpoint, request.Endpoint);
+        Assert.Equal("/{Key+}", request.ResourcePath);
+        Assert.Single(request.PathResources);
+    }
+
+    [Theory]
+    [InlineData(AddressingStyle.PathStyle, "", "s3.example.test", "/bucket//leading")]
+    [InlineData(AddressingStyle.PathStyle, "/api/s3", "s3.example.test", "/api/s3/bucket//leading")]
+    [InlineData(AddressingStyle.VirtualHosted, "", "bucket.s3.example.test", "//leading")]
+    public async Task ProductionFactoryPreservesLeadingKeyForBothAddressingStyles(
+        AddressingStyle style, string endpointPath, string expectedHost, string expectedPath)
+    {
+        using var transport = new CaptureTransport(request =>
+        {
+            Assert.Equal(expectedHost, request.RequestUri!.Host);
+            Assert.Equal(expectedPath, request.RequestUri.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+        });
+        var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = transport });
+        Assert.True(await service.ObjectExistsAsync(Profile with
+        {
+            AddressingStyle = style, Endpoint = "https://s3.example.test" + endpointPath
+        }, "bucket", "/leading", TestContext.Current.CancellationToken));
+        Assert.Single(transport.Requests);
+    }
+
+    [Fact]
+    public async Task LeadingKeyTemporaryRedirectFailsBeforeReissuingRequest()
+    {
+        using var body = new MemoryStream([]);
+        using var transport = new CaptureTransport(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = new StreamContent(body) };
+            response.Headers.Location = new Uri("https://other.s3.example.test/bucket/leading");
+            return response;
+        });
+        var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = transport });
+        await Assert.ThrowsAsync<NotSupportedException>(() => service.ObjectExistsAsync(
+            Profile, "bucket", "/leading", TestContext.Current.CancellationToken));
+        Assert.Single(transport.Requests);
+        Assert.Throws<ObjectDisposedException>(() => body.ReadByte());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OrdinaryKeyTemporaryRedirectHonorsProfileSetting(bool follow)
+    {
+        var count = 0;
+        using var transport = new CaptureTransport(request =>
+        {
+            if (++count == 1)
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = new ByteArrayContent([]) };
+                response.Headers.Location = new Uri("https://bucket.s3.us-west-2.amazonaws.com/file");
+                return response;
+            }
+            Assert.Equal("bucket.s3.us-west-2.amazonaws.com", request.RequestUri!.Host);
+            Assert.Equal("/file", request.RequestUri.AbsolutePath);
+            Assert.NotNull(request.Headers.Authorization);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+        });
+        var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = transport });
+        var operation = service.ObjectExistsAsync(Profile with { FollowTemporaryRedirects = follow },
+            "bucket", "file", TestContext.Current.CancellationToken);
+        if (follow) Assert.True(await operation);
+        else await Assert.ThrowsAsync<NotSupportedException>(() => operation);
+        Assert.Equal(follow ? 2 : 1, transport.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("//leading")]
+    public void LeadingKeyPresignedUrlFailsClosed(string key)
+    {
+        using var transport = new CaptureTransport(_ => throw new InvalidOperationException("No network call expected."));
+        var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = transport });
+        Assert.Throws<NotSupportedException>(() => service.CreatePresignedUrl(Profile, "bucket", key, TimeSpan.FromHours(1)));
+        Assert.Empty(transport.Requests);
+    }
+
     [Theory]
     [InlineData("file", 1)]
     [InlineData(" ", 1)]
@@ -61,6 +196,9 @@ public sealed class ExactObjectKeyTransportTests
 
     [Theory]
     [InlineData("/leading//file")]
+    [InlineData("/")]
+    [InlineData("//")]
+    [InlineData("///leading")]
     [InlineData("a/./file")]
     [InlineData("a/../file")]
     [InlineData("../file")]
@@ -121,11 +259,15 @@ public sealed class ExactObjectKeyTransportTests
     {
         private HttpClient? _client;
         public List<HttpMethod> Requests { get; } = [];
-        public override HttpClient CreateHttpClient(IClientConfig config) => _client ??= new HttpClient(new Handler(request =>
+        public override HttpClient CreateHttpClient(IClientConfig config)
         {
-            Requests.Add(request.Method);
-            return respond(request);
-        }));
+            Assert.False(config.AllowAutoRedirect); // HTTP must not bypass the SDK's redirect policy.
+            return _client ??= new HttpClient(new Handler(request =>
+            {
+                Requests.Add(request.Method);
+                return respond(request);
+            }));
+        }
         public override bool UseSDKHttpClientCaching(IClientConfig config) => false;
         public override bool DisposeHttpClientsAfterUse(IClientConfig config) => false;
         public void Dispose() => _client?.Dispose();
