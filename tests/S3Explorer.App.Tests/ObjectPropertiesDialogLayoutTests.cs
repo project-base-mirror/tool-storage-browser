@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Reflection;
 using S3Explorer.Core;
 using Xunit;
 
@@ -7,19 +8,42 @@ namespace S3Explorer.App.Tests;
 public sealed class ObjectPropertiesDialogLayoutTests
 {
     [Fact]
-    public void MetadataReplacementIsReadOnlyWithAnExplanation()
+    public void MetadataCopyIsReadOnlyWithoutImmutableVersion()
     {
         RunSta(() =>
         {
             using var dialog = new ObjectPropertiesDialog(Properties(), "https://s3.amazonaws.com",
                 profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
-            Assert.False(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataButton")).Enabled);
+            Assert.False(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataCopyButton")).Enabled);
             Assert.True(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
             var grid = Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid"));
             Assert.True(grid.ReadOnly);
             Assert.False(grid.AllowUserToAddRows);
             Assert.False(grid.AllowUserToDeleteRows);
-            Assert.Contains("保留", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+            Assert.Contains("固定版本", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+        });
+    }
+
+    [Fact]
+    public void EligibleMetadataCopyIsEditableAndClearlyUsesANewExactKey()
+    {
+        RunSta(() =>
+        {
+            var properties = Properties() with { Key = "/folder//source ", VersionId = "v1", ServerSideEncryptionMethod = "AES256" };
+            var storage = DispatchProxy.Create<IS3StorageService, NoCallsStorage>();
+            using var dialog = new ObjectPropertiesDialog(properties, "https://s3.amazonaws.com",
+                storage: storage, profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
+            var save = Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataCopyButton"));
+            Assert.True(save.Enabled);
+            Assert.Contains("另存为新对象", save.Text);
+            Assert.False(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
+            Assert.False(Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid")).ReadOnly);
+            Assert.Equal(properties.Key + ".metadata-copy",
+                Assert.IsType<TextBox>(Find(dialog, "ObjectMetadataCopyDestination")).Text);
+            var reason = Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text;
+            Assert.Contains("BucketOwnerEnforced", reason);
+            Assert.Contains("SSE-S3", reason);
+            Assert.Contains("无 Object Lock", reason);
         });
     }
 
@@ -67,7 +91,7 @@ public sealed class ObjectPropertiesDialogLayoutTests
             AssertButtonIsReadable(dialog, "SaveObjectRetentionButton");
             AssertButtonIsReadable(dialog, "SaveObjectLegalHoldButton");
             AssertButtonIsReadable(dialog, "ReloadObjectLockButton");
-            AssertButtonIsReadable(dialog, "SaveObjectMetadataButton");
+            AssertButtonIsReadable(dialog, "SaveObjectMetadataCopyButton");
             AssertButtonIsReadable(dialog, "ReloadObjectTagsButton");
             AssertButtonIsReadable(dialog, "SaveObjectTagsButton");
             AssertButtonIsReadable(dialog, "DeleteObjectTagsButton");
@@ -81,7 +105,7 @@ public sealed class ObjectPropertiesDialogLayoutTests
     }
 
     [Fact]
-    public void BatchMetadataDialogKeepsExplicitApplyControlsAndCostWarning()
+    public void BatchMetadataDialogExplainsSafeSingleObjectAlternative()
     {
         RunSta(() =>
         {
@@ -98,7 +122,7 @@ public sealed class ObjectPropertiesDialogLayoutTests
             AssertButtonIsReadable(dialog, "CancelBatchObjectMetadataButton");
             Assert.Contains(
                 dialog.Controls.Cast<Control>().SelectMany(Flatten).OfType<Label>(),
-                label => label.Text.Contains("请求费", StringComparison.Ordinal));
+                label => label.Text.Contains("另存为新对象", StringComparison.Ordinal));
         });
     }
 
@@ -188,5 +212,11 @@ public sealed class ObjectPropertiesDialogLayoutTests
         thread.Join();
         if (error is not null)
             ExceptionDispatchInfo.Capture(error).Throw();
+    }
+
+    public class NoCallsStorage : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+            throw new InvalidOperationException("Opening the metadata editor must not make storage requests.");
     }
 }

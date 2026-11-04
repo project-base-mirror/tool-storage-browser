@@ -149,7 +149,7 @@ internal sealed class ObjectVersionsDialog : Form
         if (version is null || version.IsDeleteMarker) return;
         using var save = new SaveFileDialog
         {
-            FileName = S3Path.DisplayName(version.Key, false),
+            FileName = MainForm.SuggestedDownloadFileName(version.Key),
             Title = $"下载版本 {version.VersionId}",
             OverwritePrompt = true
         };

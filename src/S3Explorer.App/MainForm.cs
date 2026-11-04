@@ -59,6 +59,7 @@ internal sealed partial class MainForm : Form
         FullRowSelect = true,
         MultiSelect = true,
         HideSelection = false,
+        ShowItemToolTips = true,
         GridLines = false,
         AllowDrop = true
     };
@@ -1976,7 +1977,7 @@ internal sealed partial class MainForm : Form
     {
         _currentProfile = profile;
         _currentBucket = bucket;
-        _currentPrefix = S3Path.NormalizePrefix(prefix);
+        _currentPrefix = prefix;
         Text = WindowTitle(profile.Name);
         var location = new S3Location(profile.Name, bucket, _currentPrefix);
         _address.Text = location.ToString();
@@ -2129,6 +2130,7 @@ internal sealed partial class MainForm : Form
             {
                 item.Tag = entry;
                 item.Text = entry.Name;
+                item.ToolTipText = $"Key: {Uri.EscapeDataString(entry.Key)}";
                 item.ImageKey = UiIcons.ObjectImageKey(entry.Name, entry.IsDirectory);
                 item.SubItems[1].Text = entry.IsDirectory ? string.Empty : FileSizeFormatter.Format(entry.Size);
                 item.SubItems[2].Text = ObjectTypeDetector.Detect(entry.Name, entry.IsDirectory);
@@ -2187,6 +2189,7 @@ internal sealed partial class MainForm : Form
         var item = new ListViewItem(entry.Name)
         {
             Tag = entry,
+            ToolTipText = $"Key: {Uri.EscapeDataString(entry.Key)}",
             ImageKey = UiIcons.ObjectImageKey(entry.Name, entry.IsDirectory)
         };
         item.SubItems.Add(entry.IsDirectory ? string.Empty : FileSizeFormatter.Format(entry.Size));
@@ -2471,7 +2474,7 @@ internal sealed partial class MainForm : Form
         Action<string, Exception> onDirectoryError) =>
         SafeLocalFileTraversal.EnumerateFiles(root, onDirectoryError);
 
-    private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix)
+    private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix, bool includeFolderMarkers = false)
     {
         var profile = _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
         var bucket = _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
@@ -2487,8 +2490,9 @@ internal sealed partial class MainForm : Form
                            prefix,
                            pageSize,
                            limit,
-                           (currentPrefix, token, cancellationToken) => _storage.ListObjectsAsync(
-                               profile, bucket, currentPrefix, token, pageSize, cancellationToken),
+                           (currentPrefix, token, cancellationToken) => includeFolderMarkers
+                               ? _storage.ListObjectsForDeletionAsync(profile, bucket, currentPrefix, token, pageSize, cancellationToken)
+                               : _storage.ListObjectsAsync(profile, bucket, currentPrefix, token, pageSize, cancellationToken),
                            CancellationToken.None))
         {
             yield return item;

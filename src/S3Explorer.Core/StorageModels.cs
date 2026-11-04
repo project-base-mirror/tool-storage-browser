@@ -78,6 +78,12 @@ public sealed record ObjectProperties(
     public string? CustomerEncryptionMethod { get; init; }
     public string? ObjectLockMode { get; init; }
     public string? ObjectLockLegalHoldStatus { get; init; }
+    public string? ContentLanguage { get; init; }
+    public string? WebsiteRedirectLocation { get; init; }
+    public int? MissingMetadataCount { get; init; }
+    public bool? BucketKeyEnabled { get; init; }
+    public DateTimeOffset? ObjectLockRetainUntilDate { get; init; }
+    public string? ExpiresHeader { get; init; }
 }
 
 public sealed record TransferProgress(long TransferredBytes, long TotalBytes)
@@ -172,6 +178,9 @@ public interface IS3StorageService
             : Task.FromException(new NotSupportedException("此存储实现不能保证条件复制/移动，已停止操作。"));
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task ReplaceObjectMetadataAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectWriteHeaders headers, CancellationToken cancellationToken);
+    Task SaveObjectMetadataCopyAsync(ConnectionProfile profile, ObjectProperties source, string destinationKey,
+        ObjectWriteHeaders headers, CancellationToken cancellationToken) =>
+        Task.FromException(new NotSupportedException("当前存储服务不支持将 Metadata 快照另存为新对象。"));
     Task<IReadOnlyList<ObjectTag>> GetObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);
     Task PutObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, IReadOnlyCollection<ObjectTag> tags, CancellationToken cancellationToken);
     Task DeleteObjectTagsAsync(ConnectionProfile profile, string bucket, string key, string? versionId, CancellationToken cancellationToken);

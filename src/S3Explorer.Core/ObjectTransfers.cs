@@ -23,20 +23,19 @@ public static class ObjectTransferPlanner
         string topLevelName,
         string? relativePath = null)
     {
-        if (string.IsNullOrWhiteSpace(topLevelName))
+        ArgumentNullException.ThrowIfNull(topLevelName);
+        if (topLevelName.Length == 0 && relativePath is null)
             throw new ArgumentException("顶层对象名称不能为空。", nameof(topLevelName));
 
-        var segments = new[]
-        {
-            NormalizePrefix(destinationPrefix),
-            topLevelName.Replace('\\', '/').Trim('/'),
-            relativePath?.Replace('\\', '/').Trim('/') ?? string.Empty
-        };
-        var key = string.Join("/", segments.Where(segment => segment.Length > 0));
+        var key = NormalizeDirectoryPrefix(destinationPrefix) + topLevelName +
+                  (relativePath is null ? string.Empty : "/" + relativePath);
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException("目标对象 Key 不能为空。");
         return key;
     }
+
+    public static string BuildDirectoryDestinationKey(string destinationPrefix, string topLevelName) =>
+        BuildDestinationKey(destinationPrefix, topLevelName, string.Empty);
 
     public static string GetRelativePath(string sourcePrefix, string objectKey)
     {
@@ -55,7 +54,7 @@ public static class ObjectTransferPlanner
     {
         if (string.IsNullOrWhiteSpace(sourceBucket) || string.IsNullOrWhiteSpace(destinationBucket))
             throw new ArgumentException("源和目标 Bucket 不能为空。");
-        if (string.IsNullOrWhiteSpace(sourceKey) || string.IsNullOrWhiteSpace(destinationKey))
+        if (string.IsNullOrEmpty(sourceKey) || string.IsNullOrEmpty(destinationKey))
             throw new ArgumentException("源和目标对象 Key 不能为空。");
         if (!string.Equals(sourceBucket, destinationBucket, StringComparison.Ordinal))
             return;
@@ -76,15 +75,14 @@ public static class ObjectTransferPlanner
     public static string GetAutoRenameCandidate(string objectKey, int sequence)
     {
         if (sequence < 2) throw new ArgumentOutOfRangeException(nameof(sequence));
-        if (string.IsNullOrWhiteSpace(objectKey))
+        if (string.IsNullOrEmpty(objectKey))
             throw new ArgumentException("对象 Key 不能为空。", nameof(objectKey));
 
         var isDirectory = objectKey.EndsWith("/", StringComparison.Ordinal);
-        var trimmed = isDirectory ? objectKey.TrimEnd('/') : objectKey;
+        var trimmed = isDirectory ? objectKey[..^1] : objectKey;
         var slash = trimmed.LastIndexOf('/');
         var parent = slash >= 0 ? trimmed[..(slash + 1)] : string.Empty;
         var name = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
-        if (name.Length == 0) throw new ArgumentException("对象名称不能为空。", nameof(objectKey));
 
         string renamed;
         if (isDirectory)
@@ -102,12 +100,10 @@ public static class ObjectTransferPlanner
         return parent + renamed;
     }
 
-    public static string NormalizePrefix(string? prefix)
-    {
-        if (string.IsNullOrWhiteSpace(prefix)) return string.Empty;
-        return prefix.Trim().Replace('\\', '/').Trim('/');
-    }
+    public static string NormalizePrefix(string? prefix) => prefix ?? string.Empty;
 
-    private static string NormalizeDirectoryKey(string key) =>
-        key.TrimStart('/').TrimEnd('/') + "/";
+    private static string NormalizeDirectoryPrefix(string? prefix) =>
+        string.IsNullOrEmpty(prefix) ? string.Empty : NormalizeDirectoryKey(prefix);
+
+    private static string NormalizeDirectoryKey(string key) => key.EndsWith('/') ? key : key + "/";
 }

@@ -101,9 +101,12 @@ public sealed class ObjectPreviewTests
             normal with { ServerSideEncryptionMethod = "aws:kms:dsse" },
             normal with { EncryptionKeyId = "key-id" },
             normal with { CustomerEncryptionMethod = "AES256" },
+            normal with { BucketKeyEnabled = true },
             normal with { ObjectLockMode = "GOVERNANCE" },
             normal with { ObjectLockMode = "COMPLIANCE" },
-            normal with { ObjectLockLegalHoldStatus = "ON" }
+            normal with { ObjectLockLegalHoldStatus = "ON" },
+            normal with { ObjectLockLegalHoldStatus = "unknown" },
+            normal with { ObjectLockRetainUntilDate = DateTimeOffset.Parse("2030-01-01T00:00:00Z") }
         };
         foreach (var item in protectedObjects)
         {
@@ -111,6 +114,54 @@ public sealed class ObjectPreviewTests
             Assert.Throws<InvalidOperationException>(() => MainForm.EnsurePreviewIdentityUnchanged(normal, item));
         }
         Assert.Null(ObjectPreviewPolicy.ProtectedObjectReadOnlyReason(normal with { ObjectLockLegalHoldStatus = "OFF" }));
+    }
+
+    [Fact]
+    public void UnpreservableHeadersAndIncompleteMetadataCannotBeEditedOrUploaded()
+    {
+        var normal = new ObjectProperties("bucket", "key", 3, null, "etag", "text/plain", null, "v1", new Dictionary<string, string>());
+        ObjectProperties[] unsafeObjects =
+        [
+            normal with { ContentLanguage = "en" },
+            normal with { WebsiteRedirectLocation = "/target" },
+            normal with { MissingMetadataCount = 1 },
+            normal with { ExpiresHeader = "not-a-date" }
+        ];
+        foreach (var item in unsafeObjects)
+        {
+            Assert.NotNull(ObjectPreviewPolicy.UnpreservableMetadataReadOnlyReason(item));
+            Assert.NotNull(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.AmazonS3, item));
+            Assert.NotNull(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.MinIO, item));
+            Assert.NotNull(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.CloudflareR2, item));
+            // The protection is enforced both when the original is unsafe and when
+            // an independently changed current object retains the same content ETag.
+            Assert.Throws<InvalidOperationException>(() => MainForm.EnsurePreviewIdentityUnchanged(item, item));
+            Assert.Throws<InvalidOperationException>(() => MainForm.EnsurePreviewIdentityUnchanged(normal, item));
+        }
+    }
+
+    [Fact]
+    public void ValidExpiresRemainsEditableButSameEtagHeaderChangesStopUpload()
+    {
+        var expires = DateTimeOffset.Parse("2030-01-01T00:00:00Z");
+        var original = new ObjectProperties("bucket", "key", 3, null, "etag", "text/plain", null, "v1", new Dictionary<string, string>())
+        {
+            ExpiresUtc = expires,
+            ExpiresHeader = "Tue, 01 Jan 2030 00:00:00 GMT",
+            ServerSideEncryptionMethod = "AES256"
+        };
+        Assert.Null(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.AmazonS3, original));
+        MainForm.EnsurePreviewIdentityUnchanged(original, original);
+        ObjectProperties[] changed =
+        [
+            original with { ExpiresHeader = "Tue, 01 Jan 2030 00:00:00 +0000" },
+            original with { ContentLanguage = "" },
+            original with { WebsiteRedirectLocation = "" },
+            original with { MissingMetadataCount = 0 },
+            original with { BucketKeyEnabled = false }
+        ];
+        Assert.All(changed, current =>
+            Assert.Throws<InvalidOperationException>(() => MainForm.EnsurePreviewIdentityUnchanged(original, current)));
     }
 
     [Fact]

@@ -37,11 +37,7 @@ public readonly record struct S3Location(string Profile, string? Bucket, string 
         if (string.IsNullOrEmpty(Prefix))
             return new(Profile, null, string.Empty);
 
-        var trimmed = Prefix.TrimEnd('/');
-        var separator = trimmed.LastIndexOf('/');
-        return separator < 0
-            ? new(Profile, Bucket, string.Empty)
-            : new(Profile, Bucket, trimmed[..(separator + 1)]);
+        return new(Profile, Bucket, S3Path.ParentPrefix(Prefix));
     }
 
     public override string ToString()
@@ -56,20 +52,14 @@ public readonly record struct S3Location(string Profile, string? Bucket, string 
 
 public static class S3Path
 {
-    public static string NormalizePrefix(string? prefix)
-    {
-        if (string.IsNullOrWhiteSpace(prefix))
-            return string.Empty;
-        return string.Join('/', prefix.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
-               + (prefix.EndsWith('/') ? "/" : string.Empty);
-    }
+    // S3 keys are opaque strings, not filesystem paths. Normalizing separators,
+    // whitespace or dot segments would select a different remote object.
+    public static string NormalizePrefix(string? prefix) => prefix ?? string.Empty;
 
     public static string Combine(string? prefix, string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var normalizedPrefix = NormalizePrefix(prefix);
-        var normalizedName = name.Replace('\\', '/').TrimStart('/');
-        return normalizedPrefix + normalizedName;
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        return NormalizePrefix(prefix) + name;
     }
 
     public static string ParentPrefix(string? prefix)
@@ -78,22 +68,44 @@ public static class S3Path
         if (normalized.Length == 0)
             return string.Empty;
 
-        var trimmed = normalized.TrimEnd('/');
+        // Remove exactly one structural delimiter. Each additional slash is an
+        // empty S3 path segment which must remain reachable via Up/Back/Forward.
+        var trimmed = normalized.EndsWith('/') ? normalized[..^1] : normalized;
         var separator = trimmed.LastIndexOf('/');
         return separator < 0 ? string.Empty : trimmed[..(separator + 1)];
     }
 
     public static string FolderMarker(string? prefix, string folderName)
     {
-        if (folderName.Any(char.IsControl) || folderName.Trim() is "" or "/")
-            throw new ArgumentException("文件夹名称不能为空、不能仅为 /，也不能包含控制字符。", nameof(folderName));
-        return Combine(prefix, folderName.Trim().Trim('/')) + "/";
+        ArgumentException.ThrowIfNullOrEmpty(folderName);
+        if (folderName.Any(char.IsControl))
+            throw new ArgumentException("文件夹名称不能包含控制字符。", nameof(folderName));
+        var key = Combine(prefix, folderName);
+        return key.EndsWith('/') ? key : key + "/";
     }
 
-    public static string DisplayName(string key, bool isPrefix)
+    /// <summary>The literal final segment, never a user-facing label.</summary>
+    public static string LeafName(string key, bool isPrefix)
     {
-        var trimmed = isPrefix ? key.TrimEnd('/') : key;
+        ArgumentNullException.ThrowIfNull(key);
+        var trimmed = isPrefix && key.EndsWith('/') ? key[..^1] : key;
         var index = trimmed.LastIndexOf('/');
         return index >= 0 ? trimmed[(index + 1)..] : trimmed;
+    }
+
+    public static string DisplayName(string key, bool isPrefix) => LeafName(key, isPrefix) switch
+    {
+        "" => "（空路径段）",
+        "." => "（字面路径段：.）",
+        ".." => "（字面路径段：..）",
+        var name when string.IsNullOrWhiteSpace(name) => $"（空白名称：{Uri.EscapeDataString(name)}）",
+        var name => name
+    };
+
+    public static string RenameLeaf(string key, string name)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        return key[..(key.LastIndexOf('/') + 1)] + name;
     }
 }

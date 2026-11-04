@@ -10,7 +10,8 @@ internal sealed partial class ObjectPropertiesDialog
     private readonly TextBox _contentDisposition = HeaderTextBox("ObjectContentDisposition");
     private readonly TextBox _expiresUtc = HeaderTextBox("ObjectExpiresUtc");
     private readonly DataGridView _metadataGrid = KeyValueGrid("ObjectMetadataGrid", "Metadata Key");
-    private readonly Button _metadataSave = ActionButton("SaveObjectMetadataButton", "保存 Header / Metadata");
+    private readonly TextBox _metadataDestination = HeaderTextBox("ObjectMetadataCopyDestination");
+    private readonly Button _metadataSave = ActionButton("SaveObjectMetadataCopyButton", "另存为新对象...");
     private readonly Label _metadataReason = CapabilityLabel("ObjectMetadataCapabilityReason");
     private readonly DataGridView _tagsGrid = KeyValueGrid("ObjectTagsGrid", "Tag Key");
     private readonly Button _tagsReload = ActionButton("ReloadObjectTagsButton", "重新读取");
@@ -26,7 +27,7 @@ internal sealed partial class ObjectPropertiesDialog
         ApplyMetadata(value);
         var capability = _profile is null
             ? BucketFeatureSupport.No("当前调用未提供连接上下文，仅显示现有 Header 与 Metadata")
-            : S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.MetadataRewrite;
+            : ObjectMetadataCopyPolicy.For(_profile.ServiceType, value);
         _metadataReason.Text = capability.Reason;
         _metadataSave.Enabled = capability.Supported && _storage is not null;
         foreach (var textBox in new[] { _contentType, _cacheControl, _contentEncoding, _contentDisposition, _expiresUtc })
@@ -34,6 +35,8 @@ internal sealed partial class ObjectPropertiesDialog
         _metadataGrid.ReadOnly = !capability.Supported;
         _metadataGrid.AllowUserToAddRows = capability.Supported;
         _metadataGrid.AllowUserToDeleteRows = capability.Supported;
+        _metadataDestination.Text = value.Key + ".metadata-copy";
+        _metadataDestination.ReadOnly = !capability.Supported;
         _metadataReason.MaximumSize = new Size(520, 0);
         _metadataSave.Click += async (_, _) => await SaveMetadataAsync();
 
@@ -52,6 +55,7 @@ internal sealed partial class ObjectPropertiesDialog
         AddHeaderRow(headers, "Content-Encoding：", _contentEncoding);
         AddHeaderRow(headers, "Content-Disposition：", _contentDisposition);
         AddHeaderRow(headers, "Expires UTC：", _expiresUtc);
+        AddHeaderRow(headers, "另存目标 Key：", _metadataDestination);
 
         var actions = new FlowLayoutPanel
         {
@@ -126,22 +130,24 @@ internal sealed partial class ObjectPropertiesDialog
         _cacheControl.Text = value.CacheControl ?? string.Empty;
         _contentEncoding.Text = value.ContentEncoding ?? string.Empty;
         _contentDisposition.Text = value.ContentDisposition ?? string.Empty;
-        _expiresUtc.Text = value.ExpiresUtc?.UtcDateTime.ToString("O") ?? string.Empty;
+        _expiresUtc.Text = value.ExpiresUtc?.UtcDateTime.ToString("O") ?? value.ExpiresHeader ?? string.Empty;
         ApplyGrid(_metadataGrid, value.Metadata.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase));
     }
 
     private async Task SaveMetadataAsync()
     {
         if (_storage is null || _profile is null || _objectProperties is null || _metadataBusy) return;
-        var capability = S3ProviderCapabilityRegistry.For(_profile.ServiceType).Object.MetadataRewrite;
+        var capability = ObjectMetadataCopyPolicy.For(_profile.ServiceType, _objectProperties);
         if (!capability.Supported)
         {
             _metadataReason.Text = capability.Reason;
             return;
         }
         ObjectWriteHeaders headers;
+        var destinationKey = _metadataDestination.Text;
         try
         {
+            ObjectMetadataCopyPolicy.ValidateDestination(_objectProperties, destinationKey);
             DateTimeOffset? expires = null;
             if (!string.IsNullOrWhiteSpace(_expiresUtc.Text))
             {
@@ -165,20 +171,21 @@ internal sealed partial class ObjectPropertiesDialog
 
         if (MessageBox.Show(
                 this,
-                $"将通过原地 Copy 替换以下对象的 Header 与自定义 Metadata。\r\n对象开启版本控制时会生成新版本。\r\n\r\n{ObjectLocation()}",
-                "确认保存 Header / Metadata",
+                $"将对话框中的 Header / Metadata 快照另存到同 Bucket 的新 Key。\r\n" +
+                "源对象保持不变；已存在的当前目标不会被覆盖。复制可能产生请求费、存储费与新版本。\r\n" +
+                "源版本的 Tags 与非编辑 Header 由服务端保留；新对象受目标 Key 的 Bucket Policy / 生命周期规则约束。\r\n" +
+                "仅支持 SSE-S3、禁用 ACL 且无 Object Lock 的 Bucket；无法验证时会停止。\r\n\r\n" +
+                $"来源：{ObjectLocation()}\r\n固定版本：{_objectProperties.VersionId}\r\n目标：s3://{_objectProperties.Bucket}/{destinationKey}",
+                "确认另存 Metadata 快照",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
 
-        await ExecuteMetadataAsync("保存 Header / Metadata", async token =>
+        var source = _objectProperties;
+        await ExecuteMetadataAsync("另存 Metadata 快照", async token =>
         {
-            await _storage.ReplaceObjectMetadataAsync(
-                _profile, _objectProperties.Bucket, _objectProperties.Key,
-                _objectProperties.VersionId, headers, token);
-            _objectProperties = await _storage.GetObjectPropertiesAsync(
-                _profile, _objectProperties.Bucket, _objectProperties.Key, token);
-            ApplyMetadata(_objectProperties);
+            await _storage.SaveObjectMetadataCopyAsync(_profile, source, destinationKey, headers, token);
+            _metadataReason.Text = $"已另存为 s3://{source.Bucket}/{destinationKey}。源对象未改变；关闭后刷新列表可查看副本。";
         });
     }
 

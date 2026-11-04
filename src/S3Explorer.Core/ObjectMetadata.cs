@@ -110,4 +110,45 @@ public sealed record ObjectCapabilities(
     BucketFeatureSupport Acl,
     BucketFeatureSupport PresignedUrl,
     BucketFeatureSupport VersionOperations,
-    BucketFeatureSupport ObjectLock);
+    BucketFeatureSupport ObjectLock)
+{
+    public BucketFeatureSupport MetadataCopy { get; init; } = BucketFeatureSupport.No(
+        "此服务商尚未验证 Metadata 快照的非覆盖复制；原地替换仍不可用。");
+}
+
+public static class ObjectMetadataCopyPolicy
+{
+    public const long MaximumBytes = 5L * 1024 * 1024 * 1024;
+
+    public static BucketFeatureSupport For(S3ServiceType provider, ObjectProperties source)
+    {
+        var capability = S3ProviderCapabilityRegistry.For(provider).Object.MetadataCopy;
+        if (!capability.Supported) return capability;
+        if (string.IsNullOrWhiteSpace(source.VersionId) || source.VersionId == "null" ||
+            string.IsNullOrWhiteSpace(source.ETag))
+            return BucketFeatureSupport.No("另存为新对象需要 AWS 非 null 的固定版本 ID 与 ETag；请先启用版本控制并重新上传或选择已有固定版本的对象。");
+        if (source.Size is < 0 or > MaximumBytes)
+            return BucketFeatureSupport.No("Metadata 快照另存目前仅支持不超过 5 GiB 的对象，不会降级为无法完整保留属性的分片复制。");
+        if (source.MissingMetadataCount is > 0)
+            return BucketFeatureSupport.No("服务端未返回全部 Metadata，不能安全地保存不完整快照。");
+        if (!string.IsNullOrEmpty(source.ExpiresHeader) && source.ExpiresUtc is null)
+            return BucketFeatureSupport.No("源对象的 Expires 无法无损解析，不能保存不完整的 Header 快照。");
+        if (source.ServerSideEncryptionMethod != "AES256" ||
+            !string.IsNullOrEmpty(source.EncryptionKeyId) ||
+            !string.IsNullOrEmpty(source.CustomerEncryptionMethod) || source.BucketKeyEnabled == true)
+            return BucketFeatureSupport.No("Metadata 快照另存仅支持明确的 SSE-S3 (AES256) 加密；KMS、SSE-C 和未知加密状态均不会复制。");
+        if (!string.IsNullOrEmpty(source.ObjectLockMode) || source.ObjectLockRetainUntilDate is not null ||
+            (!string.IsNullOrEmpty(source.ObjectLockLegalHoldStatus) && source.ObjectLockLegalHoldStatus != "OFF"))
+            return BucketFeatureSupport.No("受 Object Lock / Retention / Legal Hold 保护的对象不能使用 Metadata 快照另存。");
+        return capability;
+    }
+
+    public static void ValidateDestination(ObjectProperties source, string destinationKey)
+    {
+        if (string.IsNullOrEmpty(destinationKey) || Encoding.UTF8.GetByteCount(destinationKey) > 1024 ||
+            destinationKey.IndexOf('\0') >= 0)
+            throw new ArgumentException("目标 Key 必须为 1–1024 个 UTF-8 字节，且不能包含空字符。", nameof(destinationKey));
+        if (string.Equals(source.Key, destinationKey, StringComparison.Ordinal))
+            throw new ArgumentException("必须使用不同的新 Key；不会替换或删除源对象。", nameof(destinationKey));
+    }
+}

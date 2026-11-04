@@ -62,7 +62,7 @@ jobs:
 
   minio-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       S3EXPLORER_MATRIX_PROVIDER: minio
       S3EXPLORER_MINIO_ENDPOINT: http://127.0.0.1:19000
@@ -79,7 +79,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: minio/minio
-          ref: 9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a # RELEASE.2025-10-15T17-29-55Z
+          ref: 18f97e70b19db6b2940ae8a1b14c4665d2eeca36 # Includes conditional-write read-quorum fix #21653
           path: .ci-minio-source
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -90,6 +90,17 @@ jobs:
         working-directory: .ci-minio-source
         shell: bash
         run: go build -trimpath -o "$RUNNER_TEMP/minio" .
+      - name: Verify upstream conditional-write quorum regressions
+        working-directory: .ci-minio-source
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          pattern='^Test(PutObject|NewMultipartUpload|CompleteMultipartUpload)ConditionalWithReadQuorumFailure$'
+          selected="$(go test ./cmd -list "$pattern")"
+          for test in TestPutObjectConditionalWithReadQuorumFailure TestNewMultipartUploadConditionalWithReadQuorumFailure TestCompleteMultipartUploadConditionalWithReadQuorumFailure; do
+            grep -qx "$test" <<< "$selected" || { echo "Missing required upstream regression: $test"; exit 1; }
+          done
+          go test ./cmd -run "$pattern" -count=1 -timeout 3m
       - name: Start isolated MinIO
         shell: bash
         run: |

@@ -22,12 +22,25 @@ internal static class ObjectPreviewPolicy
     {
         if (!string.IsNullOrWhiteSpace(properties.EncryptionKeyId) ||
             !string.IsNullOrWhiteSpace(properties.CustomerEncryptionMethod) ||
+            properties.BucketKeyEnabled == true ||
             (!string.IsNullOrWhiteSpace(properties.ServerSideEncryptionMethod) &&
              !string.Equals(properties.ServerSideEncryptionMethod, "AES256", StringComparison.OrdinalIgnoreCase)))
             return "对象使用 KMS、客户密钥或其他专用加密，仅可预览，不能在此回传编辑。";
-        if (!string.IsNullOrWhiteSpace(properties.ObjectLockMode) ||
-            string.Equals(properties.ObjectLockLegalHoldStatus, "ON", StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(properties.ObjectLockMode) || properties.ObjectLockRetainUntilDate is not null ||
+            (!string.IsNullOrEmpty(properties.ObjectLockLegalHoldStatus) &&
+             !string.Equals(properties.ObjectLockLegalHoldStatus, "OFF", StringComparison.OrdinalIgnoreCase)))
             return "对象具有 Object Lock / Legal Hold 保护，仅可预览，不能在此回传编辑。";
+        return null;
+    }
+
+    public static string? UnpreservableMetadataReadOnlyReason(ObjectProperties properties)
+    {
+        if (!string.IsNullOrEmpty(properties.ContentLanguage) || !string.IsNullOrEmpty(properties.WebsiteRedirectLocation))
+            return "对象包含 Content-Language 或网站重定向；此编辑回传不能完整保留这些 Header，仅可预览。";
+        if (properties.MissingMetadataCount is > 0)
+            return "服务端未返回完整 Metadata，不能安全回传编辑，仅可预览。";
+        if (!string.IsNullOrEmpty(properties.ExpiresHeader) && properties.ExpiresUtc is null)
+            return "对象的 Expires Header 无法无损解析，不能安全回传编辑，仅可预览。";
         return null;
     }
 
@@ -36,6 +49,7 @@ internal static class ObjectPreviewPolicy
 
     public static string? EditingReadOnlyReason(S3ServiceType provider, ObjectProperties properties) =>
         ProtectedObjectReadOnlyReason(properties) ??
+        UnpreservableMetadataReadOnlyReason(properties) ??
         (provider == S3ServiceType.CloudflareR2 && RequiresSseS3Encryption(properties)
             ? "此 R2 对象报告 AES256，但尚未验证显式保留该加密设置的写入协议，仅可预览。" : null);
 

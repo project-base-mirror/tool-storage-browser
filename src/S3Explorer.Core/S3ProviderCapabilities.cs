@@ -16,7 +16,7 @@ public sealed record S3ProviderCapabilities(
 public static class S3ProviderCapabilityRegistry
 {
     private static BucketFeatureSupport UnsafeMetadataRewrite => BucketFeatureSupport.No(
-        "暂不支持安全的原地 Metadata 替换：需保证对象并发身份并完整保留加密与未编辑属性。请使用服务商原生工具。");
+        "原地 Metadata 替换保持禁用：ETag 不能保护并发属性变化。符合条件的 AWS 对象可在属性页编辑快照并另存为新对象，保留源对象。");
 
     private static readonly IReadOnlyDictionary<S3ServiceType, S3ProviderCapabilities> Entries =
         Enum.GetValues<S3ServiceType>().ToDictionary(value => value, Create);
@@ -56,7 +56,11 @@ public static class S3ProviderCapabilityRegistry
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
-                BucketFeatureSupport.Yes())),
+                BucketFeatureSupport.Yes())
+            {
+                MetadataCopy = BucketFeatureSupport.Yes(
+                    "可将固定版本快照另存为同 Bucket 的新 Key，保留原对象且不覆盖当前目标。仅支持 AWS、SSE-S3、≤5 GiB、BucketOwnerEnforced 且无 Object Lock 的 Bucket；保存前会重新验证。")
+            }),
 
         S3ServiceType.MinIO => new(
             serviceType,

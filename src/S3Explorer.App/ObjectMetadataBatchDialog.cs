@@ -57,7 +57,7 @@ internal sealed class ObjectMetadataBatchDialog : Form
             AutoSize = true,
             MaximumSize = new Size(660, 0),
             ForeColor = Color.DarkRed,
-            Text = "每个对象会执行一次服务端原地 Copy；可能产生请求费、生成新版本，并受跨区域或 Provider Copy 规则限制。空值表示清除已勾选的 Header。",
+            Text = "批量原地 Metadata 替换保持禁用：不能保证并发属性与保护状态安全。符合条件的 AWS 对象可在单个对象属性的 Metadata 页编辑快照并“另存为新对象”，不会修改源对象。",
             Margin = new Padding(10, 3, 10, 8)
         };
         var metadataHeader = new FlowLayoutPanel

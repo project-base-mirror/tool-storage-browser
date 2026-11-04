@@ -1099,7 +1099,7 @@ internal static class Program
         }
 
         if (string.IsNullOrEmpty(location.Prefix)) throw new CliUsageException("下载单个对象时 URI 必须包含对象 Key。");
-        if (Directory.Exists(target)) target = Path.Combine(target, S3Path.DisplayName(location.Prefix, false));
+        if (Directory.Exists(target)) target = LocalObjectPath.MapRelativeKey(target, S3Path.LeafName(location.Prefix, false));
         await storage.DownloadFileAsync(
             profile, location.Bucket!, location.Prefix, target, transfer.CreateContext(), cancellationToken);
         return 1;

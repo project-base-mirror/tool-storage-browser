@@ -133,7 +133,7 @@ public sealed record MultipartUploadCheckpoint(
 
     public bool HasSourceIdentity =>
         !string.IsNullOrWhiteSpace(Bucket) &&
-        !string.IsNullOrWhiteSpace(ObjectKey) &&
+        !string.IsNullOrEmpty(ObjectKey) &&
         SourceLength >= 0 &&
         SourceLastWriteTimeUtc != default;
 
@@ -153,7 +153,7 @@ public sealed record MultipartUploadCheckpoint(
             throw new ArgumentOutOfRangeException(nameof(PartSize), "分片大小不能小于 5 MiB。");
         if (SourceLength < 0)
             throw new ArgumentOutOfRangeException(nameof(SourceLength));
-        if (string.IsNullOrWhiteSpace(Bucket) != string.IsNullOrWhiteSpace(ObjectKey))
+        if (string.IsNullOrWhiteSpace(Bucket) != string.IsNullOrEmpty(ObjectKey))
             throw new ArgumentException("Bucket 和 ObjectKey 必须同时提供。");
 
         var seen = new HashSet<int>();
@@ -210,7 +210,7 @@ public sealed record TransferTaskRecord
         if (ProfileId == Guid.Empty) throw new ArgumentException("连接 ID 不能为空。", nameof(ProfileId));
         if (string.IsNullOrWhiteSpace(ProfileName)) throw new ArgumentException("连接名称不能为空。", nameof(ProfileName));
         if (string.IsNullOrWhiteSpace(Bucket)) throw new ArgumentException("Bucket 不能为空。", nameof(Bucket));
-        if (string.IsNullOrWhiteSpace(ObjectKey)) throw new ArgumentException("对象 Key 不能为空。", nameof(ObjectKey));
+        if (string.IsNullOrEmpty(ObjectKey)) throw new ArgumentException("对象 Key 不能为空。", nameof(ObjectKey));
         if (Direction is TransferDirection.Upload or TransferDirection.Download or TransferDirection.DeleteLocal)
         {
             if (string.IsNullOrWhiteSpace(LocalPath))
@@ -220,7 +220,7 @@ public sealed record TransferTaskRecord
         {
             if (string.IsNullOrWhiteSpace(DestinationBucket))
                 throw new ArgumentException("目标 Bucket 不能为空。", nameof(DestinationBucket));
-            if (string.IsNullOrWhiteSpace(DestinationObjectKey))
+            if (string.IsNullOrEmpty(DestinationObjectKey))
                 throw new ArgumentException("目标对象 Key 不能为空。", nameof(DestinationObjectKey));
             ObjectTransferPlanner.ValidateDestination(
                 Bucket, ObjectKey, isDirectory: false, DestinationBucket, DestinationObjectKey);
