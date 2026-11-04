@@ -277,7 +277,8 @@ public sealed class ShellFileReadStream : IShellReadStream
         {
             owner.ThrowIfDisposed();
             if ((flags & ~3u) != 0) return unchecked((int)0x800300FF);
-            stat = new ComStat { type = 2, cbSize = file.Length, grfMode = 0, pwcsName = (flags & 1) != 0 ? null : file.RelativePath };
+            // STATFLAG_NONAME requires a native null string despite STATSTG's non-null annotation.
+            stat = new ComStat { type = 2, cbSize = file.Length, grfMode = 0, pwcsName = (flags & 1) != 0 ? null! : file.RelativePath };
             if (file.LastModified is { } modified) { long time = modified.UtcDateTime.ToFileTimeUtc(); stat.mtime = new FILETIME { dwLowDateTime = (int)time, dwHighDateTime = (int)(time >> 32) }; }
             return 0;
         }

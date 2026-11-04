@@ -260,8 +260,8 @@ public sealed class ShellFileDataObjectTests
         enumerator.Clone(out var clone);
         var originalItem = new FORMATETC[1];
         var clonedItem = new FORMATETC[1];
-        Assert.Equal(0, enumerator.Next(1, originalItem, null));
-        Assert.Equal(0, clone.Next(1, clonedItem, null));
+        Assert.Equal(0, enumerator.Next(1, originalItem, new int[1]));
+        Assert.Equal(0, clone.Next(1, clonedItem, new int[1]));
         Assert.Equal(originalItem[0].cfFormat, clonedItem[0].cfFormat);
         Assert.Throws<COMException>(() => data.EnumFormatEtc(DATADIR.DATADIR_SET));
     }
