@@ -28,6 +28,13 @@ internal sealed class ExactObjectKeyRedirectHandler(
             if (++_redirects.GetValue(request, static _ => new RedirectCount()).Value > 3)
                 throw new NotSupportedException("临时重定向次数过多；请配置正确的 Endpoint 后重试。");
             if (request.SignatureVersion != SignatureVersion.SigV4) throw UnsafeRedirect();
+            // HttpClientResponseData reads the typed Location header. System.Uri
+            // resolves dot-only segments before the SDK exposes its string, so
+            // the original redirect path cannot be verified here. The current
+            // request still addresses the exact key; never redirect to its alias.
+            if (request.PathResources is not null && request.PathResources.TryGetValue("{Key+}", out var redirectKey) &&
+                redirectKey.Split('/').Any(segment => segment is "." or ".."))
+                throw new NotSupportedException("含 . 或 .. 路径段的对象 Key 无法安全自动重定向；请直接配置正确的区域 Endpoint 后重试。");
             var target = ParseLocation(redirectedLocation);
             var current = AmazonServiceClient.ComposeUrl(request);
             if (target.Scheme != current.Scheme || target.Port != current.Port ||
@@ -105,7 +112,10 @@ internal sealed class ExactObjectKeyRedirectHandler(
     }
 
     private static string ObjectPath(string bucket, string key, bool pathStyle) =>
-        "/" + (pathStyle ? AWSSDKUtils.UrlEncode(bucket, false) + "/" : "") + AWSSDKUtils.UrlEncode(key, true);
+        "/" + (pathStyle ? AWSSDKUtils.UrlEncode(bucket, false) + "/" : "") +
+        // Greedy SDK labels encode each segment, not legacy UrlEncode(path:true),
+        // which would leave characters such as '+' unescaped in the signed path.
+        string.Join('/', key.Split('/').Select(segment => AWSSDKUtils.UrlEncode(segment, false)));
 
     private static bool TryAwsAddress(Uri uri, string bucket, out bool pathStyle, out string region)
     {

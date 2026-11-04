@@ -42,6 +42,9 @@ public sealed partial class ExactObjectKeyTransportTests
                 }
             };
             request.Parameters["custom space+"] = "中文/+%?#=";
+            // ParameterCollection prefixes non-x- names by contract. Check the
+            // stored SDK name, its exact wire value and the independent signature.
+            Assert.Equal("x-custom space+", Assert.Single(request.Parameters.Keys));
             var urls = new[] { client.GetPreSignedURL(request), await client.GetPreSignedURLAsync(request) };
             foreach (var url in urls)
             {
@@ -50,7 +53,7 @@ public sealed partial class ExactObjectKeyTransportTests
                 Assert.Equal(style == AddressingStyle.PathStyle ? "s3.example.test" : "bucket.s3.example.test", uri.Host);
                 Assert.Equal(key, request.Key);
                 Assert.Equal("version/+ %中文", Query(uri)["versionId"]);
-                Assert.Equal("中文/+%?#=", Query(uri)["custom space+"]);
+                Assert.Equal("中文/+%?#=", Query(uri)["x-custom space+"]);
                 Assert.Equal("attachment; filename=\"a + %.txt\"", Query(uri)["response-content-disposition"]);
                 if (session) Assert.Equal(profile.SessionToken, Query(uri)["X-Amz-Security-Token"]);
                 else Assert.False(Query(uri).ContainsKey("X-Amz-Security-Token"));
@@ -109,7 +112,6 @@ public sealed partial class ExactObjectKeyTransportTests
     [InlineData(AddressingStyle.PathStyle, true, "/leading//file")]
     [InlineData(AddressingStyle.VirtualHosted, true, "/literal%2F/中文 + #?.txt")]
     [InlineData(AddressingStyle.VirtualHosted, false, "/literal%2F/中文 + #?.txt")]
-    [InlineData(AddressingStyle.PathStyle, false, "/a/./../file")]
     [InlineData(AddressingStyle.PathStyle, true, "/")]
     public async Task AwsRegionalRedirectPreservesExactPathQueryAndFreshSignature(
         AddressingStyle originalStyle, bool destinationPathStyle, string key)
@@ -144,6 +146,39 @@ public sealed partial class ExactObjectKeyTransportTests
         }, TestContext.Current.CancellationToken);
         Assert.Equal(2, count);
         Assert.Throws<ObjectDisposedException>(() => firstBody.ReadByte());
+    }
+
+    [Theory]
+    [InlineData(AddressingStyle.PathStyle, "/a/./../file")]
+    [InlineData(AddressingStyle.VirtualHosted, "/a/./../file")]
+    [InlineData(AddressingStyle.PathStyle, "a/../file")]
+    public async Task DotSegmentRedirectIsRefusedBeforeAnyAliasedRequest(AddressingStyle style, string key)
+    {
+        using var body = new MemoryStream([]);
+        using var transport = new CaptureTransport(request =>
+        {
+            AssertValidSignature(request, "us-east-1");
+            Assert.Equal((style == AddressingStyle.PathStyle ? "/bucket/" : "/") + Encode(key, path: true), request.RequestUri!.AbsolutePath);
+            var response = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = new StreamContent(body) };
+            var rawLocation = "https://bucket.s3.us-west-2.amazonaws.com/" + Encode(key, path: true);
+            response.Headers.TryAddWithoutValidation("Location", rawLocation);
+            // Verify the precise SDK boundary: typed header access canonicalizes
+            // the path, so raw Location identity is unavailable to its handler.
+            var parsedLocation = Assert.IsType<Uri>(response.Headers.Location);
+            Assert.NotEqual("/" + Encode(key, path: true), parsedLocation.AbsolutePath);
+            return response;
+        });
+        using var client = new S3ClientFactory { HttpClientFactoryOverride = transport }.Create(Profile with
+        {
+            ServiceType = S3ServiceType.AmazonS3, Endpoint = "https://s3.us-east-1.amazonaws.com", AddressingStyle = style
+        });
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() => client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = "bucket", Key = key
+        }, TestContext.Current.CancellationToken));
+        Assert.Contains("区域 Endpoint", exception.Message);
+        Assert.Single(transport.Requests);
+        Assert.Throws<ObjectDisposedException>(() => body.ReadByte());
     }
 
     [Theory]

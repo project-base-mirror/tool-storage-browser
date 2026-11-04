@@ -14,6 +14,7 @@
 - 含独立 `.` 或 `..` 路径段的 Key 不生成浏览器下载链接。普通浏览器/URI 消费者会合并这些路径段；应用内请求仍使用不规范化的 URI。字面 `%2e` Key 会编码为 `%252e`，不属于独立点段。
 - 以 `/` 开头的 Key 的预签名 PUT/DELETE、上传分片、请求 Header/Metadata、加密 Header、访问点/ARN 和 S3 Express 目录 Bucket 尚不支持。不得静默忽略这些选项。正常 Key 仍走 SDK 原生预签名方法。
 - MinIO 和未经验证的 Custom 服务继续拒绝其服务端可能规范化为别名的特殊 Key；客户端正确签名无法消除服务端别名行为。
+- 含独立 `.` 或 `..` 路径段的 Key 也不自动重定向。SDK 读取 .NET 的 typed Location Header 时，这些路径段已被规范化，原始重定向目标无法再验证；请直接配置正确区域 Endpoint，应用内直连仍保留原始 Key。
 - 重定向不能更改协议、端口、原始查询参数或对象身份，不能带用户信息、fragment、非法转义或空白。配置自定义 Host Header 的连接不自动重定向。
 - 同一 authority 的兼容服务重定向仅在路径和查询参数完全相同时接受。跨 authority 只接受 Amazon S3 同一分区、同一 Bucket 的已知标准区域 Endpoint，支持 path-style 与 virtual-hosted 切换；不接受任意 S3 形状的域名、跨 Bucket、自定义服务跨域、未知区域或高级 Endpoint 变体。最多跟随三次 307，避免循环。
 
