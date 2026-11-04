@@ -196,7 +196,7 @@ public sealed class ConnectionDialogRoundTripTests
 
     private static void SelectByText(ComboBox comboBox, string text)
     {
-        var item = Assert.Single(comboBox.Items.Cast<object>().Where(value => value.ToString() == text));
+        var item = Assert.Single(comboBox.Items.Cast<object>(), value => value.ToString() == text);
         comboBox.SelectedItem = item;
     }
 
