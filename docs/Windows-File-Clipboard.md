@@ -1,6 +1,6 @@
 # Windows 双向文件剪贴板
 
-此文档描述文件剪贴板工作分支的实现与验收边界，不代表已经发布。实现环境为 Linux；云端 Windows 构建和测试在[草稿 PR #6](https://github.com/project-base-mirror/tool-storage-browser/pull/6) 中进行。验收范围区分原生 OLE 往返与真实 Explorer Shell 交互，不代表已完成所有 Windows 版本或生产存储验证。
+此文档描述文件剪贴板的实现与验收边界，功能已通过 [PR #6](https://github.com/project-base-mirror/tool-storage-browser/pull/6) 合入 main，纳入 v0.8.8 发布准备；正式发布状态以对应 tag 和 Release 为准。实现环境为 Linux，构建与交互测试运行于云端 Windows。验收范围区分原生 OLE 往返与真实 Explorer Shell 交互，不代表已完成所有 Windows 版本或生产存储验证。
 
 ## 使用方式
 
