@@ -195,7 +195,7 @@ public sealed partial class S3StorageService : IS3StorageService
     {
         using var client = _factory.Create(profile);
         // No delimiter and no prefix-object filtering: directory markers are real
-        // objects and must be retained in a destructive listing.
+        // objects and must be retained in destructive or lossless-transfer listings.
         var response = await client.ListObjectsV2Async(new ListObjectsV2Request
         {
             BucketName = bucket,
@@ -562,9 +562,7 @@ public sealed partial class S3StorageService : IS3StorageService
                         await VerifyBoundedDownloadEndAsync(response.ResponseStream, cancellationToken).ConfigureAwait(false);
                         break;
                     }
-                    var readBuffer = maximumDownloadBytes > 0
-                        ? Math.Min(buffer.Length, checked((int)(maximumDownloadBytes - completed)))
-                        : buffer.Length;
+                    var readBuffer = BoundedDownloadReadLength(buffer.Length, maximumDownloadBytes, completed);
                     var read = await response.ResponseStream
                         .ReadAsync(buffer.AsMemory(0, readBuffer), cancellationToken)
                         .ConfigureAwait(false);

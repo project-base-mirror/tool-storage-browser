@@ -2,7 +2,8 @@ namespace S3Explorer.Core;
 
 public static class SafeLocalFileTraversal
 {
-    public static IEnumerable<string> EnumerateFiles(string rootDirectory, Action<string, Exception> onError)
+    public static IEnumerable<string> EnumerateFiles(string rootDirectory, Action<string, Exception> onError,
+        Action<string>? onEmptyDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(onError);
         var root = Path.GetFullPath(rootDirectory);
@@ -19,6 +20,7 @@ public static class SafeLocalFileTraversal
                 LocalObjectPath.EnsureNoReparsePoints(root, directory);
                 entries = Directory.GetFileSystemEntries(directory);
                 Array.Sort(entries, StringComparer.Ordinal);
+                if (entries.Length == 0) onEmptyDirectory?.Invoke(directory);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {

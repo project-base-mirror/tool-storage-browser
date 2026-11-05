@@ -8,6 +8,11 @@ namespace S3Explorer.Infrastructure.S3;
 
 public sealed partial class S3StorageService
 {
+    internal static int BoundedDownloadReadLength(int bufferLength, long maximumDownloadBytes, long completed) =>
+        maximumDownloadBytes > 0
+            ? checked((int)Math.Min(bufferLength, maximumDownloadBytes - completed))
+            : bufferLength;
+
     internal static async Task VerifyBoundedDownloadEndAsync(Stream stream, CancellationToken cancellationToken)
     {
         if (await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
