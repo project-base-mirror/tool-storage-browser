@@ -126,6 +126,25 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('APPLICATIONFOLDER=', updater)
         self.assertIn('failure = new AggregateException', updater)
 
+    def test_manual_tag_preparation_is_explicit_and_checks_validated_main(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
+        preparation = workflow.split('  prepare-tag:', 1)[1].split('  release:', 1)[0]
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.create_tag", preparation)
+        self.assertIn('"$DISPATCH_REF" == refs/heads/main', preparation)
+        self.assertIn('"$(git rev-parse HEAD)" == "$EXPECTED_MAIN_SHA"', preparation)
+        self.assertIn('"$(git rev-parse origin/main)" == "$EXPECTED_MAIN_SHA"', preparation)
+        self.assertIn('head_sha=$EXPECTED_MAIN_SHA', preparation)
+        self.assertIn('.event == "push"', preparation)
+        self.assertIn('.conclusion == "success"', preparation)
+        self.assertIn('sort_by(.created_at) | last', preparation)
+        self.assertIn('ref: refs/tags/${{ env.RELEASE_TAG }}', workflow)
+        self.assertLess(preparation.index('Exact main commit has no successful Validate'), preparation.index('git tag -a'))
+        self.assertLess(preparation.index('git show-ref --verify --quiet'), preparation.index('git tag -a'))
+        self.assertIn('git tag -a "$RELEASE_TAG" "$EXPECTED_MAIN_SHA"', preparation)
+        self.assertNotIn('--force', preparation)
+        self.assertNotIn('git tag -f', preparation)
+        self.assertIn("needs.prepare-tag.result == 'skipped' && !inputs.create_tag", workflow)
+
     def test_pages_gate_precedes_upload_and_release_completion_retriggers(self):
         pages = (ROOT / '.github/workflows/pages.yml').read_text(encoding='utf-8')
         release = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
