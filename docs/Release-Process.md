@@ -127,7 +127,9 @@ git push origin $tag
 - `release-metrics.json`
 - `SHA256SUMS.txt`
 
-Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release 工作流也可手工重跑，但输入必须是已经存在的 tag；工作流不会创建或移动 tag。
+Release 必须是正式版本，即 `draft=false`、`prerelease=false`。Release 工作流也可手工重跑，默认 `create_tag=false`，输入必须是已经存在的 tag；工作流不会移动或覆盖 tag。
+
+没有本地 Git 推送认证时，可在 GitHub Actions 的 `Publish GitHub Release` 手动入口选择 `main`、填写版本 tag，并显式启用 `create_tag`，同时填写已验证的完整 `expected_main_sha`。准备步骤只允许当前 `main`、版本/清单/记录一致、且该精确提交已有成功的 Validate push 工作流；再次读取 main 后才创建 annotated tag。检查时发现 SHA 变化、最新匹配验证未成功或 tag 已存在都会失败。最后一次检查后 main 仍可能前进，但 tag 始终绑定本次已验证的精确 SHA，不会纳入随后到来的代码。此步骤使用仓库已有的临时 Actions 身份（contents write，验证仅额外读取 Actions），不保存新凭据。由于 GITHUB_TOKEN 推送不会触发新工作流，同一次运行会继续从刚创建的不可变 tag 完成正式构建与发布。
 
 ## 6. 等待并核验 Pages
 

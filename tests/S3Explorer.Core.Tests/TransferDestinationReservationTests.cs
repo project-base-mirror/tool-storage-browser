@@ -6,6 +6,114 @@ namespace S3Explorer.Core.Tests;
 public sealed class TransferDestinationReservationTests
 {
     [Theory]
+    [InlineData(TransferTaskState.Queued, true)]
+    [InlineData(TransferTaskState.Running, true)]
+    [InlineData(TransferTaskState.Paused, true)]
+    [InlineData(TransferTaskState.RetryPending, true)]
+    [InlineData(TransferTaskState.Interrupted, true)]
+    [InlineData(TransferTaskState.CleanupPending, true)]
+    [InlineData(TransferTaskState.Completed, false)]
+    [InlineData(TransferTaskState.Failed, false)]
+    [InlineData(TransferTaskState.Cancelled, false)]
+    public void TerminalFailuresDoNotReserveDestinations(TransferTaskState state, bool reserved) =>
+        Assert.Equal(reserved, TransferDestinationReservation.IsReserved(Download("target") with { State = state }));
+
+    [Theory]
+    [InlineData(TransferTaskState.Failed)]
+    [InlineData(TransferTaskState.Cancelled)]
+    public void FailedOrCancelledBatchItemsReleaseTheirNames(TransferTaskState state)
+    {
+        var batch = Guid.NewGuid();
+        var first = Download("target.txt") with { BatchId = batch, State = state };
+        var second = Download("target.txt") with { BatchId = batch, ConflictPolicy = ObjectConflictPolicy.AutoRename };
+        Assert.Same(second, TransferDestinationReservation.Reserve(second, [first]));
+        var chunk = new[] { second };
+        TransferDestinationReservation.ReserveBatch(chunk, [first], batch);
+        Assert.Same(second, chunk[0]);
+    }
+
+    [Fact]
+    public async Task FailedUploadReleasesTargetButRetryCannotStealNewUploadsReservation()
+    {
+        var failed = Upload("lp/index.html") with
+        {
+            State = TransferTaskState.Failed,
+            Failure = new("unsupported provider", TransferFailureCategory.Validation),
+            MultipartCheckpoint = new("retained-upload", 5 * 1024 * 1024, [])
+        };
+        var store = new Store(new() { Tasks = [failed] });
+        await using var queue = new PersistentTransferQueue(store, new BlockingExecutor(), maxConcurrency: 2);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        var replacement = failed with { Id = Guid.NewGuid(), MultipartCheckpoint = null };
+        await queue.EnqueueAsync(replacement, TestContext.Current.CancellationToken);
+        Assert.Equal(TransferTaskState.Running, queue.Snapshot.Tasks.Single(task => task.Id == replacement.Id).State);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => queue.RetryAsync(failed.Id, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => queue.ResumeAsync(failed.Id, TestContext.Current.CancellationToken));
+        var retained = queue.Snapshot.Tasks.Single(task => task.Id == failed.Id);
+        Assert.Equal(TransferTaskState.Failed, retained.State);
+        Assert.Equal(failed.Failure, retained.Failure);
+        Assert.Equal(failed.MultipartCheckpoint, retained.MultipartCheckpoint);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedUploadCanReacquireUnoccupiedTarget(bool resume)
+    {
+        var failed = Upload("lp/index.html") with { State = TransferTaskState.Failed };
+        await using var queue = new PersistentTransferQueue(new Store(new() { Tasks = [failed] }), new BlockingExecutor());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        if (resume) await queue.ResumeAsync(failed.Id, TestContext.Current.CancellationToken);
+        else await queue.RetryAsync(failed.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(TransferTaskState.Running, Assert.Single(queue.Snapshot.Tasks).State);
+    }
+
+    [Fact]
+    public async Task RetryAllSkipsOccupiedTargetsAndReservesEachReleasedTargetOnlyOnce()
+    {
+        var first = Upload("same") with { State = TransferTaskState.Failed };
+        var duplicate = first with { Id = Guid.NewGuid() };
+        var occupied = first with { Id = Guid.NewGuid(), ObjectKey = "busy" };
+        var owner = occupied with { Id = Guid.NewGuid(), State = TransferTaskState.Paused };
+        var independent = first with { Id = Guid.NewGuid(), ObjectKey = "independent" };
+        await using var queue = new PersistentTransferQueue(
+            new Store(new() { Tasks = [first, duplicate, occupied, owner, independent] }), new BlockingExecutor(), maxConcurrency: 4);
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        await queue.RetryAllFailedAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(TransferTaskState.Running, queue.Snapshot.Tasks.Single(task => task.Id == first.Id).State);
+        Assert.Equal(TransferTaskState.Running, queue.Snapshot.Tasks.Single(task => task.Id == independent.Id).State);
+        Assert.Equal(TransferTaskState.Failed, queue.Snapshot.Tasks.Single(task => task.Id == duplicate.Id).State);
+        Assert.Equal(TransferTaskState.Failed, queue.Snapshot.Tasks.Single(task => task.Id == occupied.Id).State);
+        Assert.Equal(TransferTaskState.Paused, queue.Snapshot.Tasks.Single(task => task.Id == owner.Id).State);
+    }
+
+    [Fact]
+    public async Task BatchRetrySkipsTargetsClaimedSinceFailureAndCountsActualRetries()
+    {
+        var first = Upload("lp/index.html") with
+        {
+            State = TransferTaskState.Failed, BatchId = Guid.NewGuid(), Kind = TransferTaskKind.FolderBatchItem,
+            Failure = new("transient", TransferFailureCategory.Network, Retryable: true)
+        };
+        var second = first with { Id = Guid.NewGuid(), ObjectKey = "other" };
+        var replacement = first with { Id = Guid.NewGuid(), BatchId = null, State = TransferTaskState.Paused };
+        var batch = new TransferBatchRecord
+        {
+            Id = first.BatchId.Value, ProfileId = first.ProfileId, ProfileName = first.ProfileName,
+            Direction = TransferDirection.Upload, Bucket = first.Bucket, RootPath = "local", Name = "upload",
+            TaskIds = [first.Id, second.Id], DiscoveryCompleted = true
+        };
+        await using var queue = new PersistentTransferQueue(new Store(new()
+        {
+            Tasks = [first, second, replacement], Batches = [batch]
+        }), new BlockingExecutor());
+        await queue.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1, await queue.RetryBatchFailuresAsync(batch.Id, cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(TransferTaskState.Failed, queue.Snapshot.Tasks.Single(task => task.Id == first.Id).State);
+        Assert.Equal(TransferTaskState.Running, queue.Snapshot.Tasks.Single(task => task.Id == second.Id).State);
+    }
+
+    [Theory]
     [InlineData("a:b.txt", "a_x003A_b.txt")]
     [InlineData("CON", "_CON")]
     [InlineData("", "_empty_")]
@@ -110,9 +218,14 @@ public sealed class TransferDestinationReservationTests
         LocalPath = path, Direction = TransferDirection.Download, TotalBytes = 1
     };
 
-    private sealed class Store : ITransferTaskStore
+    private static TransferTaskRecord Upload(string key) => Download("local") with
     {
-        private TransferStoreSnapshot _snapshot = new();
+        Direction = TransferDirection.Upload, ObjectKey = key
+    };
+
+    private sealed class Store(TransferStoreSnapshot? initial = null) : ITransferTaskStore
+    {
+        private TransferStoreSnapshot _snapshot = initial ?? new();
         public Task<TransferStoreSnapshot> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot);
         public Task SaveAsync(TransferStoreSnapshot snapshot, CancellationToken cancellationToken = default)
         {

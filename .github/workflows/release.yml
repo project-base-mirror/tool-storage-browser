@@ -7,9 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag to publish
+        description: vX.Y.Z tag to publish
         required: true
         type: string
+      create_tag:
+        description: Create an annotated tag from validated main before publishing
+        type: boolean
+        default: false
+      expected_main_sha:
+        description: Exact validated main SHA (required only when creating a tag)
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -22,13 +30,61 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  prepare-tag:
+    if: github.event_name == 'workflow_dispatch' && inputs.create_tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out main for explicit tag preparation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Require validated main and create immutable annotated tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$DISPATCH_REF" == refs/heads/main ]] || { echo 'Tag preparation must run from main.'; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag.'; exit 1; }
+          [[ "$EXPECTED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact main SHA is required.'; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_MAIN_SHA" ]] || { echo 'Main changed before checkout.'; exit 1; }
+          version="$(python -c 'import xml.etree.ElementTree as E; print(E.parse("Directory.Build.props").findtext("./PropertyGroup/Version"))')"
+          [[ "$RELEASE_TAG" == "v$version" ]] || { echo 'Tag does not match the main project version.'; exit 1; }
+          [[ -f "docs/versions/$RELEASE_TAG.md" ]] || { echo 'Release notes are missing.'; exit 1; }
+          pwsh -NoProfile -File ./scripts/Test-UpdateManifest.ps1
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$EXPECTED_MAIN_SHA&per_page=100")"
+          jq -e --arg sha "$EXPECTED_MAIN_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push")] | sort_by(.created_at) | last | .status == "completed" and .conclusion == "success"' <<< "$runs" > /dev/null || { echo 'Exact main commit has no successful Validate push run.'; exit 1; }
+          git fetch origin main --tags
+          [[ "$(git rev-parse origin/main)" == "$EXPECTED_MAIN_SHA" ]] || { echo 'Main changed after validation.'; exit 1; }
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo 'Tag already exists; use ordinary publication instead. Tags are never overwritten.'
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$RELEASE_TAG" "$EXPECTED_MAIN_SHA" -m "S3 Explorer $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+          [[ "$(git cat-file -t "$RELEASE_TAG")" == tag ]]
+          [[ "$(git rev-parse "$RELEASE_TAG^{}")" == "$EXPECTED_MAIN_SHA" ]]
+
   release:
+    needs: prepare-tag
+    # A tag pushed with GITHUB_TOKEN does not trigger another workflow run.
+    # Continue here only after successful preparation, or the normal existing-tag path.
+    if: always() && (needs.prepare-tag.result == 'success' || (needs.prepare-tag.result == 'skipped' && !inputs.create_tag))
     runs-on: windows-latest
     steps:
       - name: Check out release tag
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Set up pinned .NET SDK

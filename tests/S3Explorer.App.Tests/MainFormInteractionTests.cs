@@ -38,7 +38,7 @@ public sealed partial class MainFormInteractionTests
             await using var queue = new PersistentTransferQueue(new JsonTransferTaskStore(Path.Combine(root, "tasks.json")), new NeverRunExecutor());
             await queue.InitializeAsync();
             using var form = CreateForm(queue, new TransferRuntimeConfiguration(), new SimpleFileLogger(Path.Combine(root, "logs")), new SingleProfileStore(original), storage: storage);
-            form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Skip;
+            form.TransferConflictPolicySelector = _ => throw new InvalidOperationException("Clear destinations must not prompt.");
             SetField(form, "_currentProfile", original);
             SetField(form, "_currentBucket", "original-bucket");
             SetField(form, "_currentPrefix", "original-prefix/");
@@ -135,6 +135,7 @@ public sealed partial class MainFormInteractionTests
             var upload = new PausedFakeUpload();
             var storage = DispatchProxy.Create<IS3StorageService, FakeStorageProxy>();
             ((FakeStorageProxy)(object)storage).Upload = upload;
+            ((FakeStorageProxy)(object)storage).Exists = (_, _, _) => Task.FromResult(false);
             var runtime = new TransferRuntimeConfiguration();
             var logger = new SimpleFileLogger(Path.Combine(root, "logs"));
             var queue = new PersistentTransferQueue(
@@ -146,7 +147,7 @@ public sealed partial class MainFormInteractionTests
             {
                 await queue.InitializeAsync();
                 using var form = CreateForm(queue, runtime, logger, new SingleProfileStore(profile), storage: storage);
-                form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Overwrite;
+                form.TransferConflictPolicySelector = _ => throw new InvalidOperationException("Clear destinations must not prompt.");
                 SetField(form, "_currentProfile", profile);
                 SetField(form, "_currentBucket", "ui-bucket");
                 SetField(form, "_currentPrefix", "中文/目录/");

@@ -1,28 +1,34 @@
 namespace S3Explorer.Core;
 
-/// <summary>Queue-local reservation; remote conditional writes and local atomic commit still guard external races.</summary>
+/// <summary>Queue-local reservation, separate from provider write conditions and local atomic commits.</summary>
 public static class TransferDestinationReservation
 {
     public static bool IsReserved(TransferTaskRecord task) =>
-        task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled);
+        task.State is not (TransferTaskState.Completed or TransferTaskState.Failed or TransferTaskState.Cancelled);
 
     public static TransferTaskRecord Reserve(TransferTaskRecord task, IEnumerable<TransferTaskRecord> existing)
     {
         var reservations = new ReservationIndex(existing.Where(item => item.Id != task.Id && (IsReserved(item) ||
-            (task.BatchId is not null && item.BatchId == task.BatchId))));
+            (task.BatchId is not null && item.BatchId == task.BatchId && item.State == TransferTaskState.Completed))));
         return Reserve(task, reservations);
     }
 
     public static void ReserveBatch(TransferTaskRecord[] tasks, IEnumerable<TransferTaskRecord> existing, Guid batchId)
     {
         // Build the destination index once per chunk, not once per item × all queued tasks.
-        var reservations = new ReservationIndex(existing.Where(item => IsReserved(item) || item.BatchId == batchId));
+        var reservations = new ReservationIndex(existing.Where(item => IsReserved(item) ||
+            (item.BatchId == batchId && item.State == TransferTaskState.Completed)));
         for (var index = 0; index < tasks.Length; index++)
         {
             tasks[index] = Reserve(tasks[index], reservations);
             reservations.Add(tasks[index]);
         }
     }
+
+    // A failed task releases its destination. Recheck it before retrying rather than
+    // silently renaming a task whose checkpoint is tied to the original target.
+    public static bool CanResume(TransferTaskRecord task, IEnumerable<TransferTaskRecord> existing) =>
+        !existing.Any(item => item.Id != task.Id && IsReserved(item) && Conflicts(task, item));
 
     private static TransferTaskRecord Reserve(TransferTaskRecord task, ReservationIndex reservations)
     {
@@ -82,7 +88,7 @@ public static class TransferDestinationReservation
         _ => null
     };
 
-    private sealed class ReservationIndex
+    internal sealed class ReservationIndex
     {
         private readonly HashSet<string> _files = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _directories = new(StringComparer.OrdinalIgnoreCase);

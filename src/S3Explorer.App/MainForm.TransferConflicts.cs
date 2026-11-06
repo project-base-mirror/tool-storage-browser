@@ -7,14 +7,23 @@ internal sealed partial class MainForm
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal Func<string, ObjectConflictPolicy?>? TransferConflictPolicySelector { get; set; }
 
-    private sealed record ResolvedTransferDestination(string Path, ObjectConflictPolicy Policy);
+    internal sealed record ResolvedTransferDestination(string Path, ObjectConflictPolicy Policy);
 
-    private ObjectConflictPolicy? ChooseTransferConflictPolicy(string title)
+    private ObjectConflictPolicy DefaultTransferConflictPolicy =>
+        _settings.ConfirmOverwrite ? ObjectConflictPolicy.Ask : ObjectConflictPolicy.Overwrite;
+
+    private ObjectConflictPolicy ChooseTransferConflictPolicy(string destination, bool queued)
     {
-        if (TransferConflictPolicySelector is not null) return TransferConflictPolicySelector(title);
-        using var dialog = new TransferConflictDialog(title,
-            _settings.ConfirmOverwrite ? ObjectConflictPolicy.Ask : ObjectConflictPolicy.Overwrite);
-        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.Policy : null;
+        ObjectConflictPolicy? policy;
+        if (TransferConflictPolicySelector is not null)
+            policy = TransferConflictPolicySelector(destination);
+        else
+        {
+            using var dialog = new TransferConflictDialog($"目标冲突：{destination}", ObjectConflictPolicy.Skip, queued);
+            policy = dialog.ShowDialog(this) == DialogResult.OK ? dialog.Policy : null;
+        }
+        if (policy is null) throw new OperationCanceledException();
+        return policy.Value;
     }
 
     private bool IsQueuedTransferDestination(string destination, bool download, ConnectionProfile? profile = null, string? bucket = null)
@@ -22,8 +31,8 @@ internal sealed partial class MainForm
         var candidate = new TransferTaskRecord
         {
             Direction = download ? TransferDirection.Download : TransferDirection.Upload,
-            ProfileId = (profile ?? _currentProfile!).Id,
-            Bucket = bucket ?? _currentBucket!,
+            ProfileId = profile?.Id ?? _currentProfile?.Id ?? Guid.Empty,
+            Bucket = bucket ?? _currentBucket ?? string.Empty,
             ObjectKey = download ? string.Empty : destination,
             LocalPath = download ? destination : string.Empty
         };
@@ -31,7 +40,7 @@ internal sealed partial class MainForm
             TransferDestinationReservation.Conflicts(candidate, task));
     }
 
-    private ResolvedTransferDestination? ResolveDownloadDestination(
+    internal ResolvedTransferDestination? ResolveDownloadDestination(
         string localPath, ObjectConflictPolicy policy, HashSet<string> allocated)
     {
         localPath = LocalObjectPath.ToExtendedLengthPath(localPath);
@@ -42,19 +51,17 @@ internal sealed partial class MainForm
         else if (queued)
         {
             if (policy == ObjectConflictPolicy.Skip) return null;
-            if (policy == ObjectConflictPolicy.Ask)
-                policy = AskQueuedDestination(localPath);
+            if (policy is ObjectConflictPolicy.Ask or ObjectConflictPolicy.Overwrite)
+                policy = ChooseTransferConflictPolicy(localPath, queued: true);
+            if (policy == ObjectConflictPolicy.Skip) return null;
             if (policy != ObjectConflictPolicy.AutoRename)
                 throw new InvalidOperationException($"下载目标已有未完成任务，不能覆盖：{localPath}");
         }
         if (!mappedCollision && !queued && exists)
         {
-            if (policy == ObjectConflictPolicy.Skip) return null;
             if (policy == ObjectConflictPolicy.Ask)
-            {
-                if (!ConfirmTransferOverwrite(localPath)) return null;
-                policy = ObjectConflictPolicy.Overwrite;
-            }
+                policy = ChooseTransferConflictPolicy(localPath, queued: false);
+            if (policy == ObjectConflictPolicy.Skip) return null;
         }
         if ((exists || queued || mappedCollision) && policy == ObjectConflictPolicy.AutoRename)
         {
@@ -77,14 +84,16 @@ internal sealed partial class MainForm
         return new(localPath, policy == ObjectConflictPolicy.Ask ? ObjectConflictPolicy.Skip : policy);
     }
 
-    private async Task<ResolvedTransferDestination?> ResolveUploadDestinationAsync(
+    internal async Task<ResolvedTransferDestination?> ResolveUploadDestinationAsync(
         ConnectionProfile profile, string bucket, string key, ObjectConflictPolicy policy, HashSet<string> allocated)
     {
         var queued = allocated.Contains(key) || IsQueuedTransferDestination(key, download: false, profile, bucket);
         if (queued)
         {
             if (policy == ObjectConflictPolicy.Skip) return null;
-            if (policy == ObjectConflictPolicy.Ask) policy = AskQueuedDestination($"s3://{bucket}/{key}");
+            if (policy is ObjectConflictPolicy.Ask or ObjectConflictPolicy.Overwrite)
+                policy = ChooseTransferConflictPolicy($"s3://{bucket}/{key}", queued: true);
+            if (policy == ObjectConflictPolicy.Skip) return null;
             if (policy != ObjectConflictPolicy.AutoRename)
                 throw new InvalidOperationException($"上传目标已有未完成任务，不能覆盖：{key}");
         }
@@ -92,12 +101,9 @@ internal sealed partial class MainForm
             await _storage.ObjectExistsAsync(profile, bucket, key, CancellationToken.None);
         if (!queued && exists)
         {
-            if (policy == ObjectConflictPolicy.Skip) return null;
             if (policy == ObjectConflictPolicy.Ask)
-            {
-                if (!ConfirmTransferOverwrite($"s3://{bucket}/{key}")) return null;
-                policy = ObjectConflictPolicy.Overwrite;
-            }
+                policy = ChooseTransferConflictPolicy($"s3://{bucket}/{key}", queued: false);
+            if (policy == ObjectConflictPolicy.Skip) return null;
         }
         if ((queued || exists) && policy == ObjectConflictPolicy.AutoRename)
         {
@@ -118,23 +124,4 @@ internal sealed partial class MainForm
         return new(key, policy == ObjectConflictPolicy.Ask ? ObjectConflictPolicy.Skip : policy);
     }
 
-    private ObjectConflictPolicy AskQueuedDestination(string destination)
-    {
-        var answer = MessageBox.Show(this,
-            $"已有任务占用目标：\n{destination}\n\n是：自动重命名保留两份；否：停止，不覆盖已有任务。",
-            "传输目标冲突", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
-        return answer == DialogResult.Yes ? ObjectConflictPolicy.AutoRename : throw new OperationCanceledException();
-    }
-
-    private bool ConfirmTransferOverwrite(string destination)
-    {
-        var answer = MessageBox.Show(this, $"目标已存在：\n{destination}\n\n是：覆盖；否：跳过；取消：停止本次发现。",
-            "传输目标冲突", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
-        return answer switch
-        {
-            DialogResult.Yes => true,
-            DialogResult.No => false,
-            _ => throw new OperationCanceledException()
-        };
-    }
 }

@@ -277,25 +277,30 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             if (selected is not null && selected.Any(id => !childIds.Contains(id)))
                 throw new InvalidOperationException("选中的任务不属于该批次。");
 
+            var reservations = new TransferDestinationReservation.ReservationIndex(
+                snapshot.Tasks.Where(TransferDestinationReservation.IsReserved));
             var tasks = snapshot.Tasks.Select(task =>
             {
                 if (task.BatchId != batchId ||
                     task.State != TransferTaskState.Failed ||
                     task.Failure?.Retryable != true ||
-                    (selected is not null && !selected.Contains(task.Id)))
+                    (selected is not null && !selected.Contains(task.Id)) ||
+                    reservations.Contains(task))
                 {
                     return task;
                 }
 
                 retried++;
                 var retry = TransferTaskStateMachine.Transition(task, TransferTaskState.RetryPending, now);
-                return retry with
+                retry = retry with
                 {
                     AttemptCount = 0, RetryStartedAt = null,
                     Failure = null,
                     NextAttemptAt = now,
                     CompletedAt = null
                 };
+                reservations.Add(retry);
+                return retry;
             }).ToArray();
             var updated = snapshot with { Tasks = tasks };
             return ReplaceBatch(updated, batchId, current => current with
@@ -366,6 +371,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             if (task.State == TransferTaskState.Queued) return task;
             if (task.State is not (TransferTaskState.Paused or TransferTaskState.Interrupted or TransferTaskState.Failed or TransferTaskState.RetryPending))
                 throw new InvalidOperationException($"任务状态 {task.State} 不允许继续。");
+            RequireResumeDestination(task, snapshot.Tasks);
             return TransferTaskStateMachine.Transition(task, TransferTaskState.Queued, _clock()) with
             {
                 Failure = null,
@@ -383,6 +389,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         {
             if (task.State != TransferTaskState.Failed)
                 throw new InvalidOperationException("只有失败任务可以重试。");
+            RequireResumeDestination(task, snapshot.Tasks);
             var retry = TransferTaskStateMachine.Transition(task, TransferTaskState.RetryPending, _clock());
             return retry with
             {
@@ -398,16 +405,28 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
     public async Task RetryAllFailedAsync(CancellationToken cancellationToken = default)
     {
         var now = _clock();
-        await MutateAsync(snapshot => snapshot with
+        await MutateAsync(snapshot =>
         {
-            Tasks = snapshot.Tasks.Select(task =>
+            var reservations = new TransferDestinationReservation.ReservationIndex(
+                snapshot.Tasks.Where(TransferDestinationReservation.IsReserved));
+            var tasks = snapshot.Tasks.Select(task =>
             {
-                if (task.State != TransferTaskState.Failed) return task;
+                if (task.State != TransferTaskState.Failed ||
+                    reservations.Contains(task)) return task;
                 var retry = TransferTaskStateMachine.Transition(task, TransferTaskState.RetryPending, now);
-                return retry with { AttemptCount = 0, RetryStartedAt = null, Failure = null, NextAttemptAt = now, CompletedAt = null };
-            }).ToArray()
+                retry = retry with { AttemptCount = 0, RetryStartedAt = null, Failure = null, NextAttemptAt = now, CompletedAt = null };
+                reservations.Add(retry);
+                return retry;
+            }).ToArray();
+            return snapshot with { Tasks = tasks };
         }, null, cancellationToken).ConfigureAwait(false);
         await PumpAsync().ConfigureAwait(false);
+    }
+
+    private static void RequireResumeDestination(TransferTaskRecord task, IEnumerable<TransferTaskRecord> tasks)
+    {
+        if (!TransferDestinationReservation.CanResume(task, tasks))
+            throw new InvalidOperationException("目标路径已被其他传输任务占用；请等待该任务完成，或取消该任务后再重试。");
     }
 
     public async Task PauseAllAsync(CancellationToken cancellationToken = default)

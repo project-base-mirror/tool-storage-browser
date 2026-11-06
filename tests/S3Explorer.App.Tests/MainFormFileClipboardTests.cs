@@ -47,7 +47,7 @@ public sealed partial class MainFormInteractionTests
                 data.SetFileDropList(new StringCollection { source });
                 data.SetData("Preferred DropEffect", new MemoryStream(BitConverter.GetBytes(2))); // Explorer cut
                 await RestoreClipboardAsync(data);
-                form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Skip;
+                form.TransferConflictPolicySelector = _ => throw new InvalidOperationException("Clear destinations must not prompt.");
                 var paste = InvokeFileClipboardAsync(form, "PasteObjectClipboardAsync");
                 await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
                 SetField(form, "_currentProfile", new ConnectionProfile { Name = "other", Endpoint = "https://other.example.test" });

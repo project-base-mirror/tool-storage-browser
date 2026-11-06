@@ -292,17 +292,19 @@ public sealed partial class S3StorageService : IS3StorageService
         if (transferContext.Options.RequireSseS3Encryption && profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO))
             throw new TransferExecutionException(new TransferFailureInfo(
                 "此服务商尚无可靠的显式 AES256 保留路径；保留本地编辑，不执行替换。", TransferFailureCategory.Validation));
-        if ((!transferContext.Options.AllowDestinationOverwrite || transferContext.Options.ExpectedDestinationETag is not null) &&
-            profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO) &&
-            !(profile.ServiceType == S3ServiceType.CloudflareR2 && UseSingleUpload(file.Length, transferContext.Options.MultipartThresholdBytes)))
+        var conditionalUpload = SupportsUploadConditions(profile,
+            multipart: !UseSingleUpload(file.Length, transferContext.Options.MultipartThresholdBytes));
+        if (transferContext.Options.ExpectedDestinationETag is not null && !conditionalUpload)
             throw new TransferExecutionException(new TransferFailureInfo(
-                "此服务商/上传方式尚无可靠的原子非覆盖写入支持；请明确选择覆盖或更换目标。", TransferFailureCategory.Validation));
+                "此服务商/上传方式不支持按原版本保存编辑；请下载后作为普通文件上传。", TransferFailureCategory.Validation));
 
         try
         {
             using var client = _factory.Create(profile);
             if (UseSingleUpload(file.Length, transferContext.Options.MultipartThresholdBytes))
             {
+                if (!conditionalUpload && !transferContext.Options.AllowDestinationOverwrite)
+                    await CheckUploadDestinationAsync(client, bucket, key, transferContext, cancellationToken).ConfigureAwait(false);
                 await using var source = new FileStream(
                     localPath,
                     FileMode.Open,
@@ -326,7 +328,7 @@ public sealed partial class S3StorageService : IS3StorageService
                 {
                     BucketName = bucket,
                     Key = key,
-                    IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
+                    IfNoneMatch = conditionalUpload && !transferContext.Options.AllowDestinationOverwrite ? "*" : null,
                     IfMatch = transferContext.Options.ExpectedDestinationETag,
                     ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
                     InputStream = throttled,
@@ -353,6 +355,29 @@ public sealed partial class S3StorageService : IS3StorageService
         {
             throw ToTransferException(exception);
         }
+    }
+
+    // Keep conditional writes where supported. Other S3 services use the ordinary
+    // existence-check/upload workflow; that check does not guarantee atomicity.
+    private static bool SupportsUploadConditions(ConnectionProfile? profile, bool multipart) =>
+        profile is null || profile.ServiceType is S3ServiceType.AmazonS3 or S3ServiceType.MinIO ||
+        (profile.ServiceType == S3ServiceType.CloudflareR2 && !multipart);
+
+    private static async Task CheckUploadDestinationAsync(
+        IAmazonS3 client, string bucket, string key, TransferOperationContext context,
+        CancellationToken cancellationToken)
+    {
+        using var lease = await context.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await client.GetObjectMetadataAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception exception) when (IsObjectNotFound(exception))
+        {
+            return;
+        }
+        throw new TransferExecutionException(new TransferFailureInfo(
+            $"上传目标已存在：{key}；请选择覆盖、跳过或重命名。", TransferFailureCategory.Conflict));
     }
 
     public async Task PutObjectAclAsync(
@@ -962,6 +987,9 @@ public sealed partial class S3StorageService : IS3StorageService
         ConnectionProfile? profile = null)
     {
         S3UploadCompatibility.ValidateEndpoint(profile);
+        var conditionalUpload = SupportsUploadConditions(profile, multipart: true);
+        if (!conditionalUpload && !transferContext.Options.AllowDestinationOverwrite)
+            await CheckUploadDestinationAsync(client, bucket, key, transferContext, cancellationToken).ConfigureAwait(false);
         var partSize = MultipartUploadPlanner.EffectivePartSize(file.Length, transferContext.Options.PartSizeBytes);
         // Validate the complete plan before creating a remote upload.
         _ = MultipartUploadPlanner.BuildParts(file.Length, partSize);
@@ -1143,10 +1171,12 @@ public sealed partial class S3StorageService : IS3StorageService
             }).ToArray();
 
             await Task.WhenAll(uploadTasks).ConfigureAwait(false);
+            if (!conditionalUpload && !transferContext.Options.AllowDestinationOverwrite)
+                await CheckUploadDestinationAsync(client, bucket, key, transferContext, cancellationToken).ConfigureAwait(false);
             var complete = new CompleteMultipartUploadRequest
             {
                 BucketName = bucket,
-                IfNoneMatch = transferContext.Options.AllowDestinationOverwrite ? null : "*",
+                IfNoneMatch = conditionalUpload && !transferContext.Options.AllowDestinationOverwrite ? "*" : null,
                 IfMatch = transferContext.Options.ExpectedDestinationETag,
                 Key = key,
                 UploadId = uploadId,

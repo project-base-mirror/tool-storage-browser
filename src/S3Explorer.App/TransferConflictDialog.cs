@@ -10,7 +10,7 @@ internal sealed class TransferConflictDialog : Form
         public override string ToString() => Text;
     }
 
-    public TransferConflictDialog(string title, ObjectConflictPolicy defaultPolicy)
+    public TransferConflictDialog(string title, ObjectConflictPolicy defaultPolicy, bool queued = false)
     {
         Text = title;
         StartPosition = FormStartPosition.CenterParent;
@@ -25,13 +25,14 @@ internal sealed class TransferConflictDialog : Form
         _policy.Items.AddRange([
             new Choice("覆盖已有目标", ObjectConflictPolicy.Overwrite),
             new Choice("跳过已有目标", ObjectConflictPolicy.Skip),
-            new Choice("自动重命名，保留两份", ObjectConflictPolicy.AutoRename),
-            new Choice("逐项询问", ObjectConflictPolicy.Ask)
+            new Choice("自动重命名，保留两份", ObjectConflictPolicy.AutoRename)
         ]);
-        _policy.SelectedIndex = (int)defaultPolicy;
+        if (queued) _policy.Items.RemoveAt(0);
+        _policy.SelectedItem = _policy.Items.Cast<Choice>().FirstOrDefault(choice => choice.Policy == defaultPolicy)
+            ?? _policy.Items.Cast<Choice>().First(choice => choice.Policy == ObjectConflictPolicy.Skip);
         layout.Controls.Add(_policy);
         layout.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(450, 0), Padding = new Padding(0, 8, 0, 8),
-            Text = "策略应用于本次文件及文件夹传输。占用中的队列目标不能覆盖；批量下载中名称映射冲突会自动保留两份。非覆盖上传需要服务端支持可靠条件写入。" });
+            Text = "仅在目标冲突时询问，所选策略用于当前目标。占用中的队列目标不能覆盖；批量下载中名称映射冲突会自动保留两份。兼容存储会在写入前再次检查目标。" });
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         var ok = new Button { Text = "确定", DialogResult = DialogResult.OK, AutoSize = true };
         var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, AutoSize = true };
