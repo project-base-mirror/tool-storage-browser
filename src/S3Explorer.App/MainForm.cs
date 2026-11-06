@@ -2479,10 +2479,10 @@ internal sealed partial class MainForm : Form
         Action<string, Exception> onDirectoryError) =>
         SafeLocalFileTraversal.EnumerateFiles(root, onDirectoryError);
 
-    private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix, bool includeFolderMarkers = false)
+    private async IAsyncEnumerable<S3ObjectEntry> EnumerateAllObjectsAsync(string prefix, bool includeFolderMarkers = false, ConnectionProfile? profile = null, string? bucket = null)
     {
-        var profile = _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
-        var bucket = _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
+        profile ??= _currentProfile ?? throw new InvalidOperationException("当前连接已断开。");
+        bucket ??= _currentBucket ?? throw new InvalidOperationException("当前 Bucket 已关闭。");
         var limit = Math.Clamp(
             _settings.ObjectCacheLimit,
             ObjectListingLimits.MinimumCacheLimit,

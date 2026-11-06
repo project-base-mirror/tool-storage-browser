@@ -122,7 +122,7 @@ public sealed partial class MainFormInteractionTests
                 SetField(form, "_currentBucket", "current-bucket");
                 SetField(form, "_currentPrefix", "当前/destination/");
                 _ = form.Handle;
-                form.TransferConflictPolicySelector = _ => ObjectConflictPolicy.Overwrite;
+                form.TransferConflictPolicySelector = _ => throw new InvalidOperationException("Clear destinations must not prompt.");
                 await InvokeFileClipboardAsync(form, "PasteObjectClipboardAsync");
                 await queue.WaitForIdleAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
                 var task = Assert.Single(queue.Snapshot.Tasks);
