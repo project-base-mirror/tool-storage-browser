@@ -1,16 +1,16 @@
 {
   "schemaVersion": 3,
-  "tagName": "v0.8.10",
-  "version": "0.8.10",
-  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.10",
-  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/S3Explorer-v0.8.10-win-x64.zip",
+  "tagName": "v0.8.11",
+  "version": "0.8.11",
+  "releasePage": "https://github.com/project-base-mirror/tool-storage-browser/releases/tag/v0.8.11",
+  "downloadUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/S3Explorer-v0.8.11-win-x64.zip",
   "downloads": {
-    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/S3Explorer-v0.8.10-win-x64.zip",
-    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/S3Explorer-v0.8.10-win-x64-self-contained.zip",
-    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/S3Explorer-v0.8.10-win-x64-framework-dependent-setup.msi",
-    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/S3Explorer-v0.8.10-win-x64-setup.msi"
+    "portableFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/S3Explorer-v0.8.11-win-x64.zip",
+    "portableSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/S3Explorer-v0.8.11-win-x64-self-contained.zip",
+    "installerFrameworkDependent": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/S3Explorer-v0.8.11-win-x64-framework-dependent-setup.msi",
+    "installerSelfContained": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/S3Explorer-v0.8.11-win-x64-setup.msi"
   },
-  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.10/SHA256SUMS.txt",
-  "notes": "修复传输面板布局、任务清理、OSS 对象右键下载与 Bucket 刷新按钮；支持跨连接/跨服务商复制，并修复更新器进程等待。跨连接复制经本机传输，源对象保留；队列格式升级为 v2，回退旧版前请完成并清除跨连接任务。",
-  "publishedAt": "2026-11-07T02:01:20+00:00"
+  "checksumsUrl": "https://github.com/project-base-mirror/tool-storage-browser/releases/download/v0.8.11/SHA256SUMS.txt",
+  "notes": "修复从 0.8.8/0.8.9 应用内升级时的 MSI 1324/1603：安装包识别旧更新器传入的末尾 \\. 路径并恢复原安装目录；同时修正新更新器的 MSI 参数。恢复受支持对象的文本和 Metadata 编辑，并完善配置恢复、复制与 CDN 精确路径处理。",
+  "publishedAt": "2026-11-07T14:08:24+00:00"
 }
