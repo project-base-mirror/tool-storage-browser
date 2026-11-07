@@ -59,8 +59,38 @@ foreach ($project in @("S3Explorer.App", "S3Explorer.Cli")) {
 }
 Copy-Item -LiteralPath (Join-Path $updaterPayload "S3Explorer.Updater.exe") -Destination $alternatePayload
 
+# Build the actual historical updater source, not a modern updater with a simulated
+# command line. These immutable release commits have identical updater and MSI source.
+# Do not download historical Release assets; fixtures keep synthetic MSI versions.
+$legacyCommits = @("c7a04cc6d3d549b06033dc66ed688102a845d971", "747bd974f729535e3505ae32c925f73366d3b118")
+& git -C $repositoryRoot diff --exit-code $legacyCommits[0] $legacyCommits[1] -- src/S3Explorer.Updater installer/Package.wxs
+if ($LASTEXITCODE -ne 0) { throw "v0.8.8/v0.8.9 legacy sources are missing or no longer identical." }
+function Read-LegacySource {
+    param([Parameter(Mandatory)][string]$Path)
+    $content = & git -C $repositoryRoot show "$($legacyCommits[0]):$Path"
+    if ($LASTEXITCODE -ne 0) { throw "Missing pinned historical source: $Path. Check out full repository history." }
+    return ($content -join "`n") + "`n"
+}
+$legacyRoot = Join-Path $fixtureRoot "legacy-updater-source"
+$legacyProjectRoot = Join-Path $legacyRoot "src\S3Explorer.Updater"
+$legacyUpdaterPayload = Join-Path $fixtureRoot "legacy-updater"
+New-Item -ItemType Directory -Path $legacyProjectRoot -Force | Out-Null
+foreach ($file in @("Directory.Build.props", "global.json")) {
+    Set-Content -LiteralPath (Join-Path $legacyRoot $file) -Value (Read-LegacySource -Path $file) -NoNewline -Encoding utf8
+}
+foreach ($file in @("Program.cs", "AssemblyInfo.cs", "S3Explorer.Updater.csproj", "packages.lock.json")) {
+    Set-Content -LiteralPath (Join-Path $legacyProjectRoot $file) -Value (Read-LegacySource -Path "src/S3Explorer.Updater/$file") -NoNewline -Encoding utf8
+}
+Invoke-DotNet -Arguments @(
+    "publish", (Join-Path $legacyProjectRoot "S3Explorer.Updater.csproj"),
+    "-c", $Configuration, "--self-contained", "true", "-o", $legacyUpdaterPayload,
+    "-p:RestoreLockedMode=true", "-p:PublishSingleFile=true", "-p:PublishTrimmed=true", "-p:TrimMode=full",
+    "-p:IncludeNativeLibrariesForSelfExtract=true", "-p:EnableCompressionInSingleFile=true",
+    "-p:PublishReadyToRun=false", "-p:DebugType=None", "-p:DebugSymbols=false"
+)
+
 $packages = @{}
-foreach ($stage in @("previous", "current", "rollback", "alternate")) {
+foreach ($stage in @("previous", "current", "rollback", "alternate", "legacy-incompatible")) {
     $stageRoot = Join-Path $fixtureRoot $stage
     $stagePayload = Join-Path $stageRoot "payload"
     $projectRoot = Join-Path $stageRoot "project"
@@ -77,6 +107,9 @@ foreach ($stage in @("previous", "current", "rollback", "alternate")) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot "installer\$file") -Destination $projectRoot
     }
     $packagePath = Join-Path $projectRoot "Package.wxs"
+    if ($stage -in @("previous", "legacy-incompatible")) {
+        Set-Content -LiteralPath $packagePath -Value (Read-LegacySource -Path "installer/Package.wxs") -NoNewline -Encoding utf8
+    }
     [xml]$source = Get-Content -LiteralPath $packagePath -Raw
     $namespace = $source.DocumentElement.NamespaceURI
     $package = $source.DocumentElement.FirstChild
@@ -151,8 +184,12 @@ Invoke-DotNet -Arguments @(
     currentMsi = $packages.current
     rollbackMsi = $packages.rollback
     alternateMsi = $packages.alternate
+    legacyIncompatibleMsi = $packages.'legacy-incompatible'
+    legacyUpdater = (Join-Path $legacyUpdaterPayload "S3Explorer.Updater.exe")
+    legacySourceCommits = $legacyCommits
+    legacyUpdaterSourceSha256 = (Get-FileHash -LiteralPath (Join-Path $legacyProjectRoot "Program.cs") -Algorithm SHA256).Hash
     argumentProbeMsi = (Join-Path $probeRoot "package\argument-probe.msi")
     packageSourceSha256 = (Get-FileHash -LiteralPath (Join-Path $repositoryRoot "installer\Package.wxs") -Algorithm SHA256).Hash
-    scope = "Real current application payload; synthetic MSI versions 0.0.1 and 0.0.2, with changed/added/removed lifecycle files. Not historical-release compatibility evidence."
+    scope = "Current application payload; synthetic MSI versions 0.0.1 and 0.0.2. Previous and incompatible MSI authoring plus legacy updater are rebuilt from pinned v0.8.8/v0.8.9 source. This validates historical updater compatibility, not byte-identical historical release packages."
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixtureRoot "fixtures.json") -Encoding utf8
 Write-Host "Test-only installer fixtures: $fixtureRoot"

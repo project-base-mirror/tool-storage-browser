@@ -4,6 +4,8 @@ param(
     [string]$PreviousMsi = "",
     [string]$RollbackMsi = "",
     [string]$AlternateMsi = "",
+    [string]$LegacyUpdater = "",
+    [string]$LegacyIncompatibleMsi = "",
     [string]$InstallDirectory = "",
     [int]$TimeoutSeconds = 60
 )
@@ -15,6 +17,9 @@ if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
     throw "Installer lifecycle tests require 64-bit PowerShell on an isolated Windows machine."
 }
 if ($RollbackMsi -and -not $PreviousMsi) { throw "Rollback testing requires PreviousMsi." }
+if ($LegacyUpdater -and (-not $PreviousMsi -or -not $LegacyIncompatibleMsi)) {
+    throw "Legacy updater testing requires PreviousMsi and LegacyIncompatibleMsi."
+}
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $CurrentMsi = (Resolve-Path -LiteralPath $CurrentMsi).Path
@@ -23,6 +28,8 @@ if (-not [string]::IsNullOrWhiteSpace($PreviousMsi)) {
 }
 if ($RollbackMsi) { $RollbackMsi = (Resolve-Path -LiteralPath $RollbackMsi).Path }
 if ($AlternateMsi) { $AlternateMsi = (Resolve-Path -LiteralPath $AlternateMsi).Path }
+if ($LegacyUpdater) { $LegacyUpdater = (Resolve-Path -LiteralPath $LegacyUpdater).Path }
+if ($LegacyIncompatibleMsi) { $LegacyIncompatibleMsi = (Resolve-Path -LiteralPath $LegacyIncompatibleMsi).Path }
 if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
     $InstallDirectory = Join-Path $env:ProgramFiles "S3 Explorer Lifecycle Test"
 }
@@ -61,12 +68,17 @@ function Invoke-Msi {
 }
 
 function Invoke-ProductionUpdater {
-    param([Parameter(Mandatory)][string]$MsiPath)
+    param(
+        [Parameter(Mandatory)][string]$MsiPath,
+        [string]$UpdaterPath = (Join-Path $InstallDirectory "S3Explorer.Updater.exe"),
+        [string]$EvidenceName = "production-updater",
+        [switch]$ExpectLegacyFailure
+    )
     # Copy the real self-contained maintenance tool outside the directory it updates.
     $updater = Join-Path $runRoot "S3Explorer.Updater.exe"
-    Copy-Item -LiteralPath (Join-Path $InstallDirectory "S3Explorer.Updater.exe") -Destination $updater -Force
-    $state = Join-Path $runRoot "production-updater-state.json"
-    $log = Join-Path $runRoot "production-updater-msi.log"
+    Copy-Item -LiteralPath $UpdaterPath -Destination $updater -Force
+    $state = Join-Path $runRoot "$EvidenceName-state.json"
+    $log = Join-Path $runRoot "$EvidenceName-msi.log"
     $application = Join-Path $InstallDirectory "S3Explorer.exe"
     $parent = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60") -PassThru -WindowStyle Hidden
     $process = $null
@@ -87,9 +99,17 @@ function Invoke-ProductionUpdater {
         $parent.WaitForExit()
         $process = [Diagnostics.Process]::Start($startInfo)
         if (-not $process.WaitForExit(180000)) { $process.Kill($true); throw "Production updater timed out." }
-        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $state)) { throw "Production updater failed: $($process.ExitCode); $log" }
+        if (-not (Test-Path -LiteralPath $state)) { throw "Updater did not write its result: $($process.ExitCode); $log" }
         $completion = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
-        if ($completion.status -cne "completed" -or $completion.installerExitCode -notin @(0, 3010)) {
+        if ($ExpectLegacyFailure) {
+            $msiLog = Get-Content -LiteralPath $log -Raw
+            if ($process.ExitCode -ne 1 -or $completion.status -cne "failed" -or
+                $completion.installerExitCode -ne 1603 -or $msiLog -notmatch '\b1324\b' -or
+                $msiLog -notmatch '(?:Action ended [^\r\n]*CostFinalize\. Return value 3\.|操作结束 [^\r\n]*CostFinalize。返回值 3。)') {
+                throw "Legacy baseline did not reproduce MSI 1324 at CostFinalize: $log"
+            }
+        }
+        elseif ($process.ExitCode -ne 0 -or $completion.status -cne "completed" -or $completion.installerExitCode -notin @(0, 3010)) {
             throw "Production updater did not report an installed and relaunched application: $state"
         }
         $launched = @(Get-Process -Name S3Explorer -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $application })
@@ -105,6 +125,18 @@ function Invoke-ProductionUpdater {
             if (-not $app.WaitForExit(10000)) { $app.Kill($true); $app.WaitForExit() }
             $app.Dispose()
         }
+    }
+}
+
+function Assert-LegacyUpgradeLog {
+    param([Parameter(Mandatory)][string]$Path)
+    $log = Get-Content -LiteralPath $Path -Raw
+    if (-not $log.Contains("APPLICATIONFOLDER=$InstallDirectory\.")) {
+        throw "Log does not prove the historical updater supplied the malformed legacy path: $Path"
+    }
+    $restore = [regex]::Match($log, '(?:Action ended [^\r\n]*RestoreLegacyUpdaterLocation\. Return value 1\.|操作结束 [^\r\n]*RestoreLegacyUpdaterLocation。返回值 1。)')
+    if (-not $restore.Success -or $log.Substring($restore.Index + $restore.Length) -notmatch '(?:Action ended [^\r\n]*CostFinalize\. Return value 1\.|操作结束 [^\r\n]*CostFinalize。返回值 1。)') {
+        throw "Log does not prove legacy restoration succeeded before CostFinalize: $Path"
     }
 }
 
@@ -282,6 +314,62 @@ function Get-MsiIdentity {
     return [pscustomobject]$properties
 }
 
+function Test-LegacyDirectoryActions {
+    param([Parameter(Mandatory)][string]$Path)
+    $actions = @("BuildLegacyUpdaterLocation", "BuildLegacyUpdaterLocationWithoutSlash", "RestoreLegacyUpdaterLocation")
+    # Inspect the compiled MSI, not just XML, including both silent and UI sequences.
+    foreach ($table in @("InstallExecuteSequence", "InstallUISequence")) {
+        $last = [int](Get-MsiQueryValue -Path $Path -Query "SELECT ``Sequence`` FROM ``$table`` WHERE ``Action``='AppSearch'")
+        $related = [int](Get-MsiQueryValue -Path $Path -Query "SELECT ``Sequence`` FROM ``$table`` WHERE ``Action``='FindRelatedProducts'")
+        if ($related -le 0 -or $related -ge $last) { throw "Related products must be detected before the legacy directory actions." }
+        foreach ($action in $actions) {
+            $type = Get-MsiQueryValue -Path $Path -Query "SELECT ``Type`` FROM ``CustomAction`` WHERE ``Action``='$action'"
+            $next = [int](Get-MsiQueryValue -Path $Path -Query "SELECT ``Sequence`` FROM ``$table`` WHERE ``Action``='$action'")
+            if ([int]$type -ne 51 -or $next -le $last) { throw "Legacy directory action is missing or out of order: $table/$action" }
+            $last = $next
+        }
+        $cost = [int](Get-MsiQueryValue -Path $Path -Query "SELECT ``Sequence`` FROM ``$table`` WHERE ``Action``='CostInitialize'")
+        if ($last -ge $cost) { throw "Legacy restoration must run before costing in $table." }
+    }
+    $registered = "$InstallDirectory\"
+    $cases = @(
+        @{ name = "legacy-trailing-slash"; registered = $registered; requested = "$registered."; upgrade = "{TEST}"; expected = $registered },
+        @{ name = "legacy-no-trailing-slash"; registered = $InstallDirectory; requested = "$InstallDirectory\."; upgrade = "{TEST}"; expected = $InstallDirectory },
+        @{ name = "legacy-case-insensitive"; registered = $registered; requested = "$registered.".ToUpperInvariant(); upgrade = "{TEST}"; expected = $registered },
+        @{ name = "explicit-same-path"; registered = $registered; requested = $InstallDirectory; upgrade = "{TEST}"; expected = $InstallDirectory },
+        @{ name = "explicit-other-path"; registered = $registered; requested = "$InstallDirectory Other"; upgrade = "{TEST}"; expected = "$InstallDirectory Other" },
+        @{ name = "other-invalid-path"; registered = $registered; requested = "$InstallDirectory Other\."; upgrade = "{TEST}"; expected = "$InstallDirectory Other\." },
+        @{ name = "not-an-upgrade"; registered = $registered; requested = "$registered."; upgrade = ""; expected = "$registered." },
+        @{ name = "missing-registration"; registered = ""; requested = "$registered."; upgrade = "{TEST}"; expected = "$registered." }
+    )
+    foreach ($case in $cases) {
+        $session = $null
+        try {
+            # Ignore installed machine state. No install sequence is executed and no
+            # filesystem/registry action runs; only MSI conditions and Type 51 setters.
+            $session = $windowsInstaller.GetType().InvokeMember("OpenPackage", "InvokeMethod", $null, $windowsInstaller, @($Path, 1))
+            foreach ($property in @(@("PREVIOUSINSTALLLOCATION", $case.registered), @("APPLICATIONFOLDER", $case.requested), @("WIX_UPGRADE_DETECTED", $case.upgrade))) {
+                $null = $session.GetType().InvokeMember("Property", "SetProperty", $null, $session, $property)
+            }
+            foreach ($action in $actions) {
+                $condition = Get-MsiQueryValue -Path $Path -Query "SELECT ``Condition`` FROM ``InstallExecuteSequence`` WHERE ``Action``='$action'"
+                $evaluation = [int]$session.GetType().InvokeMember("EvaluateCondition", "InvokeMethod", $null, $session, @($condition))
+                if ($evaluation -notin @(0, 1)) { throw "Invalid MSI condition for $action." }
+                if ($evaluation -eq 1) {
+                    $status = [int]$session.GetType().InvokeMember("DoAction", "InvokeMethod", $null, $session, @($action))
+                    if ($status -ne 1) { throw "Type 51 action failed: $action ($status)." }
+                }
+            }
+            $actual = $session.GetType().InvokeMember("Property", "GetProperty", $null, $session, @("APPLICATIONFOLDER"))
+            if ($actual -cne $case.expected) { throw "Legacy directory case '$($case.name)' changed the wrong directory: $actual" }
+        }
+        finally {
+            if ($null -ne $session) { $null = [Runtime.InteropServices.Marshal]::FinalReleaseComObject($session) }
+        }
+    }
+    $cases | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $runRoot "legacy-directory-action-cases.json") -Encoding utf8
+}
+
 function Assert-ProductState {
     param([Parameter(Mandatory)][string]$ProductCode, [Parameter(Mandatory)][bool]$Installed)
     $state = [int]$windowsInstaller.GetType().InvokeMember("ProductState", "GetProperty", $null, $windowsInstaller, @($ProductCode))
@@ -360,13 +448,14 @@ $result = [ordered]@{
     uninstall = "NotRun"
     sameVersionFlavorSwitch = "NotRequested"
     productionUpdater = "NotRequested"
+    legacyUpdater = "NotRequested"
     logs = $runRoot
     userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 $identities = @{}
 $cleanupNeeded = $false
 try {
-    foreach ($entry in @(@("current", $CurrentMsi), @("previous", $PreviousMsi), @("rollback", $RollbackMsi), @("alternate", $AlternateMsi))) {
+    foreach ($entry in @(@("current", $CurrentMsi), @("previous", $PreviousMsi), @("rollback", $RollbackMsi), @("alternate", $AlternateMsi), @("legacy-incompatible", $LegacyIncompatibleMsi))) {
         if (-not $entry[1]) { continue }
         $identities[$entry[0]] = Get-MsiIdentity -Path $entry[1]
         Assert-ProductState -ProductCode $identities[$entry[0]].ProductCode -Installed $false
@@ -425,6 +514,8 @@ try {
         if (Test-Path -LiteralPath $path) { throw "Refusing lifecycle test on an existing path: $path" }
     }
     $result.products = $identities
+    Test-LegacyDirectoryActions -Path $CurrentMsi
+    $result.legacyDirectoryActions = "PassedEightCasesAndBothSequenceTables"
     $cleanupNeeded = $true
     if ($PreviousMsi) {
         $null = Invoke-Msi -Action Install -Path $PreviousMsi -LogPath (Join-Path $runRoot "install-previous.log")
@@ -454,8 +545,24 @@ try {
         $result.rollback = "Passed"
     }
 
-    # Deliberately omit APPLICATIONFOLDER on upgrade: MSI must recover the custom path.
-    $null = Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log") -ReuseRegisteredDirectory:([bool]$PreviousMsi)
+    if ($LegacyUpdater) {
+        # First prove that the unchanged historical updater fails against the historical
+        # package authoring, without removing or altering the installed previous product.
+        $before = @(Get-PayloadSnapshot) | ConvertTo-Json -Depth 4 -Compress
+        Invoke-ProductionUpdater -MsiPath $LegacyIncompatibleMsi -UpdaterPath $LegacyUpdater -EvidenceName "legacy-updater-baseline" -ExpectLegacyFailure
+        Assert-ProductState -ProductCode $identities.previous.ProductCode -Installed $true
+        Assert-ProductState -ProductCode $identities.'legacy-incompatible'.ProductCode -Installed $false
+        Assert-InstallLocation -Flavor $current.INSTALLERFLAVOR
+        $after = @(Get-PayloadSnapshot) | ConvertTo-Json -Depth 4 -Compress
+        if ($before -cne $after) { throw "Legacy failure modified the previous payload." }
+        Invoke-ProductionUpdater -MsiPath $CurrentMsi -UpdaterPath $LegacyUpdater -EvidenceName "legacy-updater-fixed"
+        Assert-LegacyUpgradeLog -Path (Join-Path $runRoot "legacy-updater-fixed-msi.log")
+        $result.legacyUpdater = "PassedHistoricalUpdaterAndReproduced1324Baseline"
+    }
+    else {
+        # Deliberately omit APPLICATIONFOLDER on upgrade: MSI must recover the custom path.
+        $null = Invoke-Msi -Action Install -Path $CurrentMsi -LogPath (Join-Path $runRoot "install-current.log") -ReuseRegisteredDirectory:([bool]$PreviousMsi)
+    }
     Assert-ProductState -ProductCode $current.ProductCode -Installed $true
     if ($PreviousMsi) { Assert-ProductState -ProductCode $identities.previous.ProductCode -Installed $false }
     Assert-InstallLocation -Flavor $current.INSTALLERFLAVOR
@@ -513,7 +620,7 @@ catch {
 }
 finally {
     if ($cleanupNeeded) {
-        foreach ($stage in @("alternate", "rollback", "current", "previous")) {
+        foreach ($stage in @("alternate", "rollback", "current", "legacy-incompatible", "previous")) {
             if (-not $identities.ContainsKey($stage)) { continue }
             $productCode = $identities[$stage].ProductCode
             try {

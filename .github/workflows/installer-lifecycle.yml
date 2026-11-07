@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@v5
@@ -76,6 +77,14 @@ jobs:
           $customDirectory = Join-Path $env:ProgramFiles 'S3 Explorer lifecycle test 自定义'
           ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -RollbackMsi $fixtures.rollbackMsi -AlternateMsi $fixtures.alternateMsi -InstallDirectory $customDirectory
           ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -AlternateMsi $fixtures.alternateMsi -InstallDirectory (Join-Path $env:ProgramFiles 'S3 Explorer')
+
+      - name: Reproduce old updater failure and verify default and Unicode path upgrades
+        shell: pwsh
+        run: |
+          $fixtures = Get-Content -Raw './artifacts/installer-lifecycle-fixtures/${{ matrix.flavor }}/fixtures.json' | ConvertFrom-Json
+          foreach ($directory in @('S3 Explorer', 'S3 Explorer legacy upgrade 自定义')) {
+            ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -LegacyUpdater $fixtures.legacyUpdater -LegacyIncompatibleMsi $fixtures.legacyIncompatibleMsi -InstallDirectory (Join-Path $env:ProgramFiles $directory)
+          }
 
       - name: Upload lifecycle evidence
         if: always()
