@@ -37,7 +37,7 @@ public sealed partial class S3StorageService
             MinioObjectKeyPolicy.Validate(destinationProfile.ServiceType, destinationKey);
             S3UploadCompatibility.ValidateEndpoint(destinationProfile);
             if (sourceBucket == destinationBucket && sourceKey == destinationKey &&
-                SameCrossConnectionStorage(sourceProfile, destinationProfile))
+                S3StorageIdentity.IsSameStorage(sourceProfile, destinationProfile))
                 throw CrossConnectionConflict("来源与目标指向同一对象，已停止复制。");
 
             var saved = context.MultipartCheckpoint;
@@ -45,7 +45,7 @@ public sealed partial class S3StorageService
                 (saved.CleanupPending || saved.CopySourceProfileId != sourceProfile.Id ||
                  saved.CopyDestinationProfileId != destinationProfile.Id || saved.Bucket != destinationBucket ||
                  saved.ObjectKey != destinationKey || saved.CopySourceBucket != sourceBucket || saved.CopySourceKey != sourceKey))
-                throw CrossConnectionConflict("跨连接复制断点与当前连接或对象不一致，请取消旧任务清理分片后重新复制。");
+                throw CrossConnectionConflict("中转复制断点与当前连接或对象不一致，请取消旧任务清理分片后重新复制。");
 
             GetObjectMetadataResponse source;
             using (await context.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false))
@@ -53,6 +53,8 @@ public sealed partial class S3StorageService
                 {
                     BucketName = sourceBucket, Key = sourceKey, VersionId = saved?.CopySourceVersionId
                 }, cancellationToken).ConfigureAwait(false);
+            if (sourceProfile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+                source.VersionId = null; // These APIs do not provide addressable S3 versions.
             if (source.ContentLength < 0 || string.IsNullOrWhiteSpace(source.ETag))
                 throw CrossConnectionConflict("源对象缺少可验证的长度或 ETag，已停止复制。");
             if (context.Options.MaximumDownloadBytes > 0 && source.ContentLength > context.Options.MaximumDownloadBytes)
@@ -64,7 +66,7 @@ public sealed partial class S3StorageService
             if (saved is not null &&
                 (saved.CopySourceETag != source.ETag || saved.CopySourceVersionId != source.VersionId ||
                  saved.SourceLength != source.ContentLength))
-                throw CrossConnectionConflict("跨连接复制来源已变化，请取消旧任务清理分片后重新复制。");
+                throw CrossConnectionConflict("中转复制来源已变化，请取消旧任务清理分片后重新复制。");
 
             if (saved?.CopyCompleted == true)
             {
@@ -113,7 +115,7 @@ public sealed partial class S3StorageService
         var tags = await ReadCrossConnectionTagsAsync(sourceClient, sourceProfile, sourceBucket, sourceKey,
             destinationProfile, source.VersionId, context, cancellationToken).ConfigureAwait(false);
         await using var buffer = CreateCrossConnectionBuffer(source.ContentLength);
-        await BufferCrossConnectionRangeAsync(sourceClient, sourceBucket, sourceKey, source,
+        await BufferCrossConnectionRangeAsync(sourceClient, sourceProfile, sourceBucket, sourceKey, source,
             0, source.ContentLength, buffer, context, cancellationToken).ConfigureAwait(false);
         // A long GET must not make the fallback destination check stale before the PUT.
         if (!conditional && !context.Options.AllowDestinationOverwrite)
@@ -167,7 +169,7 @@ public sealed partial class S3StorageService
             catch (AmazonS3Exception exception) when (IsNoSuchUpload(exception))
             {
                 throw new TransferExecutionException(new TransferFailureInfo(
-                    "跨连接复制分片已不存在，可能已经完成；请核对目标后取消或重新建立任务。",
+                    "中转复制分片已不存在，可能已经完成；请核对目标后取消或重新建立任务。",
                     TransferFailureCategory.Conflict), exception);
             }
         }
@@ -210,7 +212,7 @@ public sealed partial class S3StorageService
             }, async (part, token) =>
             {
                 await using var buffer = CreateCrossConnectionBuffer(part.Size);
-                await BufferCrossConnectionRangeAsync(sourceClient, sourceBucket, sourceKey, source,
+                await BufferCrossConnectionRangeAsync(sourceClient, sourceProfile, sourceBucket, sourceKey, source,
                     part.Offset, part.Size, buffer, context, token).ConfigureAwait(false);
                 long reported = 0;
                 await using var throttled = new ThrottledReadStream(buffer, context.BandwidthLimiter,
@@ -276,7 +278,7 @@ public sealed partial class S3StorageService
                 }
                 catch (Exception cleanupException)
                 {
-                    throw new AggregateException($"跨连接复制失败，且清理目标分片失败（UploadId={uploadId}）；请在目标连接的分片管理器中核对清理。",
+                    throw new AggregateException($"中转复制失败，且清理目标分片失败（UploadId={uploadId}）；请在目标连接的分片管理器中核对清理。",
                         transferException, cleanupException);
                 }
             }
@@ -285,7 +287,7 @@ public sealed partial class S3StorageService
     }
 
     private static async Task BufferCrossConnectionRangeAsync(
-        IAmazonS3 sourceClient, string sourceBucket, string sourceKey, GetObjectMetadataResponse source,
+        IAmazonS3 sourceClient, ConnectionProfile sourceProfile, string sourceBucket, string sourceKey, GetObjectMetadataResponse source,
         long offset, long length, Stream buffer, TransferOperationContext context, CancellationToken cancellationToken)
     {
         using var lease = await context.RequestBudget.EnterAsync(cancellationToken).ConfigureAwait(false);
@@ -295,6 +297,8 @@ public sealed partial class S3StorageService
             BucketName = sourceBucket, Key = sourceKey, VersionId = source.VersionId, EtagToMatch = source.ETag,
             ByteRange = wholeObject ? null : new ByteRange(offset, offset + length - 1)
         }, cancellationToken).ConfigureAwait(false);
+        if (sourceProfile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+            response.VersionId = null;
         if (response.ETag != source.ETag || response.VersionId != source.VersionId)
             throw CrossConnectionConflict("读取期间源对象身份发生变化，未提交目标。");
         // If a compatible provider ignores Range, a full identity-pinned response can
@@ -311,7 +315,7 @@ public sealed partial class S3StorageService
         {
             var read = await response.ResponseStream.ReadAsync(bytes.AsMemory(0, (int)Math.Min(bytes.Length, skip)), cancellationToken)
                 .ConfigureAwait(false);
-            if (read == 0) throw new IOException("跨连接复制源响应提前结束。");
+            if (read == 0) throw new IOException("中转复制源响应提前结束。");
             await context.BandwidthLimiter.WaitAsync(TransferDirection.Download, read, cancellationToken).ConfigureAwait(false);
             skip -= read;
         }
@@ -320,7 +324,7 @@ public sealed partial class S3StorageService
         {
             var read = await response.ResponseStream.ReadAsync(bytes.AsMemory(0, (int)Math.Min(bytes.Length, length - received)),
                 cancellationToken).ConfigureAwait(false);
-            if (read == 0) throw new IOException("跨连接复制源响应提前结束。");
+            if (read == 0) throw new IOException("中转复制源响应提前结束。");
             await context.BandwidthLimiter.WaitAsync(TransferDirection.Download, read, cancellationToken).ConfigureAwait(false);
             await buffer.WriteAsync(bytes.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             received += read;
@@ -392,26 +396,4 @@ public sealed partial class S3StorageService
     private static TransferExecutionException CrossConnectionConflict(string message) =>
         new(new TransferFailureInfo(message, TransferFailureCategory.Conflict));
 
-    private static bool SameCrossConnectionStorage(ConnectionProfile source, ConnectionProfile destination)
-    {
-        if (source.Id == destination.Id || source.NormalizedEndpoint == destination.NormalizedEndpoint) return true;
-        // AWS regional/global S3 endpoints are aliases for a bucket, not separate
-        // stores. Bucket names can repeat across the commercial and China partitions.
-        return source.ServiceType == S3ServiceType.AmazonS3 && destination.ServiceType == S3ServiceType.AmazonS3 &&
-            AmazonS3Partition(source.NormalizedEndpoint) is { } partition &&
-            partition == AmazonS3Partition(destination.NormalizedEndpoint);
-    }
-
-    private static string? AmazonS3Partition(Uri endpoint)
-    {
-        if (endpoint.AbsolutePath != "/" || !endpoint.IsDefaultPort) return null;
-        var host = endpoint.DnsSafeHost;
-        if (!host.StartsWith("s3.", StringComparison.OrdinalIgnoreCase) &&
-            !host.StartsWith("s3-", StringComparison.OrdinalIgnoreCase)) return null;
-        if (host.EndsWith(".amazonaws.com.cn", StringComparison.OrdinalIgnoreCase)) return "aws-cn";
-        if (host.StartsWith("s3.us-gov-", StringComparison.OrdinalIgnoreCase) ||
-            host.StartsWith("s3-us-gov-", StringComparison.OrdinalIgnoreCase))
-            return host.EndsWith(".amazonaws.com", StringComparison.OrdinalIgnoreCase) ? "aws-us-gov" : null;
-        return host.EndsWith(".amazonaws.com", StringComparison.OrdinalIgnoreCase) ? "aws" : null;
-    }
 }

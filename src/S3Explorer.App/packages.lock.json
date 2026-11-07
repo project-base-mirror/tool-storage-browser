@@ -77,6 +77,11 @@
           "Tea": "1.0.1"
         }
       },
+      "Aliyun.OSS.SDK.NetCore": {
+        "type": "Transitive",
+        "resolved": "2.14.1",
+        "contentHash": "UOI6I8Uw8A7pFh2GS6CSpJuhmcHH45k6asex8SRnZed2WWBXeGEaBFyv3HsMJNp+B6gPqyN079sQHWenGd3Y7g=="
+      },
       "AWSSDK.Core": {
         "type": "Transitive",
         "resolved": "4.0.100.9",
@@ -119,6 +124,11 @@
         "resolved": "13.0.3",
         "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
       },
+      "System.Security.Cryptography.ProtectedData": {
+        "type": "Transitive",
+        "resolved": "10.0.10",
+        "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
+      },
       "Tea": {
         "type": "Transitive",
         "resolved": "1.1.3",
@@ -126,6 +136,11 @@
         "dependencies": {
           "Newtonsoft.Json": "13.0.3"
         }
+      },
+      "Tencent.QCloud.Cos.Sdk": {
+        "type": "Transitive",
+        "resolved": "5.4.51",
+        "contentHash": "ZLU6XX7vyLaVFN0i+fcFbiXSN2BENKxlTe7inIRT4JibuzhU9cZxGj+PfSIib46+uJM6HSRJE2ynnGLCMtTt1Q=="
       },
       "TencentCloudSDK.Cdn": {
         "type": "Transitive",
@@ -151,16 +166,18 @@
         "type": "Project",
         "dependencies": {
           "AlibabaCloud.SDK.Cdn20180510": "[8.2.0, )",
-          "S3Explorer.Core": "[0.8.1, )",
+          "S3Explorer.Core": "[0.8.10, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )",
           "TencentCloudSDK.Cdn": "[3.0.1481, )"
         }
       },
       "s3explorer.infrastructure.configuration": {
         "type": "Project",
         "dependencies": {
-          "S3Explorer.Core": "[0.8.1, )",
-          "S3Explorer.Infrastructure.Cdn": "[0.8.1, )",
-          "S3Explorer.Infrastructure.S3": "[0.8.1, )"
+          "S3Explorer.Core": "[0.8.10, )",
+          "S3Explorer.Infrastructure.Cdn": "[0.8.10, )",
+          "S3Explorer.Infrastructure.S3": "[0.8.10, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )"
         }
       },
       "s3explorer.infrastructure.s3": {
@@ -170,7 +187,10 @@
           "AWSSDK.SSO": "[4.0.100.7, )",
           "AWSSDK.SSOOIDC": "[4.0.100.7, )",
           "AWSSDK.SecurityToken": "[4.0.100.7, )",
-          "S3Explorer.Core": "[0.8.1, )"
+          "Aliyun.OSS.SDK.NetCore": "[2.14.1, )",
+          "S3Explorer.Core": "[0.8.10, )",
+          "System.Security.Cryptography.ProtectedData": "[10.0.10, )",
+          "Tencent.QCloud.Cos.Sdk": "[5.4.51, )"
         }
       }
     },

@@ -45,8 +45,8 @@ internal sealed class ObjectTransferDialog : Form
         };
         Text = move ? "移动到" : "复制到";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(560, move ? 375 : 335);
-        MinimumSize = new Size(500, move ? 360 : 320);
+        ClientSize = new Size(560, move ? 500 : 450);
+        MinimumSize = new Size(500, move ? 485 : 435);
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
 
@@ -106,7 +106,7 @@ internal sealed class ObjectTransferDialog : Form
         {
             if (_profile.SelectedItem is not ConnectionProfile selected) return;
             var crossConnection = selected.Id != profile?.Id;
-            notice.Text = BuildTransferNotice(move, itemCount, profile?.ServiceType ?? S3ServiceType.AmazonS3) +
+            notice.Text = BuildTransferNotice(move, itemCount, selected.ServiceType) +
                 (crossConnection ? "\n\n跨连接复制经本机传输，使用源和目标各自的凭据；源对象保留。" : string.Empty);
             _bucket.BucketText = string.Empty;
             // Clear the old connection immediately, then preserve any target the user
@@ -123,6 +123,10 @@ internal sealed class ObjectTransferDialog : Form
     internal static string BuildTransferNotice(bool move, int itemCount, S3ServiceType serviceType = S3ServiceType.AmazonS3)
     {
         var text = $"将{(move ? "移动" : "复制")} {itemCount:N0} 个选中项。目标前缀可留空；文件夹会保留层级。";
+        if (!move && serviceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2))
+            text += "\n\n此服务商使用写入前检查目标是否存在；检查不是原子的，请避免其他客户端同时写入目标。";
+        if (serviceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+            text += "\n\n超过单次复制上限的对象会经本机分片中转，使用下载与上传流量，可暂停续传。中转分片提交前会检查目标存在性，但不保证并发时原子非覆盖。";
         if (move && !S3ProviderCapabilityRegistry.For(serviceType).ConditionalDelete.Supported)
             return text + "\n\n" + S3ProviderCapabilityRegistry.For(serviceType).ConditionalDelete.Reason;
         return move

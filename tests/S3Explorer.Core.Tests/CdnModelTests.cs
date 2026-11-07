@@ -5,6 +5,46 @@ namespace S3Explorer.Core.Tests;
 
 public sealed class CdnModelTests
 {
+    [Theory]
+    [InlineData("/a.txt", "https://cdn.example//a.txt")]
+    [InlineData("a\\b.txt", "https://cdn.example/a%5Cb.txt")]
+    [InlineData("a//b.txt", "https://cdn.example/a//b.txt")]
+    [InlineData(" a%2e?#.txt ", "https://cdn.example/%20a%252e%3F%23.txt%20")]
+    [InlineData("目录/文件.txt", "https://cdn.example/%E7%9B%AE%E5%BD%95/%E6%96%87%E4%BB%B6.txt")]
+    public void MappingPreservesExactObjectKey(string key, string expected)
+    {
+        var storage = Guid.NewGuid();
+        var profile = Profile("cdn", "https://cdn.example");
+        var binding = Binding(storage, profile.Id, "", "", true);
+        var resolved = Assert.Single(CdnUrlMapper.ResolveAll(new([profile], [binding]), storage, "site", key));
+        Assert.Equal(key, resolved.ObjectKey);
+        Assert.Equal(expected, resolved.Url.AbsoluteUri);
+    }
+
+    [Fact]
+    public void SourcePrefixesDoNotAliasLeadingSlashesOrBackslashes()
+    {
+        var storage = Guid.NewGuid();
+        var profile = Profile("cdn", "https://cdn.example");
+        var binding = Binding(storage, profile.Id, "/a\\b/", "", true);
+        var configuration = new CdnConfiguration([profile], [binding]);
+        Assert.Empty(CdnUrlMapper.ResolveAll(configuration, storage, "site", "a/b/file"));
+        Assert.Empty(CdnUrlMapper.ResolveAll(configuration, storage, "site", "/a/b/file"));
+        Assert.Equal("https://cdn.example/file", Assert.Single(
+            CdnUrlMapper.ResolveAll(configuration, storage, "site", "/a\\b/file")).Url.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("./file")]
+    [InlineData("a/../file")]
+    [InlineData("a/.")]
+    public void BrowserCanonicalizedKeysNeverProduceLinksToDifferentObjects(string key)
+    {
+        var profile = Profile("cdn", "https://cdn.example");
+        var binding = Binding(Guid.NewGuid(), profile.Id, "", "", true);
+        Assert.Throws<NotSupportedException>(() => CdnUrlMapper.BuildUrl(profile, binding, key));
+    }
+
     [Fact]
     public void ResolvesLongestPrefixAndDefaultProfile()
     {

@@ -26,6 +26,13 @@ public sealed partial class S3StorageService
         DateTimeOffset? expiresUtc = DateTimeOffset.TryParse(rawExpires, CultureInfo.InvariantCulture,
             DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
             out var parsedExpires) ? parsedExpires : null;
+        string? Native(string suffix) => response.Headers["x-oss-" + suffix] ?? response.Headers["x-cos-" + suffix];
+        var nativeRetention = Native("object-lock-retain-until-date") ?? Native("object-worm-retain-until-date");
+        DateTimeOffset? parsedNativeRetention = DateTimeOffset.TryParse(nativeRetention, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var retention) ? retention : null;
+        var nativeMissing = Native("missing-meta");
+        var missingCount = nativeMissing is null ? response.MissingMeta :
+            int.TryParse(nativeMissing, out var count) ? Math.Max(count, response.MissingMeta ?? 0) : 1;
         var metadata = ObjectMetadataValidator.ValidatePreservingValues(response.Metadata.Keys.ToDictionary(
             name => name,
             name => response.Metadata[name],
@@ -38,46 +45,36 @@ public sealed partial class S3StorageService
             response.LastModified,
             response.ETag,
             response.Headers.ContentType,
-            response.StorageClass?.Value,
-            response.VersionId,
+            response.Headers["x-goog-storage-class"] ?? Native("storage-class") ?? response.StorageClass?.Value,
+            Native("version-id") ?? response.VersionId,
             metadata,
             response.Headers.CacheControl,
             response.Headers.ContentEncoding,
             response.Headers.ContentDisposition,
             expiresUtc)
         {
-            ServerSideEncryptionMethod = response.ServerSideEncryptionMethod?.Value,
-            EncryptionKeyId = response.ServerSideEncryptionKeyManagementServiceKeyId,
-            CustomerEncryptionMethod = response.ServerSideEncryptionCustomerMethod,
-            ObjectLockMode = response.ObjectLockMode?.Value,
-            ObjectLockLegalHoldStatus = response.ObjectLockLegalHoldStatus?.Value,
+            ServerSideEncryptionMethod = Native("server-side-encryption") ?? response.ServerSideEncryptionMethod?.Value,
+            EncryptionKeyId = response.Headers["x-goog-encryption-kms-key-name"] ?? Native("server-side-encryption-key-id") ??
+                Native("server-side-encryption-kms-key-id") ?? Native("server-side-encryption-cos-kms-key-id") ?? response.ServerSideEncryptionKeyManagementServiceKeyId,
+            CustomerEncryptionMethod = response.Headers["x-goog-encryption-algorithm"] ?? Native("server-side-encryption-customer-algorithm") ??
+                (Native("server-side-encryption-customer-key-md5") is not null ? "SSE-C" : null) ??
+                (response.Headers["x-goog-encryption-key-sha256"] is not null ? "GCS-CSEK" : response.ServerSideEncryptionCustomerMethod),
+            ObjectLockMode = response.Headers["x-goog-object-lock-mode"] ?? Native("object-lock-mode") ?? Native("object-worm-mode") ?? response.ObjectLockMode?.Value,
+            ObjectLockLegalHoldStatus = Native("object-lock-legal-hold") ?? response.ObjectLockLegalHoldStatus?.Value,
             ContentLanguage = response.Headers.ContentLanguage,
-            WebsiteRedirectLocation = response.WebsiteRedirectLocation,
-            MissingMetadataCount = response.MissingMeta,
+            WebsiteRedirectLocation = Native("website-redirect-location") ?? response.WebsiteRedirectLocation,
+            MissingMetadataCount = missingCount,
             BucketKeyEnabled = response.BucketKeyEnabled,
             ExpiresHeader = rawExpires,
-            ObjectLockRetainUntilDate = response.ObjectLockRetainUntilDate is not { } retainUntilDate
+            ProviderGeneration = response.Headers["x-goog-generation"],
+            ProviderMetageneration = response.Headers["x-goog-metageneration"],
+            ProviderCustomTime = response.Headers["x-goog-custom-time"],
+            ProviderRetentionUntil = response.Headers["x-goog-object-lock-retain-until-date"] ?? nativeRetention,
+            ProviderObjectType = Native("object-type"),
+            ObjectLockRetainUntilDate = parsedNativeRetention ?? (response.ObjectLockRetainUntilDate is not { } retainUntilDate
                 ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(retainUntilDate, DateTimeKind.Utc))
+                : new DateTimeOffset(DateTime.SpecifyKind(retainUntilDate, DateTimeKind.Utc)))
         };
-    }
-
-    public Task ReplaceObjectMetadataAsync(
-        ConnectionProfile profile,
-        string bucket,
-        string key,
-        string? versionId,
-        ObjectWriteHeaders headers,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        // Do not self-copy a cached version: even a source condition or HEAD check can
-        // overwrite a newer current object. A safe metadata-only edit must also preserve
-        // noneditable headers, KMS context/BucketKey, ACL and retention/legal-hold state.
-        // This API does not carry that complete snapshot, so fail before creating a client
-        // instead of silently changing content, encryption or object protections.
-        return Task.FromException(new NotSupportedException(
-            S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.MetadataRewrite.Reason));
     }
 
     public async Task SaveObjectMetadataCopyAsync(

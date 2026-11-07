@@ -23,16 +23,17 @@ public sealed class CopyConsistencyTests
     }
 
     [Fact]
-    public async Task MinioMoveIsRejectedBeforeAnySideEffects()
+    public async Task MinioMoveUsesCopyAndSourceRecheckWithoutPretendingConditionalDeleteSupport()
     {
         using var client = new CopyClient();
-        var error = await Assert.ThrowsAsync<TransferExecutionException>(() => S3StorageService.CopyOrMoveObjectAsync(
+        await S3StorageService.CopyOrMoveObjectAsync(
             client, ConnectionProfile.CreatePreset(S3ServiceType.MinIO), "source", "key", "target", "copy", true,
-            TestContext.Current.CancellationToken));
-        Assert.False(error.Failure.Retryable);
-        Assert.Null(client.Copy);
-        Assert.Null(client.Delete);
-        Assert.True(client.SourceExists);
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(client.Copy);
+        Assert.NotNull(client.Delete);
+        Assert.Null(client.Delete.IfMatch);
+        Assert.Null(client.Delete.VersionId);
+        Assert.False(client.SourceExists);
     }
 
     [Fact]

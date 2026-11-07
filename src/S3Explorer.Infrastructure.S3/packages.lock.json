@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "Aliyun.OSS.SDK.NetCore": {
+        "type": "Direct",
+        "requested": "[2.14.1, )",
+        "resolved": "2.14.1",
+        "contentHash": "UOI6I8Uw8A7pFh2GS6CSpJuhmcHH45k6asex8SRnZed2WWBXeGEaBFyv3HsMJNp+B6gPqyN079sQHWenGd3Y7g=="
+      },
       "AWSSDK.S3": {
         "type": "Direct",
         "requested": "[4.0.102, )",
@@ -43,6 +49,12 @@
         "requested": "[10.0.10, )",
         "resolved": "10.0.10",
         "contentHash": "BKt0SQgq2lq3ESE68jkeLwv95ypANrPDtkTOIFGcnhg2aRUeUUBDrQlkVDZctrg1WenVcvn5P5XZnuYI7q6rFQ=="
+      },
+      "Tencent.QCloud.Cos.Sdk": {
+        "type": "Direct",
+        "requested": "[5.4.51, )",
+        "resolved": "5.4.51",
+        "contentHash": "ZLU6XX7vyLaVFN0i+fcFbiXSN2BENKxlTe7inIRT4JibuzhU9cZxGj+PfSIib46+uJM6HSRJE2ynnGLCMtTt1Q=="
       },
       "AWSSDK.Core": {
         "type": "Transitive",

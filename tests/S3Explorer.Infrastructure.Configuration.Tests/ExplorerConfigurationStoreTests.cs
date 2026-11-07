@@ -12,6 +12,40 @@ namespace S3Explorer.Infrastructure.Configuration.Tests;
 [SupportedOSPlatform("windows")]
 public sealed class ExplorerConfigurationStoreTests
 {
+    public static bool SupportsDpapi => OperatingSystem.IsWindows();
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task RepeatedOpenAfterUnrecoverableCorruptionNeverCreatesAnEmptyConfiguration(bool primary, bool backup)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var root = Temp();
+        var path = Path.Combine(root, "configuration.json");
+        try
+        {
+            if (primary) await File.WriteAllTextAsync(path, "null", token);
+            if (backup) await File.WriteAllTextAsync(path + ".bak", "null", token);
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                await Assert.ThrowsAsync<InvalidDataException>(() =>
+                    ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token));
+                Assert.False(File.Exists(path));
+                Assert.False(File.Exists(path + ".bak"));
+            }
+            var preserved = Directory.EnumerateFiles(root, "configuration.json.corrupt-*").Order().ToArray();
+            Assert.Equal((primary ? 1 : 0) + (backup ? 1 : 0), preserved.Length);
+            var profile = new ConnectionProfile { Name = "restored" };
+            await ExplorerConfigurationStore.CreateOrReplaceAsync(root,
+                new(new([profile], []), CdnConfiguration.Empty, []), new FakeProtector(), token);
+            var reopened = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), token);
+            Assert.Equal(profile.Id, Assert.Single((await reopened.LoadAsync(token)).Storage.Profiles).Id);
+            Assert.Equal(preserved, Directory.EnumerateFiles(root, "configuration.json.corrupt-*").Order().ToArray());
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task TreeReorderAfterCredentialRotationReturnsFreshResolvedProfiles()
     {
@@ -303,7 +337,10 @@ public sealed class ExplorerConfigurationStoreTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Temp();
         var first = await ExplorerConfigurationStore.OpenAsync(root, new FakeProtector(), cancellationToken);
-        var second = await ExplorerConfigurationStore.OpenAsync(root.ToUpperInvariant(), new FakeProtector(), cancellationToken);
+        // Windows aliases differ only by casing; case-sensitive hosts must use
+        // the same actual directory to exercise contention on one store.
+        var alias = OperatingSystem.IsWindows() ? root.ToUpperInvariant() : root;
+        var second = await ExplorerConfigurationStore.OpenAsync(alias, new FakeProtector(), cancellationToken);
         var firstCredential = Credential("first");
         var secondCredential = Credential("second");
 
@@ -323,7 +360,7 @@ public sealed class ExplorerConfigurationStoreTests
         Assert.Contains(saved.CredentialVault, value => value.Id == secondCredential.Id);
     }
 
-    [Fact]
+    [Fact(Skip = "Requires Windows DPAPI for the persisted legacy credential format.", SkipUnless = nameof(SupportsDpapi))]
     public async Task LegacyStoresMigrateOnceWithCollisionAndNoneAuthenticationHandled()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

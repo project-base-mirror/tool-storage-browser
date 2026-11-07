@@ -21,7 +21,7 @@ public sealed class ConditionalCopyDestinationTests
     private static Task Run(Client client, S3ServiceType provider, TransferOperationContext context,
         bool move = false, bool multipartEnabled = true) =>
         S3StorageService.CopyOrMoveObjectAsync(client,
-            ConnectionProfile.CreatePreset(provider) with { EnableMultipartCopy = multipartEnabled },
+            ConnectionProfile.CreatePreset(provider) with { Endpoint = "https://copy.example.test", EnableMultipartCopy = multipartEnabled },
             "source", "key", "destination", "copy", move, TestContext.Current.CancellationToken, context);
 
     [Fact]
@@ -110,10 +110,10 @@ public sealed class ConditionalCopyDestinationTests
     [Theory]
     [InlineData(S3ServiceType.SupabaseStorage)]
     [InlineData(S3ServiceType.Custom)]
-    public async Task UnsupportedDestinationConditionsFailBeforeAnyRequest(S3ServiceType provider)
+    public async Task UnsupportedConditionalReplacementFailsBeforeAnyRequest(S3ServiceType provider)
     {
         using var client = new Client();
-        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() => Run(client, provider, Context()));
+        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() => Run(client, provider, Context(overwrite: true, expected: "old-target")));
         Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
         Assert.Equal(0, client.Heads);
         Assert.Equal(0, client.Initiates);
@@ -232,14 +232,13 @@ public sealed class ConditionalCopyDestinationTests
     }
 
     [Fact]
-    public async Task MinioNonEmptyProtectedCopyStillRequiresMultipart()
+    public async Task MinioProtectedCopyUsesRelayWhenServerSideMultipartIsDisabled()
     {
         using var client = new Client();
-        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.MinIO, Context(), multipartEnabled: false));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
+        await Run(client, S3ServiceType.MinIO, Context(), multipartEnabled: false);
         Assert.Null(client.Copy);
-        Assert.Null(client.Put);
+        Assert.Equal("*", client.Put!.IfNoneMatch);
+        Assert.Equal(client.Length, client.PutLength);
         Assert.Equal(0, client.Initiates);
     }
 
@@ -262,18 +261,25 @@ public sealed class ConditionalCopyDestinationTests
     }
 
     [Theory]
-    [InlineData(null)]
-    [InlineData("null")]
-    [InlineData("unverified-version")]
-    public async Task SupabaseOversizedCopyFailsWithoutVerifiedVersionContractEvenForOverwrite(string? versionId)
+    [InlineData(S3ServiceType.SupabaseStorage, true)]
+    [InlineData(S3ServiceType.SupabaseStorage, false)]
+    [InlineData(S3ServiceType.CloudflareR2, true)]
+    [InlineData(S3ServiceType.CloudflareR2, false)]
+    [InlineData(S3ServiceType.AmazonS3, false)]
+    [InlineData(S3ServiceType.AliyunOss, false)]
+    public async Task OversizedCopiesStartIdentityPinnedRelayInsteadOfUnsafeCopyParts(S3ServiceType provider, bool enabled)
     {
-        using var client = new Client { Length = 6L * 1024 * 1024 * 1024, VersionId = versionId };
+        using var client = new Client { Length = 6L * 1024 * 1024 * 1024, StopOnRelayGet = true };
         var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.SupabaseStorage, Context(overwrite: true)));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
-        Assert.Equal(0, client.Initiates);
+            Run(client, provider, Context(overwrite: true), multipartEnabled: enabled));
+        Assert.Equal(TransferFailureCategory.Authorization, failure.Failure.Category);
+        Assert.Equal(1, client.Initiates);
+        Assert.NotNull(client.Get);
+        Assert.Equal(provider is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage ? null : "source-version", client.Get.VersionId);
+        Assert.Equal("source-etag", client.Get.EtagToMatch);
         Assert.Empty(client.Parts);
         Assert.Null(client.Copy);
+        Assert.True(client.Aborted);
     }
 
     [Theory]
@@ -293,16 +299,45 @@ public sealed class ConditionalCopyDestinationTests
         Assert.Equal(0, client.Deletes);
     }
 
-    [Fact]
-    public async Task SupabaseSingleCopyDoesNotFallbackWhenProviderRequiresMultipart()
+    [Theory]
+    [InlineData(S3ServiceType.CloudflareR2)]
+    [InlineData(S3ServiceType.SupabaseStorage)]
+    public async Task ProviderSingleCopyLimitFallsBackToPinnedReadAndUpload(S3ServiceType provider)
     {
         using var client = new Client { Length = 6L * 1024 * 1024, CopyRequiresMultipart = true };
-        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.SupabaseStorage, Context(overwrite: true)));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
+        await Run(client, provider, Context(overwrite: true));
         Assert.NotNull(client.Copy);
-        Assert.Equal(0, client.Initiates);
+        Assert.Equal(1, client.Initiates);
         Assert.Empty(client.Parts);
+        Assert.Equal(2, client.UploadParts);
+        Assert.NotNull(client.Complete);
+        Assert.Equal(0, client.Deletes);
+    }
+
+    [Theory]
+    [InlineData(S3ServiceType.CloudflareR2)]
+    [InlineData(S3ServiceType.SupabaseStorage)]
+    public async Task CompletedSameConnectionRelayResumesByVerifyingTargetWithoutCopyingAgain(S3ServiceType provider)
+    {
+        using var client = new Client { Length = 6L * 1024 * 1024, CopyRequiresMultipart = true };
+        var profile = ConnectionProfile.CreatePreset(provider) with { Endpoint = "https://copy.example.test" };
+        MultipartUploadCheckpoint? saved = null;
+        var context = Context() with
+        {
+            UpdateCheckpointAsync = (_, _, checkpoint, _) => { saved = checkpoint; return Task.CompletedTask; }
+        };
+        await S3StorageService.CopyOrMoveObjectAsync(client, profile, "source", "key", "destination", "copy",
+            false, TestContext.Current.CancellationToken, context);
+        Assert.NotNull(saved);
+        Assert.True(saved.CopyCompleted);
+        Assert.Equal(profile.Id, saved.CopySourceProfileId);
+        Assert.Equal(profile.Id, saved.CopyDestinationProfileId);
+        Assert.Null(saved.CopySourceVersionId);
+        var parts = client.UploadParts;
+        await S3StorageService.CopyOrMoveObjectAsync(client, profile, "source", "key", "destination", "copy",
+            false, TestContext.Current.CancellationToken, context with { MultipartCheckpoint = saved });
+        Assert.Equal(1, client.Initiates);
+        Assert.Equal(parts, client.UploadParts);
         Assert.Equal(0, client.Deletes);
     }
 
@@ -342,43 +377,72 @@ public sealed class ConditionalCopyDestinationTests
         Assert.False(client.Aborted);
     }
 
-    [Fact]
-    public async Task SupabaseOversizedCopyIsRejectedEvenWhenMultipartDisabled()
+    [Theory]
+    [InlineData(S3ServiceType.AliyunOss)]
+    [InlineData(S3ServiceType.TencentCos)]
+    [InlineData(S3ServiceType.GoogleCloudStorage)]
+    [InlineData(S3ServiceType.BackblazeB2)]
+    [InlineData(S3ServiceType.SupabaseStorage)]
+    [InlineData(S3ServiceType.Custom)]
+    public async Task CompatibleCreateOnlyCopyChecksDestinationInsteadOfBlockingOrdinaryCopy(S3ServiceType provider)
     {
-        using var client = new Client { Length = 5L * 1024 * 1024 * 1024 + 1 };
-        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.SupabaseStorage, Context(overwrite: true), multipartEnabled: false));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
-        Assert.Null(client.Copy);
-        Assert.Equal(0, client.Initiates);
-        Assert.Empty(client.Parts);
+        using var client = new Client();
+        await Run(client, provider, Context());
+        Assert.NotNull(client.Copy);
+        Assert.Null(client.Copy.IfNoneMatch);
+        Assert.Null(client.Copy.IfMatch);
+        Assert.Equal(2, client.DestinationHeads);
+        Assert.Equal(0, client.Deletes);
     }
 
     [Fact]
-    public async Task SupabaseMoveIsRejectedBeforeReadingOrWritingAnything()
+    public async Task CompatibleCopyRechecksDestinationJustBeforeCommit()
     {
-        using var client = new Client();
+        using var client = new Client { DestinationAppearsOnSecondCheck = true };
         var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.SupabaseStorage, Context(overwrite: true), move: true));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
-        Assert.Equal(0, client.Heads);
-        Assert.Equal(0, client.Deletes);
-        Assert.Equal(0, client.Initiates);
+            Run(client, S3ServiceType.AliyunOss, Context()));
+        Assert.Equal(TransferFailureCategory.Conflict, failure.Failure.Category);
         Assert.Null(client.Copy);
+        Assert.Equal(0, client.Deletes);
+    }
+
+    [Fact]
+    public async Task CompatibleMultipartCopyRechecksBeforeCompletionWithoutUnsupportedHeaders()
+    {
+        using var client = new Client { Length = 6L * 1024 * 1024 };
+        await Run(client, S3ServiceType.AliyunOss, Context());
+        Assert.Equal(2, client.DestinationHeads);
+        Assert.NotNull(client.Complete);
+        Assert.Null(client.Complete.IfNoneMatch);
+        Assert.Null(client.Complete.IfMatch);
     }
 
     [Theory]
-    [InlineData(null)]
-    [InlineData("null")]
-    public async Task R2NullVersionIsNotAnImmutableMultipartSource(string? versionId)
+    [InlineData(S3ServiceType.SupabaseStorage)]
+    [InlineData(S3ServiceType.MinIO)]
+    [InlineData(S3ServiceType.AliyunOss)]
+    [InlineData(S3ServiceType.CloudflareR2)]
+    public async Task CompatibleMoveCopiesThenRechecksSourceBeforeOrdinaryDelete(S3ServiceType provider)
     {
-        using var client = new Client { Length = 6L * 1024 * 1024 * 1024, VersionId = versionId };
+        using var client = new Client();
+        await Run(client, provider, Context(overwrite: true), move: true);
+        Assert.NotNull(client.Copy);
+        Assert.Equal(2, client.Heads);
+        Assert.Equal(1, client.Deletes);
+        Assert.Null(client.Delete!.IfMatch);
+        Assert.Null(client.Delete.VersionId);
+    }
+
+    [Fact]
+    public async Task CompatibleMoveKeepsChangedSourceAndNeverDeletesAfterFailedRecheck()
+    {
+        using var client = new Client { SourceChange = "head-after-copy" };
         var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
-            Run(client, S3ServiceType.CloudflareR2, Context(overwrite: true)));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
-        Assert.Equal(0, client.Initiates);
-        Assert.Empty(client.Parts);
-        Assert.Null(client.Copy);
+            Run(client, S3ServiceType.SupabaseStorage, Context(overwrite: true), move: true));
+        Assert.Equal(TransferFailureCategory.Conflict, failure.Failure.Category);
+        Assert.False(failure.Failure.Retryable);
+        Assert.NotNull(client.Copy);
+        Assert.Equal(0, client.Deletes);
     }
 
     private sealed class Client() : AmazonS3Client(new AnonymousAWSCredentials(),
@@ -387,6 +451,11 @@ public sealed class ConditionalCopyDestinationTests
         public long Length { get; init; } = 1024;
         public string? VersionId { get; init; } = "source-version";
         public bool ConcurrentDestination { get; init; }
+        public bool DestinationAppearsOnSecondCheck { get; init; }
+        public bool StopOnRelayGet { get; init; }
+        public int DestinationHeads;
+        public int UploadParts;
+        public DeleteObjectRequest? Delete;
         public string? SourceChange { get; init; }
         public bool CopyRequiresMultipart { get; init; }
         public bool HasExpires { get; init; } = true;
@@ -408,9 +477,17 @@ public sealed class ConditionalCopyDestinationTests
         public override Task<GetObjectMetadataResponse> GetObjectMetadataAsync(GetObjectMetadataRequest request, CancellationToken cancellationToken = default)
         {
             Heads++;
+            if (request.BucketName == "destination")
+            {
+                DestinationHeads++;
+                if (Complete is not null)
+                    return Task.FromResult(new GetObjectMetadataResponse { ContentLength = Length, ETag = "completed" });
+                if (!DestinationAppearsOnSecondCheck || DestinationHeads < 2)
+                    throw new AmazonS3Exception("not found") { StatusCode = HttpStatusCode.NotFound };
+            }
             return Task.FromResult(new GetObjectMetadataResponse
             {
-                ContentLength = Length, ETag = "source-etag", VersionId = VersionId
+                ContentLength = Length, ETag = SourceChange == "head-after-copy" && Copy is not null ? "changed" : "source-etag", VersionId = VersionId
             });
         }
 
@@ -445,13 +522,18 @@ public sealed class ConditionalCopyDestinationTests
             Get = request;
             if (SourceChange == "precondition")
                 throw new AmazonS3Exception("source changed") { StatusCode = HttpStatusCode.PreconditionFailed };
+            if (StopOnRelayGet)
+                throw new AmazonS3Exception("intentional bounded relay probe") { StatusCode = HttpStatusCode.Forbidden };
+            var length = request.ByteRange is null ? Length : request.ByteRange.End - request.ByteRange.Start + 1;
             var response = new GetObjectResponse
             {
-                ContentLength = SourceChange == "length" ? 1 : Length,
+                HttpStatusCode = request.ByteRange is null ? HttpStatusCode.OK : HttpStatusCode.PartialContent,
+                ContentRange = request.ByteRange is null ? null : $"bytes {request.ByteRange.Start}-{request.ByteRange.End}/{Length}",
+                ContentLength = SourceChange == "length" ? 1 : length,
                 MissingMeta = SourceChange == "metadata" ? 1 : 0,
                 ETag = SourceChange == "etag" ? "different" : "source-etag",
                 VersionId = SourceChange == "version" ? "different" : VersionId,
-                ResponseStream = new MemoryStream(SourceChange == "body" ? new byte[] { 1 } : [])
+                ResponseStream = new MemoryStream(SourceChange == "body" ? new byte[] { 1 } : new byte[checked((int)length)])
             };
             response.Headers.ContentType = "application/test";
             response.Headers.CacheControl = "max-age=123";
@@ -484,6 +566,12 @@ public sealed class ConditionalCopyDestinationTests
             return Task.FromResult(new CopyPartResponse { ETag = "part" });
         }
 
+        public override Task<UploadPartResponse> UploadPartAsync(UploadPartRequest request, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref UploadParts);
+            return Task.FromResult(new UploadPartResponse { ETag = "uploaded-part", PartNumber = request.PartNumber });
+        }
+
         public override Task<CompleteMultipartUploadResponse> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
         {
             Complete = request;
@@ -494,6 +582,7 @@ public sealed class ConditionalCopyDestinationTests
         public override Task<DeleteObjectResponse> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
         {
             Deletes++;
+            Delete = request;
             return Task.FromResult(new DeleteObjectResponse());
         }
 

@@ -152,12 +152,9 @@ public sealed class UpdateRunnerTests
         const string logPath = @"C:\Logs\更新日志\install update.log";
         var startInfo = UpdateRunner.BuildInstallerStartInfo(msiPath, logPath, applicationPath);
 
-        Assert.Equal(new[]
-        {
-            "/i", msiPath, "/qn", "/norestart", "/l*v", logPath,
-            $"APPLICATIONFOLDER={expectedDirectory}"
-        }, startInfo.ArgumentList);
-        Assert.Empty(startInfo.Arguments);
+        Assert.Equal($"/i \"{msiPath}\" /qn /norestart /l*v \"{logPath}\" APPLICATIONFOLDER=\"{expectedDirectory}\"",
+            startInfo.Arguments);
+        Assert.Empty(startInfo.ArgumentList);
         Assert.True(startInfo.UseShellExecute);
         Assert.Equal("runas", startInfo.Verb);
         Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe"), startInfo.FileName);

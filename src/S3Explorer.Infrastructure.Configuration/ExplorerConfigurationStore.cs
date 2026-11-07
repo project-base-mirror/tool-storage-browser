@@ -27,6 +27,7 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     private JsonStoreRecoveryInfo? _lastRecovery;
     public JsonStoreRecoveryInfo? LastRecovery => _lastRecovery;
     public string Path => _file.Path;
+    public string? LegacyArchiveWarning { get; private set; }
 
     private sealed record Envelope(int Schema, string EncryptedPayload);
 
@@ -45,24 +46,19 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         var store = new ExplorerConfigurationStore(dataRoot, protector ?? new DpapiConfigurationPayloadProtector());
-        using var semaphore = store.CreateProcessSemaphore();
-        WaitForProcessLock(semaphore, cancellationToken);
-        try
+        using var processLock = await store.AcquireProcessLockAsync(cancellationToken).ConfigureAwait(false);
+        if (store._file.HasPersistedState)
         {
-            if (File.Exists(store._file.Path) || File.Exists(store._file.Path + ".bak"))
-            {
-                await store.LoadCoreAsync(cancellationToken).ConfigureAwait(false);
-                store.ArchiveLegacyFiles();
-                return store;
-            }
-
-            var legacy = await store.LoadLegacyAsync(cancellationToken).ConfigureAwait(false);
-            await store.SaveCoreAsync(legacy, cancellationToken).ConfigureAwait(false);
-            store.ArchiveLegacyFiles();
             await store.LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+            store.ArchiveLegacyFiles();
             return store;
         }
-        finally { semaphore.Release(); }
+
+        var legacy = await store.LoadLegacyAsync(cancellationToken).ConfigureAwait(false);
+        await store.SaveCoreAsync(legacy, cancellationToken).ConfigureAwait(false);
+        await store.LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+        store.ArchiveLegacyFiles();
+        return store;
     }
 
     /// <summary>
@@ -88,12 +84,10 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     public async Task<ExplorerConfiguration> LoadAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        using var semaphore = CreateProcessSemaphore();
         try
         {
-            WaitForProcessLock(semaphore, cancellationToken);
-            try { return await LoadCoreAsync(cancellationToken).ConfigureAwait(false); }
-            finally { semaphore.Release(); }
+            using var processLock = await AcquireProcessLockAsync(cancellationToken).ConfigureAwait(false);
+            return await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -130,12 +124,10 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     {
         ArgumentNullException.ThrowIfNull(configuration);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        using var semaphore = CreateProcessSemaphore();
         try
         {
-            WaitForProcessLock(semaphore, cancellationToken);
-            try { await SaveCoreAsync(configuration, cancellationToken).ConfigureAwait(false); }
-            finally { semaphore.Release(); }
+            using var processLock = await AcquireProcessLockAsync(cancellationToken).ConfigureAwait(false);
+            await SaveCoreAsync(configuration, cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -156,17 +148,12 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
     {
         ArgumentNullException.ThrowIfNull(update);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        using var semaphore = CreateProcessSemaphore();
         try
         {
-            WaitForProcessLock(semaphore, cancellationToken);
-            try
-            {
-                var current = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
-                var next = update(current) ?? throw new InvalidOperationException("配置更新函数返回 null。");
-                return await SaveCoreAsync(next, cancellationToken).ConfigureAwait(false);
-            }
-            finally { semaphore.Release(); }
+            using var processLock = await AcquireProcessLockAsync(cancellationToken).ConfigureAwait(false);
+            var current = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+            var next = update(current) ?? throw new InvalidOperationException("配置更新函数返回 null。");
+            return await SaveCoreAsync(next, cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -406,8 +393,24 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
             }
             .Select(name => System.IO.Path.Combine(_dataRoot, name)).Where(File.Exists).ToArray();
         if (files.Length == 0) return;
-        var directory = System.IO.Path.Combine(_archiveRoot, DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff'Z'")); Directory.CreateDirectory(directory);
-        foreach (var file in files) File.Move(file, System.IO.Path.Combine(directory, System.IO.Path.GetFileName(file)));
+        // The unified configuration is already committed and validated. Archiving
+        // is housekeeping: a locked legacy file must not make healthy data unusable.
+        var failed = new List<string>();
+        var directory = System.IO.Path.Combine(_archiveRoot, DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff'Z'") + "-" + Guid.NewGuid().ToString("N"));
+        foreach (var file in files)
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                File.Move(file, System.IO.Path.Combine(directory, System.IO.Path.GetFileName(file)));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                failed.Add(System.IO.Path.GetFileName(file));
+            }
+        }
+        LegacyArchiveWarning = failed.Count == 0 ? null :
+            $"统一配置已正常加载，但旧配置文件暂时无法归档：{string.Join("、", failed)}。原文件仍保留，将在下次启动时重试。";
     }
 
     private static CredentialProviderKind Provider(S3ServiceType type) => type switch
@@ -417,15 +420,34 @@ public sealed class ExplorerConfigurationStore : IExplorerConfigurationStore, IR
         S3ServiceType.GoogleCloudStorage => CredentialProviderKind.GoogleCloud, S3ServiceType.SupabaseStorage => CredentialProviderKind.Supabase, _ => CredentialProviderKind.S3Compatible
     };
 
-    private Semaphore CreateProcessSemaphore() => new(1, 1, CreateProcessSemaphoreName(_dataRoot));
-
-    private static void WaitForProcessLock(Semaphore semaphore, CancellationToken cancellationToken)
+    private async Task<FileStream> AcquireProcessLockAsync(CancellationToken cancellationToken)
     {
-        var waitResult = WaitHandle.WaitAny([semaphore, cancellationToken.WaitHandle]);
-        if (waitResult == 1) throw new OperationCanceledException(cancellationToken);
+        // File handles have no thread affinity and are closed by the OS after a
+        // process dies. Unlike a named Semaphore this cannot retain a lost count.
+        // Keep the file itself: deleting a lock file introduces competing identities.
+        Directory.CreateDirectory(_dataRoot);
+        var lockPath = System.IO.Path.Combine(_dataRoot, "configuration.lock");
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var timeout = TimeSpan.FromSeconds(15);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException exception) when (IsLockContention(exception))
+            {
+                if (elapsed.Elapsed >= timeout)
+                    throw new TimeoutException("另一个程序持续占用配置文件，15 秒内未能取得配置锁。请关闭其他 S3 Explorer/CLI 操作后重试；现有配置未修改。", exception);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
-    private static string CreateProcessSemaphoreName(string path) => "Local\\S3Explorer.Configuration." + Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path.ToUpperInvariant()))).ToLowerInvariant();
+    private static bool IsLockContention(IOException exception) =>
+        (exception.HResult & 0xffff) is 32 or 33 ||
+        (!OperatingSystem.IsWindows() && (exception.HResult & 0xffff) is 11 or 35); // flock EAGAIN/EWOULDBLOCK
 
     private static Guid CreateDerivedCredentialId(Guid profileId, string purpose)
     {

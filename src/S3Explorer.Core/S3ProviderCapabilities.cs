@@ -6,21 +6,20 @@ public sealed record S3ProviderCapabilities(
     ObjectCapabilities Object)
 {
     // A header being accepted is not evidence that the provider enforces it.
-    // Automatic move is enabled only for the verified atomic delete contract.
+    // Other providers can still move using copy, source recheck, then ordinary delete;
+    // callers must disclose that this fallback is not safe against concurrent writers.
     public BucketFeatureSupport ConditionalDelete => ServiceType switch
     {
         S3ServiceType.AmazonS3 => BucketFeatureSupport.Yes("AWS S3 支持 DeleteObject If-Match 条件。"),
-        S3ServiceType.SupabaseStorage => BucketFeatureSupport.No(
-            "Supabase S3 未提供可靠的条件删除，已禁用自动移动。请先复制并人工核对；或在应用外使用 Supabase 原生移动 API（≤5 GB，需单独配置 REST 身份，新对象所有者会变为操作发起人）。"),
-        _ => BucketFeatureSupport.No("此服务商未验证可靠的条件删除，已禁用自动移动；请复制后人工核对再删除源对象。")
+        _ => BucketFeatureSupport.No(
+            "此服务商未验证原子条件删除。移动/重命名会先复制，再核对源对象身份后删除；核对与删除之间仍有竞争窗口。请先停止源和目标的并发写入，否则可能覆盖目标或删除刚写入的源内容。版本控制可帮助恢复，但不是原子重命名。")
     };
 
 }
 
 public static class S3ProviderCapabilityRegistry
 {
-    private static BucketFeatureSupport UnsafeMetadataRewrite => BucketFeatureSupport.No(
-        "原地 Metadata 替换保持禁用：ETag 不能保护并发属性变化。符合条件的 AWS 对象可在属性页编辑快照并另存为新对象，保留源对象。");
+    private static BucketFeatureSupport CheckedMetadataRewrite => BucketFeatureSupport.Yes(ObjectMetadataRewritePolicy.Warning);
 
     private static readonly IReadOnlyDictionary<S3ServiceType, S3ProviderCapabilities> Entries =
         Enum.GetValues<S3ServiceType>().ToDictionary(value => value, Create);
@@ -56,7 +55,7 @@ public static class S3ProviderCapabilityRegistry
                 BucketFeatureSupport.Yes()),
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes(),
-                UnsafeMetadataRewrite,
+                CheckedMetadataRewrite,
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
                 BucketFeatureSupport.Yes(),
@@ -86,7 +85,7 @@ public static class S3ProviderCapabilityRegistry
                 BucketFeatureSupport.Yes()),
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes("MinIO 支持 S3 Object Tagging API"),
-                UnsafeMetadataRewrite,
+                CheckedMetadataRewrite,
                 BucketFeatureSupport.Yes("MinIO Object ACL 仅支持 private；公开访问请使用 Bucket Policy"),
                 BucketFeatureSupport.Yes("使用当前连接的签名配置生成预签名 URL"),
                 BucketFeatureSupport.Yes("MinIO 已验证对象版本浏览、下载、恢复与删除"),
@@ -96,7 +95,7 @@ public static class S3ProviderCapabilityRegistry
             serviceType,
             new ObjectCapabilities(
                 BucketFeatureSupport.Yes("阿里云 OSS S3 兼容接口支持对象 Tagging"),
-                UnsafeMetadataRewrite,
+                BucketFeatureSupport.Yes(ObjectMetadataRewritePolicy.WarningFor(S3ServiceType.AliyunOss)),
                 BucketFeatureSupport.No("阿里云 OSS S3 兼容接口的对象 ACL 尚未纳入持续验证"),
                 BucketFeatureSupport.Yes("使用当前连接的签名配置生成预签名 URL"),
                 BucketFeatureSupport.No("阿里云 OSS S3 兼容接口的对象版本操作尚未验证"),
@@ -136,7 +135,7 @@ public static class S3ProviderCapabilityRegistry
         var name = S3ProviderCatalog.Get(serviceType).DisplayName;
         return new ObjectCapabilities(
             BucketFeatureSupport.No($"{name} 的对象 Tagging API 尚未验证"),
-            BucketFeatureSupport.No($"{name} 的对象 Metadata 原地替换尚未验证"),
+            serviceType is S3ServiceType.CloudflareR2 or S3ServiceType.Custom or S3ServiceType.BackblazeB2 or S3ServiceType.GoogleCloudStorage or S3ServiceType.SupabaseStorage or S3ServiceType.TencentCos ? BucketFeatureSupport.Yes(ObjectMetadataRewritePolicy.WarningFor(serviceType)) : BucketFeatureSupport.No($"{name} 的对象 Metadata 属性保留协议尚未验证"),
             BucketFeatureSupport.No($"{name} 的对象 ACL API 尚未验证"),
             BucketFeatureSupport.Yes("使用当前连接的签名配置生成预签名 URL"),
             BucketFeatureSupport.No($"{name} 的对象版本操作尚未验证"),

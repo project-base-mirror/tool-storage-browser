@@ -40,6 +40,9 @@ public sealed class DurableJsonFile
     }
 
     public string Path => _path;
+    // Quarantined files still identify an existing store. Their absence from the
+    // primary/backup paths must not turn a failed recovery into a first run.
+    public bool HasPersistedState => File.Exists(_path) || File.Exists(_backupPath) || FindPreservedCorruptFile() is not null;
     public JsonStoreRecoveryInfo? LastRecovery { get; private set; }
 
     public async Task<T> LoadAsync<T>(
@@ -62,6 +65,12 @@ public sealed class DurableJsonFile
                 if (!File.Exists(_backupPath))
                 {
                     DeleteStaleTemporaryFile();
+                    if (FindPreservedCorruptFile() is { } corruptPath)
+                    {
+                        LastRecovery = new JsonStoreRecoveryInfo(_path, corruptPath, false, useDefaultWhenUnrecoverable);
+                        if (!useDefaultWhenUnrecoverable)
+                            throw new InvalidDataException($"JSON 存储先前恢复失败，损坏文件已保留。请恢复有效配置或明确重置后重试：{corruptPath}");
+                    }
                     return createDefault();
                 }
 
@@ -225,6 +234,19 @@ public sealed class DurableJsonFile
     }
 
     private void DeleteStaleTemporaryFile() => DeleteFileIfPresent(_temporaryPath);
+
+    private string? FindPreservedCorruptFile()
+    {
+        var directory = System.IO.Path.GetDirectoryName(_path)!;
+        var prefix = System.IO.Path.GetFileName(_path) + ".corrupt-";
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        try
+        {
+            return Directory.EnumerateFiles(directory)
+                .FirstOrDefault(path => System.IO.Path.GetFileName(path).StartsWith(prefix, comparison));
+        }
+        catch (DirectoryNotFoundException) { return null; }
+    }
 
     private static void DeleteFileIfPresent(string path)
     {

@@ -35,8 +35,6 @@ internal static class ObjectPreviewPolicy
 
     public static string? UnpreservableMetadataReadOnlyReason(ObjectProperties properties)
     {
-        if (!string.IsNullOrEmpty(properties.ContentLanguage) || !string.IsNullOrEmpty(properties.WebsiteRedirectLocation))
-            return "对象包含 Content-Language 或网站重定向；此编辑回传不能完整保留这些 Header，仅可预览。";
         if (properties.MissingMetadataCount is > 0)
             return "服务端未返回完整 Metadata，不能安全回传编辑，仅可预览。";
         if (!string.IsNullOrEmpty(properties.ExpiresHeader) && properties.ExpiresUtc is null)
@@ -50,8 +48,18 @@ internal static class ObjectPreviewPolicy
     public static string? EditingReadOnlyReason(S3ServiceType provider, ObjectProperties properties) =>
         ProtectedObjectReadOnlyReason(properties) ??
         UnpreservableMetadataReadOnlyReason(properties) ??
-        (provider == S3ServiceType.CloudflareR2 && RequiresSseS3Encryption(properties)
-            ? "此 R2 对象报告 AES256，但尚未验证显式保留该加密设置的写入协议，仅可预览。" : null);
+        (RequiresSseS3Encryption(properties) && provider is not
+            (S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2)
+            ? "此服务商尚未验证显式保留 AES256 设置的写入协议，仅可预览。" : null);
+
+    public static bool UsesConditionalTextUpload(S3ServiceType provider) =>
+        provider is S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2;
+
+    public static byte[] DecodeObjectContent(byte[] bytes, string? contentEncoding, long limit) =>
+        ObjectContentEncoding.Decode(bytes, contentEncoding, limit);
+
+    public static byte[] EncodeObjectContent(byte[] bytes, string? contentEncoding) =>
+        ObjectContentEncoding.Encode(bytes, contentEncoding);
 
     public static bool ShouldRetainEditedFile(string path, byte[]? confirmedBytes)
     {

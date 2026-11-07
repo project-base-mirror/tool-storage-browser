@@ -12,6 +12,66 @@ public sealed class DurableJsonFileTests
         WriteIndented = true
     };
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task FailedRecoveryRemainsVisibleAcrossStoreInstances(bool hasPrimary, bool hasBackup)
+    {
+        var root = TemporaryDirectory();
+        var path = Path.Combine(root, "state.json");
+        var token = TestContext.Current.CancellationToken;
+        try
+        {
+            if (hasPrimary) await File.WriteAllTextAsync(path, "null", token);
+            if (hasBackup) await File.WriteAllTextAsync(path + ".bak", "null", token);
+            await Assert.ThrowsAsync<InvalidDataException>(() => new DurableJsonFile(path).LoadAsync(
+                static () => new TestDocument { Value = "must not be used" }, Options, Validate, cancellationToken: token));
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var reopened = new DurableJsonFile(path);
+                Assert.True(reopened.HasPersistedState);
+                await Assert.ThrowsAsync<InvalidDataException>(() => reopened.LoadAsync(
+                    static () => new TestDocument { Value = "must not be used" }, Options, Validate, cancellationToken: token));
+                Assert.False(reopened.LastRecovery?.UsedDefault);
+                Assert.True(File.Exists(reopened.LastRecovery?.CorruptPath));
+                Assert.False(File.Exists(path));
+            }
+
+            var restored = new DurableJsonFile(path);
+            await restored.SaveAsync(new TestDocument { Value = "restored" }, Options, Validate, token);
+            Assert.Equal("restored", (await restored.LoadAsync(
+                static () => new TestDocument(), Options, Validate, cancellationToken: token)).Value);
+            Assert.Equal((hasPrimary ? 1 : 0) + (hasBackup ? 1 : 0),
+                Directory.EnumerateFiles(root, "state.json.corrupt-*").Count());
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task ReopenedStoreStillReportsAnExplicitDefaultFallback()
+    {
+        var root = TemporaryDirectory();
+        var path = Path.Combine(root, "state.json");
+        var token = TestContext.Current.CancellationToken;
+        try
+        {
+            await File.WriteAllTextAsync(path, "null", token);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var file = new DurableJsonFile(path);
+                var loaded = await file.LoadAsync(static () => new TestDocument { Value = "default" },
+                    Options, Validate, useDefaultWhenUnrecoverable: true, token);
+                Assert.Equal("default", loaded.Value);
+                Assert.True(file.LastRecovery?.UsedDefault);
+                Assert.True(File.Exists(file.LastRecovery?.CorruptPath));
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+
     [Fact]
     public async Task CorruptPrimaryIsPreservedAndLastGoodBackupIsRestored()
     {

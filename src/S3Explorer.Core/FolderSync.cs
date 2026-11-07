@@ -73,6 +73,9 @@ public sealed record FolderSyncFile(
     string? Checksum = null)
 {
     public string NormalizedPath => FolderSyncPath.NormalizeRelative(RelativePath);
+    // Metadata is deliberately not read through a link. Keep its presence in the
+    // snapshot so an unobserved subtree cannot be mistaken for deleted files.
+    public bool IsReparsePoint { get; init; }
 }
 
 public sealed record FolderSyncPlanItem(
@@ -99,6 +102,7 @@ public sealed record FolderSyncPlan(
     public int ChangedCount => Items.Count(item => item.Change == FolderSyncChange.Changed);
     public int DeletedCount => Items.Count(item => item.Change == FolderSyncChange.Deleted);
     public int ExcludedCount => Items.Count(item => item.Change == FolderSyncChange.Excluded);
+    public int SkippedLocalLinkCount => Items.Count(item => item.Local?.IsReparsePoint == true);
     public long TransferBytes => Items
         .Where(item => item.Action is FolderSyncAction.Upload or FolderSyncAction.Download)
         .Sum(item => item.SourceSize(item.Action == FolderSyncAction.Upload
@@ -217,6 +221,9 @@ public static class FolderSyncPlanner
         ArgumentNullException.ThrowIfNull(remoteFiles);
         var local = ToMap(localFiles, "本地");
         var remote = ToMap(remoteFiles, "远端");
+        var skippedLocalPaths = local.Values.Where(file => file.IsReparsePoint)
+            .Select(file => file.NormalizedPath)
+            .ToHashSet(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         var allPaths = local.Keys.Concat(remote.Keys).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         var result = new List<FolderSyncPlanItem>(allPaths.Length);
 
@@ -225,6 +232,12 @@ public static class FolderSyncPlanner
         {
             local.TryGetValue(path, out var localFile);
             remote.TryGetValue(path, out var remoteFile);
+            if (FindSkippedLocalPath(path, skippedLocalPaths) is { } skippedPath)
+            {
+                result.Add(new(path, FolderSyncChange.Excluded, FolderSyncAction.None, localFile, remoteFile,
+                    $"本地符号链接或目录联接未扫描，保留该路径及其子项，不传播删除：{skippedPath}"));
+                continue;
+            }
             if (exclusions.IsMatch(path))
             {
                 result.Add(new(path, FolderSyncChange.Excluded, FolderSyncAction.None, localFile, remoteFile, "匹配排除规则"));
@@ -289,6 +302,18 @@ public static class FolderSyncPlanner
                 throw new InvalidOperationException($"{side}快照包含重复路径：{path}");
         }
         return result;
+    }
+
+    private static string? FindSkippedLocalPath(string path, HashSet<string> skippedPaths)
+    {
+        if (skippedPaths.Count == 0) return null;
+        while (true)
+        {
+            if (skippedPaths.Contains(path)) return path;
+            var slash = path.LastIndexOf('/');
+            if (slash < 0) return null;
+            path = path[..slash];
+        }
     }
 
     private static bool IsChanged(
@@ -385,7 +410,7 @@ public static class FolderSyncSnapshot
         {
             RecurseSubdirectories = false,
             IgnoreInaccessible = false,
-            AttributesToSkip = FileAttributes.ReparsePoint,
+            AttributesToSkip = 0,
             ReturnSpecialDirectories = false
         };
         while (pending.Count > 0)
@@ -395,12 +420,20 @@ public static class FolderSyncSnapshot
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var relative = FolderSyncPath.NormalizeRelative(Path.GetRelativePath(rootDirectory, entry.FullName));
-                if (entry is DirectoryInfo)
+                var isDirectory = entry is DirectoryInfo;
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
                 {
-                    if (!exclusions.CanPruneDirectory(relative)) pending.Push(entry.FullName);
+                    if (result.Count >= itemLimit)
+                        throw new InvalidOperationException($"本地文件数量达到保护上限 {itemLimit:N0}，已停止分析。");
+                    result.Add(new FolderSyncFile(relative, 0, DateTimeOffset.MinValue) { IsReparsePoint = true });
                     continue;
                 }
-                if (exclusions.IsMatch(relative)) continue;
+                if (isDirectory ? exclusions.CanPruneDirectory(relative) : exclusions.IsMatch(relative)) continue;
+                if (isDirectory)
+                {
+                    pending.Push(entry.FullName);
+                    continue;
+                }
                 if (result.Count >= itemLimit)
                     throw new InvalidOperationException($"本地文件数量达到保护上限 {itemLimit:N0}，已停止分析。");
                 var info = (FileInfo)entry;

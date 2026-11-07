@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$CurrentMsi,
     [string]$PreviousMsi = "",
     [string]$RollbackMsi = "",
+    [string]$AlternateMsi = "",
     [string]$InstallDirectory = "",
     [int]$TimeoutSeconds = 60
 )
@@ -21,6 +22,7 @@ if (-not [string]::IsNullOrWhiteSpace($PreviousMsi)) {
     $PreviousMsi = (Resolve-Path -LiteralPath $PreviousMsi).Path
 }
 if ($RollbackMsi) { $RollbackMsi = (Resolve-Path -LiteralPath $RollbackMsi).Path }
+if ($AlternateMsi) { $AlternateMsi = (Resolve-Path -LiteralPath $AlternateMsi).Path }
 if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
     $InstallDirectory = Join-Path $env:ProgramFiles "S3 Explorer Lifecycle Test"
 }
@@ -34,13 +36,13 @@ $startMenuShortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Men
 
 function Invoke-Msi {
     param(
-        [Parameter(Mandatory)][ValidateSet("Install", "Uninstall")][string]$Action,
+        [Parameter(Mandatory)][ValidateSet("Install", "Uninstall", "Repair")][string]$Action,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$LogPath,
         [switch]$ReuseRegisteredDirectory,
         [int[]]$ExpectedExitCodes = @(0, 3010)
     )
-    $verb = if ($Action -eq "Install") { "/i" } else { "/x" }
+    $verb = switch ($Action) { "Install" { "/i" } "Repair" { "/fa" } default { "/x" } }
     $arguments = @($verb, "`"$Path`"", "/qn", "/norestart", "/l*v", "`"$LogPath`"")
     if ($Action -eq "Install") {
         if (-not $ReuseRegisteredDirectory) {
@@ -56,6 +58,54 @@ function Invoke-Msi {
         throw "$Action returned MSI exit code $exitCode; expected $($ExpectedExitCodes -join '/'). Log: $LogPath"
     }
     return $exitCode
+}
+
+function Invoke-ProductionUpdater {
+    param([Parameter(Mandatory)][string]$MsiPath)
+    # Copy the real self-contained maintenance tool outside the directory it updates.
+    $updater = Join-Path $runRoot "S3Explorer.Updater.exe"
+    Copy-Item -LiteralPath (Join-Path $InstallDirectory "S3Explorer.Updater.exe") -Destination $updater -Force
+    $state = Join-Path $runRoot "production-updater-state.json"
+    $log = Join-Path $runRoot "production-updater-msi.log"
+    $application = Join-Path $InstallDirectory "S3Explorer.exe"
+    $parent = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60") -PassThru -WindowStyle Hidden
+    $process = $null
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new($updater)
+        $startInfo.UseShellExecute = $false
+        foreach ($argument in @(
+            "--parent-pid", [string]$parent.Id,
+            "--parent-start-time-utc", $parent.StartTime.ToUniversalTime().ToString("O"),
+            "--msi", $MsiPath,
+            "--sha256", (Get-FileHash -LiteralPath $MsiPath -Algorithm SHA256).Hash,
+            "--application", $application,
+            "--state", $state, "--log", $log, "--target-version", $current.ProductVersion
+        )) { $startInfo.ArgumentList.Add($argument) }
+        # A known exited parent keeps this MSI test deterministic; parent-wait timing
+        # is not what this test measures. The production updater still checks its PID.
+        $parent.Kill()
+        $parent.WaitForExit()
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if (-not $process.WaitForExit(180000)) { $process.Kill($true); throw "Production updater timed out." }
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $state)) { throw "Production updater failed: $($process.ExitCode); $log" }
+        $completion = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
+        if ($completion.status -cne "completed" -or $completion.installerExitCode -notin @(0, 3010)) {
+            throw "Production updater did not report an installed and relaunched application: $state"
+        }
+        $launched = @(Get-Process -Name S3Explorer -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $application })
+        if ($launched.Count -ne 1) { throw "Updater did not leave exactly one application running at the requested path." }
+    }
+    finally {
+        if (-not $parent.HasExited) { $parent.Kill(); $parent.WaitForExit() }
+        $parent.Dispose()
+        if ($null -ne $process) { $process.Dispose() }
+        # Only stop application processes launched in this isolated test installation.
+        foreach ($app in @(Get-Process -Name S3Explorer -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $application })) {
+            $null = $app.CloseMainWindow()
+            if (-not $app.WaitForExit(10000)) { $app.Kill($true); $app.WaitForExit() }
+            $app.Dispose()
+        }
+    }
 }
 
 # Read shortcuts through the Unicode Shell interface. WScript.Shell's legacy
@@ -308,22 +358,30 @@ $result = [ordered]@{
     rollback = "NotRequested"
     customDirectoryRetention = "NotRun"
     uninstall = "NotRun"
+    sameVersionFlavorSwitch = "NotRequested"
+    productionUpdater = "NotRequested"
     logs = $runRoot
     userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 $identities = @{}
 $cleanupNeeded = $false
 try {
-    foreach ($entry in @(@("current", $CurrentMsi), @("previous", $PreviousMsi), @("rollback", $RollbackMsi))) {
+    foreach ($entry in @(@("current", $CurrentMsi), @("previous", $PreviousMsi), @("rollback", $RollbackMsi), @("alternate", $AlternateMsi))) {
         if (-not $entry[1]) { continue }
         $identities[$entry[0]] = Get-MsiIdentity -Path $entry[1]
         Assert-ProductState -ProductCode $identities[$entry[0]].ProductCode -Installed $false
     }
     $current = $identities.current
     foreach ($identity in $identities.Values) {
-        if ($identity.UpgradeCode -ine $current.UpgradeCode -or $identity.INSTALLERFLAVOR -cne $current.INSTALLERFLAVOR) {
-            throw "Lifecycle packages must share an UpgradeCode and installer flavor."
+        if ($identity.UpgradeCode -ine $current.UpgradeCode -or
+            ($identity -ne $identities["alternate"] -and $identity.INSTALLERFLAVOR -cne $current.INSTALLERFLAVOR)) {
+            throw "Lifecycle packages must share an UpgradeCode; non-alternate stages must also share the flavor."
         }
+    }
+    if ($AlternateMsi -and ($identities.alternate.ProductVersion -ne $current.ProductVersion -or
+        $identities.alternate.ProductCode -eq $current.ProductCode -or
+        $identities.alternate.INSTALLERFLAVOR -eq $current.INSTALLERFLAVOR)) {
+        throw "Flavor-switch test needs another real flavor with the same version and a distinct product code."
     }
     if ($PreviousMsi -and ([version]$identities.previous.ProductVersion -ge [version]$current.ProductVersion -or
         $identities.previous.ProductCode -eq $current.ProductCode)) {
@@ -405,6 +463,27 @@ try {
     Test-InstalledApplication -RequireUpdater -RequireStableStartMenuShortcut
     $result.customDirectoryRetention = if ($PreviousMsi) { "Passed" } else { "NotRequested" }
 
+    if ($AlternateMsi) {
+        $null = Invoke-Msi -Action Install -Path $AlternateMsi -LogPath (Join-Path $runRoot "switch-alternate.log") -ReuseRegisteredDirectory
+        Assert-ProductState -ProductCode $current.ProductCode -Installed $false
+        Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $true
+        Assert-InstallLocation -Flavor $identities.alternate.INSTALLERFLAVOR
+        $null = Invoke-Msi -Action Repair -Path $AlternateMsi -LogPath (Join-Path $runRoot "repair-alternate.log")
+        Assert-ProductState -ProductCode $current.ProductCode -Installed $false
+        Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $true
+        Test-InstalledApplication -RequireUpdater -RequireStableStartMenuShortcut
+        # Return to the original flavor through the complete production updater chain.
+        Invoke-ProductionUpdater -MsiPath $CurrentMsi
+        Assert-ProductState -ProductCode $current.ProductCode -Installed $true
+        Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $false
+        Assert-InstallLocation -Flavor $current.INSTALLERFLAVOR
+        $null = Invoke-Msi -Action Repair -Path $CurrentMsi -LogPath (Join-Path $runRoot "repair-current.log")
+        Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $false
+        Test-InstalledApplication -RequireUpdater -RequireStableStartMenuShortcut
+        $result.sameVersionFlavorSwitch = "PassedBothDirections"
+        $result.productionUpdater = "Passed"
+    }
+
     $null = Invoke-Msi -Action Uninstall -Path $CurrentMsi -LogPath (Join-Path $runRoot "uninstall-current.log")
     foreach ($identity in $identities.Values) { Assert-ProductState -ProductCode $identity.ProductCode -Installed $false }
     foreach ($name in @("S3Explorer.exe", "s3explorer-cli.exe", "S3Explorer.Updater.exe", "lifecycle-payload.txt", "lifecycle-current-only.txt")) {
@@ -434,7 +513,7 @@ catch {
 }
 finally {
     if ($cleanupNeeded) {
-        foreach ($stage in @("rollback", "current", "previous")) {
+        foreach ($stage in @("alternate", "rollback", "current", "previous")) {
             if (-not $identities.ContainsKey($stage)) { continue }
             $productCode = $identities[$stage].ProductCode
             try {

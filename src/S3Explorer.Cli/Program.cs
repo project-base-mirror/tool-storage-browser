@@ -1318,7 +1318,7 @@ internal static class Program
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static object PlanView(FolderSyncPlan plan) => new
+    internal static object PlanView(FolderSyncPlan plan) => new
     {
         plan.JobId,
         plan.AnalyzedAt,
@@ -1327,20 +1327,24 @@ internal static class Program
         plan.ChangedCount,
         plan.DeletedCount,
         plan.ExcludedCount,
+        plan.SkippedLocalLinkCount,
         plan.TransferBytes,
         items = plan.Items.Select(item => new
         {
             item.RelativePath,
             item.Change,
             item.Action,
-            localSize = item.Local?.Size,
+            localSize = item.Local is { IsReparsePoint: false } local ? (long?)local.Size : null,
             remoteSize = item.Remote?.Size,
             item.Reason
         })
     };
 
-    private static string FormatPlan(FolderSyncPlan plan) =>
-        $"操作: {plan.ActionCount:N0}，新增: {plan.NewCount:N0}，更改: {plan.ChangedCount:N0}，删除: {plan.DeletedCount:N0}，排除: {plan.ExcludedCount:N0}，传输: {FileSizeFormatter.Format(plan.TransferBytes)}";
+    internal static string FormatPlan(FolderSyncPlan plan) =>
+        $"操作: {plan.ActionCount:N0}，新增: {plan.NewCount:N0}，更改: {plan.ChangedCount:N0}，删除: {plan.DeletedCount:N0}，排除: {plan.ExcludedCount:N0}，传输: {FileSizeFormatter.Format(plan.TransferBytes)}" +
+        (plan.SkippedLocalLinkCount > 0
+            ? $"；跳过 {plan.SkippedLocalLinkCount:N0} 个本地链接，其路径及子项未扫描，保持原样且不传播删除。"
+            : string.Empty);
 
     private static string RequirePositional(CliArguments args, int index, string usage) =>
         args.Positionals.Count > index ? args.Positionals[index] : throw new CliUsageException($"用法：{usage}");

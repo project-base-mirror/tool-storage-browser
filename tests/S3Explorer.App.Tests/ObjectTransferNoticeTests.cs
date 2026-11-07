@@ -19,11 +19,24 @@ public sealed class ObjectTransferNoticeTests
     [Theory]
     [InlineData(S3ServiceType.MinIO)]
     [InlineData(S3ServiceType.SupabaseStorage)]
-    public void UnsupportedMoveNoticeShowsProviderSpecificAlternative(S3ServiceType serviceType)
+    public void CompatibleMoveNoticeDisclosesConcurrencyRisk(S3ServiceType serviceType)
     {
         var text = ObjectTransferDialog.BuildTransferNotice(true, 2, serviceType);
         Assert.Contains(S3ProviderCapabilityRegistry.For(serviceType).ConditionalDelete.Reason, text);
         Assert.DoesNotContain("先复制，再按内容 ETag 条件删除", text);
+        Assert.Contains("竞争窗口", text);
+        Assert.DoesNotContain("禁用", text);
+    }
+
+    [Theory]
+    [InlineData(S3ServiceType.CloudflareR2)]
+    [InlineData(S3ServiceType.SupabaseStorage)]
+    public void RelayCopyNoticeExplainsTrafficAndDestinationRace(S3ServiceType serviceType)
+    {
+        var text = ObjectTransferDialog.BuildTransferNotice(false, 1, serviceType);
+        Assert.Contains("本机分片中转", text);
+        Assert.Contains("下载与上传流量", text);
+        Assert.Contains("不保证并发时原子非覆盖", text);
     }
 
     [Fact]

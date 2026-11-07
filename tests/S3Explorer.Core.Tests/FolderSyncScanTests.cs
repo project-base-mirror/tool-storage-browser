@@ -6,6 +6,80 @@ namespace S3Explorer.Core.Tests;
 public sealed class FolderSyncScanTests
 {
     [Fact]
+    public void ExcludingALinkItselfStillProtectsUnobservedDescendants()
+    {
+        var plan = FolderSyncPlanner.Analyze(
+            Job(Path.GetTempPath()) with { PropagateDeletions = true, ExclusionPatterns = ["linked.txt"] },
+            [new("linked.txt", 0, DateTimeOffset.MinValue) { IsReparsePoint = true }],
+            [new("linked.txt/child.txt", 4, DateTimeOffset.UtcNow), new("other.txt", 4, DateTimeOffset.UtcNow)]);
+        Assert.Equal(FolderSyncAction.None, Assert.Single(plan.Items, item => item.RelativePath == "linked.txt/child.txt").Action);
+        Assert.Equal(FolderSyncAction.DeleteRemote, Assert.Single(plan.Items, item => item.RelativePath == "other.txt").Action);
+    }
+
+    [Theory]
+    [InlineData(FolderSyncDirection.Upload, false)]
+    [InlineData(FolderSyncDirection.Upload, true)]
+    [InlineData(FolderSyncDirection.Download, false)]
+    [InlineData(FolderSyncDirection.Download, true)]
+    public async Task SkippedLinksProtectOnlyTheirOwnPathsAndSubtrees(FolderSyncDirection direction, bool calculateHashes)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sync-links-" + Guid.NewGuid().ToString("N"));
+        var outside = root + "-outside";
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        try
+        {
+            var token = TestContext.Current.CancellationToken;
+            await File.WriteAllTextAsync(Path.Combine(root, "local-only.txt"), "local", token);
+            await File.WriteAllTextAsync(Path.Combine(outside, "secret.txt"), "must not be read", token);
+            try
+            {
+                Directory.CreateSymbolicLink(Path.Combine(root, "linked"), outside);
+                Directory.CreateSymbolicLink(Path.Combine(root, "cycle"), root);
+                File.CreateSymbolicLink(Path.Combine(root, "linked.txt"), Path.Combine(outside, "secret.txt"));
+                File.CreateSymbolicLink(Path.Combine(root, "broken.txt"), Path.Combine(outside, "missing.txt"));
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException or IOException)
+            {
+                Assert.Skip("Symbolic-link creation is unavailable: " + exception.Message);
+            }
+
+            var snapshot = await FolderSyncSnapshot.ReadLocalAsync(root, calculateHashes, 20, token);
+            var plan = FolderSyncPlanner.Analyze(Job(root) with { Direction = direction, PropagateDeletions = true },
+                snapshot.ToArray(),
+                [
+                    new("linked/secret.txt", 16, DateTimeOffset.UtcNow),
+                    new("linked/deep/remote-only.txt", 4, DateTimeOffset.UtcNow),
+                    new("cycle/local-only.txt", 5, DateTimeOffset.UtcNow),
+                    new("linked.txt", 16, DateTimeOffset.UtcNow),
+                    new("broken.txt", 4, DateTimeOffset.UtcNow),
+                    new("linked-neighbor.txt", 4, DateTimeOffset.UtcNow)
+                ]);
+
+            Assert.Equal(4, snapshot.Count(file => file.IsReparsePoint));
+            Assert.Equal(4, plan.SkippedLocalLinkCount);
+            Assert.All(snapshot.Where(file => file.IsReparsePoint), file => Assert.Null(file.Checksum));
+            Assert.DoesNotContain(snapshot, file => file.RelativePath == "linked/secret.txt");
+            foreach (var path in new[] { "linked", "linked/secret.txt", "linked/deep/remote-only.txt", "cycle", "cycle/local-only.txt", "linked.txt", "broken.txt" })
+            {
+                var item = Assert.Single(plan.Items, item => item.RelativePath == path);
+                Assert.Equal(FolderSyncChange.Excluded, item.Change);
+                Assert.Equal(FolderSyncAction.None, item.Action);
+                Assert.Contains("符号链接", item.Reason, StringComparison.Ordinal);
+            }
+            Assert.Equal(direction == FolderSyncDirection.Upload ? FolderSyncAction.Upload : FolderSyncAction.DeleteLocal,
+                Assert.Single(plan.Items, item => item.RelativePath == "local-only.txt").Action);
+            Assert.Equal(direction == FolderSyncDirection.Upload ? FolderSyncAction.DeleteRemote : FolderSyncAction.Download,
+                Assert.Single(plan.Items, item => item.RelativePath == "linked-neighbor.txt").Action);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+            Directory.Delete(outside, true);
+        }
+    }
+
+    [Fact]
     public async Task ExcludedFilesAreNeverOpenedAndPrunedTreeDoesNotConsumeItemBudget()
     {
         var root = Path.Combine(Path.GetTempPath(), "sync-scan-" + Guid.NewGuid().ToString("N"));

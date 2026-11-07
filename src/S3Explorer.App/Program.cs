@@ -42,10 +42,18 @@ internal static class Program
                     .GetAwaiter()
                     .GetResult();
             }
-            var configurationStore = ExplorerConfigurationStore
-                .OpenAsync(dataRoot)
-                .GetAwaiter()
-                .GetResult();
+            ExplorerConfigurationStore configurationStore;
+            try
+            {
+                configurationStore = ExplorerConfigurationStore.OpenAsync(dataRoot).GetAwaiter().GetResult();
+            }
+            catch (Exception exception) when (automation is null && ConfigurationRecoveryDialog.CanOfferRecovery(dataRoot, exception))
+            {
+                using var recovery = new ConfigurationRecoveryDialog(dataRoot, exception);
+                if (recovery.ShowDialog() != DialogResult.OK || recovery.RecoveredStore is null)
+                    return 1;
+                configurationStore = recovery.RecoveredStore;
+            }
             var profileStore = new ExplorerProfileStore(configurationStore);
             var cdnConfigurationStore = new ExplorerCdnConfigurationStore(configurationStore);
             var credentialStore = new ExplorerCredentialStore(configurationStore);

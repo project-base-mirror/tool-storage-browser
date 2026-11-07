@@ -100,7 +100,7 @@ public sealed class ProviderMatrixIntegrationTests
             if (objectCapabilities.MetadataRewrite.Supported)
             {
                 await service.ReplaceObjectMetadataAsync(
-                    profile, bucket, specialKey, properties.VersionId,
+                    profile, properties,
                     new ObjectWriteHeaders(
                         ContentType: "text/plain",
                         CacheControl: "public,max-age=60",
@@ -128,18 +128,10 @@ public sealed class ProviderMatrixIntegrationTests
             keys.Add(copyKey);
             keys.Add(movedKey);
             await service.CopyObjectAsync(profile, bucket, specialKey, bucket, copyKey, CancellationToken.None);
-            if (S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete.Supported)
-            {
-                await service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None);
-                keys.Remove(copyKey);
-            }
-            else
-            {
-                await Assert.ThrowsAsync<TransferExecutionException>(() =>
-                    service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None));
-                Assert.True(await service.ObjectExistsAsync(profile, bucket, copyKey, CancellationToken.None));
-                Assert.False(await service.ObjectExistsAsync(profile, bucket, movedKey, CancellationToken.None));
-            }
+            await service.MoveObjectAsync(profile, bucket, copyKey, bucket, movedKey, CancellationToken.None);
+            Assert.False(await service.ObjectExistsAsync(profile, bucket, copyKey, CancellationToken.None));
+            Assert.True(await service.ObjectExistsAsync(profile, bucket, movedKey, CancellationToken.None));
+            keys.Remove(copyKey);
 
             var singleDeleteKey = Key("folder/single-delete.txt");
             keys.Add(singleDeleteKey);

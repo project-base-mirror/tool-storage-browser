@@ -210,16 +210,19 @@ internal static class UpdateRunner
             Verb = "runas",
             WindowStyle = ProcessWindowStyle.Hidden
         };
-        // MSI rejects a terminal \. directory component with error 1324. Let .NET
-        // quote each argument, including spaces and a drive root's trailing slash,
-        // rather than changing the install directory to work around quoting.
-        foreach (var argument in new[]
-        {
-            "/i", msiPath, "/qn", "/norestart", "/l*v", logPath,
-            $"APPLICATIONFOLDER={directory}"
-        })
-            startInfo.ArgumentList.Add(argument);
+        // msiexec has its own PROPERTY="value" grammar. ArgumentList quotes the
+        // entire PROPERTY=value token and is not suitable for MSI public properties.
+        // MSI treats backslashes literally, including a drive root's final slash.
+        startInfo.Arguments = $"/i {QuoteMsiValue(msiPath)} /qn /norestart /l*v {QuoteMsiValue(logPath)} " +
+            $"APPLICATIONFOLDER={QuoteMsiValue(directory)}";
         return startInfo;
+    }
+
+    private static string QuoteMsiValue(string value)
+    {
+        if (value.IndexOfAny(['"', '\0', '\r', '\n']) >= 0)
+            throw new ArgumentException("MSI 参数含有无效字符。", nameof(value));
+        return "\"" + value + "\"";
     }
 
     internal static void WriteResult(string path, UpdateResult result)

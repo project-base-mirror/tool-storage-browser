@@ -397,6 +397,8 @@ internal sealed class FolderSyncDialog : Form
         _synchronize.Enabled = _operation is null && selected.Count > 0;
         _selectionActions.Enabled = _operation is null;
         _summary.Text = $"已选 {selected.Count:N0} / 待执行 {_plan.ActionCount:N0} · 传输 {FileSizeFormatter.Format(bytes)}";
+        var skippedLinks = _plan.SkippedLocalLinkCount;
+        if (skippedLinks > 0) _summary.Text += $" · 跳过链接 {skippedLinks:N0}（保留对应子项）";
     }
 
     private FolderSyncPlanItem? SelectedResultItem() =>
@@ -611,7 +613,7 @@ internal sealed class FolderSyncDialog : Form
                 row.SubItems.Add(Path.GetExtension(planItem.RelativePath));
                 row.SubItems.Add(ChangeText(planItem.Change));
                 row.SubItems.Add(ActionText(planItem.Action));
-                row.SubItems.Add(planItem.Local is null ? "—" : FileSizeFormatter.Format(planItem.Local.Size));
+                row.SubItems.Add(planItem.Local is null || planItem.Local.IsReparsePoint ? "—" : FileSizeFormatter.Format(planItem.Local.Size));
                 row.SubItems.Add(planItem.Remote is null ? "—" : FileSizeFormatter.Format(planItem.Remote.Size));
                 row.SubItems.Add(planItem.Reason);
                 if (planItem.Action == FolderSyncAction.None) row.ForeColor = SystemColors.GrayText;

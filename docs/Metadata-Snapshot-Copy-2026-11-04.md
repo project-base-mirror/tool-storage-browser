@@ -1,5 +1,7 @@
 # Metadata snapshot copy (2026-11-04)
 
+> 2026-11-07 更新：本文保留 11 月 4 日修复时的边界；原地/批量 Metadata 与文本编辑的后续支持范围见 [当前编辑说明](Editing-and-Cdn-Fixes-2026-11-07.md)。固定版本另存限制未改变。
+
 ## User workflow
 
 The single-object Properties → Metadata page now allows eligible AWS objects to be edited and **saved as a new object** in the same bucket. The user must choose a different key and confirm the selected immutable source version, fees, and that the new key is governed by its bucket policy and lifecycle rules. This is a snapshot copy, not an in-place edit. The source remains untouched. A current destination object cannot be overwritten.

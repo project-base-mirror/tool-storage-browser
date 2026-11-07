@@ -8,19 +8,39 @@ namespace S3Explorer.App.Tests;
 public sealed class ObjectPropertiesDialogLayoutTests
 {
     [Fact]
-    public void MetadataCopyIsReadOnlyWithoutImmutableVersion()
+    public void UnversionedMetadataCanBeEditedButCopyRequiresImmutableVersion()
     {
         RunSta(() =>
         {
             using var dialog = new ObjectPropertiesDialog(Properties(), "https://s3.amazonaws.com",
                 profile: ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3));
             Assert.False(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataCopyButton")).Enabled);
-            Assert.True(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
+            Assert.False(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
             var grid = Assert.IsType<DataGridView>(Find(dialog, "ObjectMetadataGrid"));
-            Assert.True(grid.ReadOnly);
-            Assert.False(grid.AllowUserToAddRows);
-            Assert.False(grid.AllowUserToDeleteRows);
-            Assert.Contains("固定版本", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+            Assert.False(grid.ReadOnly);
+            Assert.True(grid.AllowUserToAddRows);
+            Assert.True(grid.AllowUserToDeleteRows);
+            Assert.Contains("非原子", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+        });
+    }
+
+    [Fact]
+    public void SupabaseEditorsExposeOnlyFieldsTheProviderCanRoundTrip()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ObjectPropertiesDialog(Properties(), "https://example.supabase.co/storage/v1/s3",
+                storage: DispatchProxy.Create<IS3StorageService, NoCallsStorage>(),
+                profile: ConnectionProfile.CreatePreset(S3ServiceType.SupabaseStorage));
+            Assert.True(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataButton")).Enabled);
+            Assert.False(Assert.IsType<TextBox>(Find(dialog, "ObjectContentType")).ReadOnly);
+            Assert.True(Assert.IsType<TextBox>(Find(dialog, "ObjectContentDisposition")).ReadOnly);
+            Assert.True(Assert.IsType<TextBox>(Find(dialog, "ObjectExpiresUtc")).ReadOnly);
+            Assert.Contains("新文件内容也可能被覆盖", Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text);
+            using var batch = new ObjectMetadataBatchDialog(2, S3ServiceType.SupabaseStorage);
+            Assert.True(Assert.IsType<CheckBox>(Find(batch, "ApplyBatchcachecontrol")).Enabled);
+            Assert.False(Assert.IsType<CheckBox>(Find(batch, "ApplyBatchcontentdisposition")).Enabled);
+            Assert.False(Assert.IsType<CheckBox>(Find(batch, "ApplyBatchexpires")).Enabled);
         });
     }
 
@@ -41,9 +61,8 @@ public sealed class ObjectPropertiesDialogLayoutTests
             Assert.Equal(properties.Key + ".metadata-copy",
                 Assert.IsType<TextBox>(Find(dialog, "ObjectMetadataCopyDestination")).Text);
             var reason = Assert.IsType<Label>(Find(dialog, "ObjectMetadataCapabilityReason")).Text;
-            Assert.Contains("BucketOwnerEnforced", reason);
-            Assert.Contains("SSE-S3", reason);
-            Assert.Contains("无 Object Lock", reason);
+            Assert.Contains("非原子", reason);
+            Assert.True(Assert.IsType<Button>(Find(dialog, "SaveObjectMetadataButton")).Enabled);
         });
     }
 
@@ -167,7 +186,27 @@ public sealed class ObjectPropertiesDialogLayoutTests
     }
 
     [Fact]
-    public void BatchMetadataDialogExplainsSafeSingleObjectAlternative()
+    public void BatchCacheControlEditPreservesUntouchedHeaderAndMetadataWhitespace()
+    {
+        RunSta(() =>
+        {
+            using var dialog = new ObjectMetadataBatchDialog(2);
+            Assert.IsType<CheckBox>(Find(dialog, "ApplyBatchcachecontrol")).Checked = true;
+            Assert.IsType<TextBox>(Find(dialog, "Batchcachecontrol")).Text = "max-age=120";
+            var original = Properties() with
+            {
+                ContentDisposition = " attachment ",
+                Metadata = new Dictionary<string, string> { ["value"] = "  untouched  " }
+            };
+            var headers = dialog.ApplyTo(original);
+            Assert.Equal("max-age=120", headers.CacheControl);
+            Assert.Equal(" attachment ", headers.ContentDisposition);
+            Assert.Equal("  untouched  ", headers.Metadata!["value"]);
+        });
+    }
+
+    [Fact]
+    public void BatchMetadataDialogExplainsNonAtomicConflictWindow()
     {
         RunSta(() =>
         {
@@ -184,7 +223,7 @@ public sealed class ObjectPropertiesDialogLayoutTests
             AssertButtonIsReadable(dialog, "CancelBatchObjectMetadataButton");
             Assert.Contains(
                 dialog.Controls.Cast<Control>().SelectMany(Flatten).OfType<Label>(),
-                label => label.Text.Contains("另存为新对象", StringComparison.Ordinal));
+                label => label.Text.Contains("非原子", StringComparison.Ordinal));
         });
     }
 

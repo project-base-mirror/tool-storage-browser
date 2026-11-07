@@ -414,12 +414,20 @@ internal sealed partial class MainForm
     {
         try
         {
-            var jobs = await _cdnUploadAutomation.ProcessCompletedUploadsAsync(tasks, _cdnConfiguration);
+            var rejected = 0;
+            var jobs = await _cdnUploadAutomation.ProcessCompletedUploadsAsync(tasks, _cdnConfiguration,
+                mappingRejected: (task, reason) =>
+                {
+                    rejected++;
+                    _logger.Info($"CDN automation skipped key={task.ObjectKey}: {reason}");
+                });
             if (jobs.Count > 0)
             {
                 _logger.Info($"CDN upload automation enqueued jobs={jobs.Count}");
                 _requestStatus.Text = $"已生成 {jobs.Count} 个 CDN 自动化任务";
             }
+            if (rejected > 0)
+                _requestStatus.Text = $"已生成 {jobs.Count} 个 CDN 任务；{rejected} 个 Key 无法安全映射，未执行 CDN 操作（见日志）。";
         }
         catch (Exception exception)
         {
@@ -439,7 +447,7 @@ internal sealed partial class MainForm
             {
                 MessageBox.Show(
                     this,
-                    "请选择当前 Bucket 中已配置 CDN 关联的一个文件对象。",
+                    _cdnResolutionError ?? "请选择当前 Bucket 中已配置 CDN 关联的一个文件对象。",
                     "没有可用的 CDN 关联",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -451,16 +459,24 @@ internal sealed partial class MainForm
         return true;
     }
 
+    private string? _cdnResolutionError;
+
     private IReadOnlyList<CdnResolvedTarget> ResolveSelectedCdnTargets()
     {
+        _cdnResolutionError = null;
         var selected = SelectedEntries();
         if (_currentProfile is null || _currentBucket is null || selected.Count != 1 || selected[0].IsDirectory)
             return [];
-        return CdnUrlMapper.ResolveAll(
-            _cdnConfiguration,
-            _currentProfile.Id,
-            _currentBucket,
-            selected[0].Key);
+        try
+        {
+            return CdnUrlMapper.ResolveAll(_cdnConfiguration, _currentProfile.Id, _currentBucket, selected[0].Key);
+        }
+        catch (NotSupportedException exception)
+        {
+            _cdnResolutionError = exception.Message;
+            _requestStatus.Text = exception.Message;
+            return [];
+        }
     }
 
     private bool TryResolveCdnControlCredential(

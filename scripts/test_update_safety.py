@@ -13,6 +13,7 @@ class UpdateSafetyTests(unittest.TestCase):
         package = ET.parse(ROOT / 'installer/Package.wxs').getroot()
         ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
         self.assertEqual('afterInstallInitialize', package.find('.//w:MajorUpgrade', ns).get('Schedule'))
+        self.assertEqual('yes', package.find('.//w:MajorUpgrade', ns).get('AllowSameVersionUpgrades'))
         search = package.find('.//w:RegistrySearch', ns)
         self.assertEqual('InstallLocation', search.get('Name'))
         self.assertEqual('always64', search.get('Bitness'))
@@ -126,14 +127,33 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('APPLICATIONFOLDER=', updater)
         self.assertIn('failure = new AggregateException', updater)
 
-    def test_updater_keeps_msi_directory_unchanged_and_uses_argument_list(self):
+    def test_updater_quotes_msi_property_value_not_entire_assignment(self):
         updater = (ROOT / 'src/S3Explorer.Updater/Program.cs').read_text(encoding='utf-8')
         launcher = updater.split('internal static Process StartInstaller', 1)[1].split('internal static void WriteResult', 1)[0]
         self.assertIn('Process.Start(BuildInstallerStartInfo(', launcher)
-        self.assertIn('startInfo.ArgumentList.Add(argument)', launcher)
-        self.assertIn('$"APPLICATIONFOLDER={directory}"', launcher)
+        self.assertIn('startInfo.Arguments =', launcher)
+        self.assertIn('$"APPLICATIONFOLDER={QuoteMsiValue(directory)}"', launcher)
+        self.assertNotIn('ArgumentList.Add', launcher)
         self.assertNotIn('Path.Combine(directory, ".")', launcher)
-        self.assertNotIn('Arguments =', launcher)
+
+    def test_lifecycle_runs_production_updater_and_bidirectional_flavor_switch(self):
+        lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/installer-lifecycle.yml').read_text(encoding='utf-8')
+        self.assertIn('Invoke-ProductionUpdater -MsiPath $CurrentMsi', lifecycle)
+        self.assertIn('"--sha256", (Get-FileHash', lifecycle)
+        self.assertIn('Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $false', lifecycle)
+        self.assertIn('PassedBothDirections', lifecycle)
+        self.assertIn('S3EXPLORER_MSI_ARGUMENT_PROBE', workflow)
+        self.assertIn("-InstallDirectory (Join-Path $env:ProgramFiles 'S3 Explorer')", workflow)
+
+    def test_configuration_lock_recovers_owner_exit_and_archive_is_nonfatal(self):
+        store = (ROOT / 'src/S3Explorer.Infrastructure.Configuration/ExplorerConfigurationStore.cs').read_text(encoding='utf-8')
+        self.assertNotIn('new Semaphore(', store)
+        self.assertNotIn('WaitHandle.WaitAny', store)
+        self.assertIn('FileShare.None', store)
+        self.assertIn('TimeSpan.FromSeconds(15)', store)
+        self.assertIn('LegacyArchiveWarning =', store)
+        self.assertIn('exception is IOException or UnauthorizedAccessException', store)
 
     def test_manual_tag_preparation_is_explicit_and_checks_validated_main(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')

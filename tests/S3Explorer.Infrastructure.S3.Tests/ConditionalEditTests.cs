@@ -29,7 +29,7 @@ public sealed class ConditionalEditTests
             var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
                 service.ReplaceObjectMetadataAsync(profile, "bucket", "key", versionId,
                     new ObjectWriteHeaders(ContentType: "text/plain"), TestContext.Current.CancellationToken));
-            Assert.Equal(S3ProviderCapabilityRegistry.For(provider).Object.MetadataRewrite.Reason, error.Message);
+            Assert.Contains("快照", error.Message);
         }
     }
 

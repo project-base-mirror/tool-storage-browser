@@ -825,6 +825,8 @@ internal sealed partial class MainForm : Form
         {
             ApplyConfiguration(await _configurationStore.LoadAsync(), refreshTree: false);
             AddRecoveryWarning(warnings, "统一配置", _configurationStore as IRecoveryAwareStore);
+            if (_configurationStore is S3Explorer.Infrastructure.Configuration.ExplorerConfigurationStore { LegacyArchiveWarning: { } archiveWarning })
+                warnings.Add(archiveWarning);
         }
         catch (Exception exception)
         {
