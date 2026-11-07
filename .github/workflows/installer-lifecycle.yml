@@ -7,7 +7,8 @@ on:
       - 'installer/**'
       - 'src/S3Explorer.Updater/**'
       - 'src/S3Explorer.App/Update*.cs'
-      - 'tests/S3Explorer.Updater.Tests/**'
+      - 'tests/S3Explorer.App.Tests/UpdateRunnerTests.cs'
+      - 'tests/S3Explorer.App.Tests/UpdaterMsiIntegrationTests.cs'
       - 'scripts/Build-InstallerLifecycleFixtures.ps1'
       - 'scripts/Test-InstallerLifecycle.ps1'
       - 'scripts/test_update_safety.py'
@@ -24,7 +25,7 @@ concurrency:
 jobs:
   installer-lifecycle:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +34,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@v5
@@ -57,12 +59,32 @@ jobs:
         shell: pwsh
         run: ./scripts/Build-InstallerLifecycleFixtures.ps1 -Flavor '${{ matrix.flavor }}'
 
+      - name: Verify production MSI parser including drive roots
+        shell: pwsh
+        run: |
+          $fixtures = Get-Content -Raw './artifacts/installer-lifecycle-fixtures/${{ matrix.flavor }}/fixtures.json' | ConvertFrom-Json
+          $env:S3EXPLORER_MSI_ARGUMENT_PROBE = $fixtures.argumentProbeMsi
+          $env:S3EXPLORER_MSI_ARGUMENT_LOGS = Join-Path $PWD 'artifacts/installer-lifecycle/argument-probe'
+          dotnet test tests/S3Explorer.App.Tests/S3Explorer.App.Tests.csproj -c Release --no-restore --filter 'Category=UpdaterMsiIntegration' --logger 'trx;LogFileName=updater-msi.trx' --results-directory artifacts/installer-lifecycle/argument-probe
+          if ($LASTEXITCODE -ne 0) { throw 'Production updater MSI argument tests failed.' }
+          [xml]$testResult = Get-Content artifacts/installer-lifecycle/argument-probe/updater-msi.trx
+          if ([int]$testResult.TestRun.ResultSummary.Counters.passed -ne 3) { throw 'MSI parser cases were skipped or missing.' }
+
       - name: Verify failed-upgrade rollback, custom path, upgrade and uninstall
         shell: pwsh
         run: |
           $fixtures = Get-Content -Raw './artifacts/installer-lifecycle-fixtures/${{ matrix.flavor }}/fixtures.json' | ConvertFrom-Json
           $customDirectory = Join-Path $env:ProgramFiles 'S3 Explorer lifecycle test 自定义'
-          ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -RollbackMsi $fixtures.rollbackMsi -InstallDirectory $customDirectory
+          ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -RollbackMsi $fixtures.rollbackMsi -AlternateMsi $fixtures.alternateMsi -InstallDirectory $customDirectory
+          ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -AlternateMsi $fixtures.alternateMsi -InstallDirectory (Join-Path $env:ProgramFiles 'S3 Explorer')
+
+      - name: Reproduce old updater failure and verify default and Unicode path upgrades
+        shell: pwsh
+        run: |
+          $fixtures = Get-Content -Raw './artifacts/installer-lifecycle-fixtures/${{ matrix.flavor }}/fixtures.json' | ConvertFrom-Json
+          foreach ($directory in @('S3 Explorer', 'S3 Explorer legacy upgrade 自定义')) {
+            ./scripts/Test-InstallerLifecycle.ps1 -CurrentMsi $fixtures.currentMsi -PreviousMsi $fixtures.previousMsi -LegacyUpdater $fixtures.legacyUpdater -LegacyIncompatibleMsi $fixtures.legacyIncompatibleMsi -InstallDirectory (Join-Path $env:ProgramFiles $directory)
+          }
 
       - name: Upload lifecycle evidence
         if: always()
@@ -74,3 +96,4 @@ jobs:
             artifacts/installer-lifecycle/**
             artifacts/installer-lifecycle-fixtures/**/fixtures.json
             artifacts/installer-lifecycle-fixtures/**/project/Package.wxs
+            artifacts/installer-lifecycle-fixtures/**/argument-probe/Package.wxs

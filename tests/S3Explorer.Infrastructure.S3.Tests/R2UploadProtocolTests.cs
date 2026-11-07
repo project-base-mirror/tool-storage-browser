@@ -12,6 +12,34 @@ namespace S3Explorer.Infrastructure.S3.Tests;
 public sealed class R2UploadProtocolTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotUploadsPreservePaddedTagsMetadataAndAdditionalHeaders(bool multipart)
+    {
+        var token = TestContext.Current.CancellationToken;
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(path, new byte[multipart ? 5 * 1024 * 1024 + 1 : 137], token);
+            using var recording = new RecordingHttpFactory();
+            var service = new S3StorageService(new S3ClientFactory { HttpClientFactoryOverride = recording });
+            var headers = new ObjectWriteHeaders(Metadata: new Dictionary<string, string> { ["padded"] = "  keep me  " },
+                Tags: [new("team", " prod "), new(" team", " ")])
+            {
+                PreserveExistingValues = true, ContentLanguage = "zh-CN", WebsiteRedirectLocation = "/unchanged"
+            };
+            await service.UploadFileAsync(Profile(), "bucket", "edited", path, "STANDARD", headers, Context(), token);
+            var creation = Assert.Single(recording.Requests, request => multipart
+                ? request.Method == "POST" && request.Query.Contains("uploads") : request.Method == "PUT");
+            Assert.Equal("  keep me  ", creation.Headers["x-amz-meta-padded"]);
+            Assert.Equal("team=%20prod%20&%20team=%20", creation.Tagging);
+            Assert.Equal("zh-CN", creation.Headers["Content-Language"]);
+            Assert.Equal("/unchanged", creation.Headers["x-amz-website-redirect-location"]);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
     [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 0)]
     [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 137)]
     [InlineData(S3ServiceType.CloudflareR2, UploadSigningMode.Auto, 11 * 1024 * 1024)]

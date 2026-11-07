@@ -36,10 +36,14 @@ public sealed class S3ClientFactory
     public IAmazonS3 Create(ConnectionProfile profile)
         => CreateResolved(profile).Client;
 
-    public S3ClientCreation CreateResolved(ConnectionProfile profile, bool allowInteractiveSso = false)
+    public S3ClientCreation CreateResolved(ConnectionProfile profile, bool allowInteractiveSso = false, int? maxErrorRetry = null)
     {
         profile.Validate();
         var config = CreateConfig(profile);
+        // The SDK snapshots retry limits during client construction. Changing Config
+        // afterwards does not reliably prevent a repeated consequential write.
+        if (maxErrorRetry is < 0) throw new ArgumentOutOfRangeException(nameof(maxErrorRetry));
+        if (maxErrorRetry is { } retryLimit) config.MaxErrorRetry = retryLimit;
         var resolution = _credentialResolver.Resolve(profile, allowInteractiveSso);
         var client = new ExactObjectKeyS3Client(resolution.Credentials, config,
             profile.FollowTemporaryRedirects, profile.ServiceType, !string.IsNullOrWhiteSpace(profile.CustomHostHeader));

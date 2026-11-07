@@ -18,10 +18,11 @@ internal sealed class ObjectMetadataBatchDialog : Form
         AllowUserToAddRows = true,
         AllowUserToDeleteRows = true,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-        RowHeadersVisible = false
+        RowHeadersVisible = false,
+        MinimumSize = new Size(0, 100)
     };
 
-    public ObjectMetadataBatchDialog(int objectCount)
+    public ObjectMetadataBatchDialog(int objectCount, S3ServiceType? provider = null)
     {
         Name = "ObjectMetadataBatchDialog";
         Text = $"批量 Header / Metadata - {objectCount:N0} 个对象";
@@ -50,6 +51,9 @@ internal sealed class ObjectMetadataBatchDialog : Form
         AddHeader(headers, "Content-Encoding", "content-encoding");
         AddHeader(headers, "Content-Disposition", "content-disposition");
         AddHeader(headers, "Expires UTC", "expires");
+        if (provider is { } selectedProvider)
+            foreach (var header in _headers)
+                header.Value.Apply.Enabled = ObjectMetadataRewritePolicy.CanEditHeader(selectedProvider, header.Key);
 
         var warning = new Label
         {
@@ -57,7 +61,7 @@ internal sealed class ObjectMetadataBatchDialog : Form
             AutoSize = true,
             MaximumSize = new Size(660, 0),
             ForeColor = Color.DarkRed,
-            Text = "批量原地 Metadata 替换保持禁用：不能保证并发属性与保护状态安全。符合条件的 AWS 对象可在单个对象属性的 Metadata 页编辑快照并“另存为新对象”，不会修改源对象。",
+            Text = provider is { } selected ? ObjectMetadataRewritePolicy.WarningFor(selected) : ObjectMetadataRewritePolicy.Warning,
             Margin = new Padding(10, 3, 10, 8)
         };
         var metadataHeader = new FlowLayoutPanel
@@ -95,7 +99,7 @@ internal sealed class ObjectMetadataBatchDialog : Form
         actions.Controls.Add(cancel);
         actions.Controls.Add(ok);
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, AutoScroll = true };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -115,7 +119,7 @@ internal sealed class ObjectMetadataBatchDialog : Form
 
     public string? HeaderValue(string name)
     {
-        var value = _headers[name].Value.Text.Trim();
+        var value = _headers[name].Value.Text;
         return value.Length == 0 ? null : value;
     }
 
@@ -134,14 +138,15 @@ internal sealed class ObjectMetadataBatchDialog : Form
 
     public IReadOnlyDictionary<string, string> ReadMetadata()
     {
+        if (!_metadata.EndEdit()) throw new ArgumentException("请先完成 Metadata 单元格编辑。");
         var values = _metadata.Rows.Cast<DataGridViewRow>()
             .Where(row => !row.IsNewRow)
             .Select(row => new KeyValuePair<string, string>(
                 row.Cells[0].Value?.ToString()?.Trim() ?? string.Empty,
-                row.Cells[1].Value?.ToString()?.Trim() ?? string.Empty))
+                row.Cells[1].Value?.ToString() ?? string.Empty))
             .Where(pair => pair.Key.Length > 0 || pair.Value.Length > 0)
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-        return ObjectMetadataValidator.Validate(values);
+        return ObjectMetadataValidator.ValidatePreservingValues(values);
     }
 
     public ObjectWriteHeaders ApplyTo(ObjectProperties current)
@@ -153,7 +158,7 @@ internal sealed class ObjectMetadataBatchDialog : Form
             Applies("content-encoding") ? HeaderValue("content-encoding") : current.ContentEncoding,
             Applies("content-disposition") ? HeaderValue("content-disposition") : current.ContentDisposition,
             Applies("expires") ? ExpiresUtc : current.ExpiresUtc,
-            metadata).ValidateAndNormalize();
+            metadata).ValidateForMetadataCopy();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

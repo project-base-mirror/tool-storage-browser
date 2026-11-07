@@ -46,17 +46,18 @@ internal sealed partial class MainForm
                     await _storage.DownloadObjectVersionAsync(profile, bucket, entry.Key, original.VersionId, downloaded, transfer, token);
                 if (saved is not null && !string.Equals(saved.ETag, original.ETag, StringComparison.Ordinal))
                     throw new InvalidOperationException("读取期间远端对象发生变化，请关闭后重新预览。");
-                originalBytes = await File.ReadAllBytesAsync(downloaded, token);
-                if (originalBytes.LongLength > maximumBytes)
-                    throw new InvalidOperationException("预览实际下载大小超过限制。");
+                var downloadedBytes = await File.ReadAllBytesAsync(downloaded, token);
+                originalBytes = ObjectPreviewPolicy.DecodeObjectContent(downloadedBytes, original.ContentEncoding, maximumBytes);
                 var protectionReason = ObjectPreviewPolicy.EditingReadOnlyReason(profile.ServiceType, original);
                 var canEdit = protectionReason is null && ObjectPreviewPolicy.IsText(entry.Key) &&
-                    profile.ServiceType is S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2 &&
-                    saved is not null && !string.IsNullOrWhiteSpace(original.ETag) && string.IsNullOrWhiteSpace(original.ContentEncoding);
+                    saved is not null && !string.IsNullOrWhiteSpace(original.ETag);
                 var explanation = ObjectPreviewPolicy.IsImage(entry.Key)
                     ? "图片仅预览，最多 1600 万像素。"
                     : $"{(Path.GetExtension(entry.Key).Equals(".csv", StringComparison.OrdinalIgnoreCase) ? "CSV 仅显示前 200 行 / 50 列；编辑使用完整原文件。 " : "")}" +
-                      (canEdit ? "外部编辑后须确认上传；上传使用远端 ETag 条件，ETag 相同的更改无法原子区分。" : protectionReason ?? "此服务商/编码/对象身份不满足安全回传条件，仅可预览。");
+                      (canEdit ? (ObjectPreviewPolicy.UsesConditionalTextUpload(profile.ServiceType)
+                          ? "外部编辑后须确认上传；上传使用远端 ETag 条件，ETag 相同的属性更改无法原子区分。"
+                          : "可外部编辑并确认回传；写前核对对象，但此服务商未验证条件写入，检查后仍有并发覆盖窗口。")
+                          : protectionReason ?? "对象身份不满足回传条件，仅可预览。");
                 return new ObjectPreviewContent(entry.Key, originalBytes, canEdit, explanation);
             }, async token =>
             {
@@ -68,7 +69,12 @@ internal sealed partial class MainForm
                     ? await _storage.GetObjectTagsAsync(profile, bucket, entry.Key, original.VersionId, token)
                     : Array.Empty<ObjectTag>();
                 var headers = new ObjectWriteHeaders(original.ContentType, original.CacheControl, original.ContentEncoding,
-                    original.ContentDisposition, original.ExpiresUtc, original.Metadata, tags);
+                    original.ContentDisposition, original.ExpiresUtc, original.Metadata, tags)
+                {
+                    ContentLanguage = original.ContentLanguage,
+                    WebsiteRedirectLocation = original.WebsiteRedirectLocation,
+                    PreserveExistingValues = true
+                }.ValidatePreservingValues();
                 ObjectPreviewPolicy.DecodeText(originalBytes);
                 await File.WriteAllBytesAsync(editPath, originalBytes, token);
                 if (dialog is not null) dialog.EditedFilePath = editPath;
@@ -86,8 +92,12 @@ internal sealed partial class MainForm
                 var edited = await File.ReadAllBytesAsync(editPath, token);
                 ObjectPreviewPolicy.DecodeText(edited);
                 if (SHA256.HashData(originalBytes).AsSpan().SequenceEqual(SHA256.HashData(edited))) return;
+                var conditionalWrite = ObjectPreviewPolicy.UsesConditionalTextUpload(profile.ServiceType);
+                var writeProtection = conditionalWrite
+                    ? "使用 ETag 条件写入，冲突时不会降级为无条件覆盖。ETag 相同的属性更改仍无法原子区分。"
+                    : "写前重新检查内容身份、Header、Metadata 与已读取的标签。此服务商未验证条件写入，检查后发生的并发修改仍可能被覆盖；如有其他程序写此 Key，请取消并另存。";
                 if (dialog is null || dialog.IsDisposed || MessageBox.Show(dialog,
-                        $"将编辑后的文件上传并替换 {bucket}/{entry.Key}？\n\n仅当远端 ETag 仍匹配时写入，不会自动重试无条件覆盖。\n\n这是替换写入：保留 Content-Type、Cache-Control、Content-Disposition、Expires、用户元数据和标签；已报告的 AES256 加密会显式保留；KMS、客户密钥和对象锁保护不在此流程中编辑。ACL 等其他未列出的独立配置按服务端写入规则处理，不承诺原样保留。",
+                        $"将编辑后的文件上传并替换 {bucket}/{entry.Key}？\n\n{writeProtection}\n\n这是替换写入：保留 Content-Type、Cache-Control、Content-Encoding、Content-Disposition、Content-Language、网站重定向、Expires、用户元数据和标签；已报告的 AES256 加密按服务商协议保留。KMS、客户密钥和对象锁保护不在此流程中编辑。ACL 等其他未列出的独立配置按服务端写入规则处理，不承诺原样保留。",
                         "确认上传编辑内容", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
                 token.ThrowIfCancellationRequested();
                 var current = await _storage.GetObjectPropertiesAsync(profile, bucket, entry.Key, token);
@@ -100,21 +110,24 @@ internal sealed partial class MainForm
                 }
                 // Stable upload snapshot: do not race subsequent saves to the editor's path.
                 var uploadPath = Path.Combine(root, "confirmed-upload.txt");
-                await File.WriteAllBytesAsync(uploadPath, edited, token);
+                await File.WriteAllBytesAsync(uploadPath,
+                    ObjectPreviewPolicy.EncodeObjectContent(edited, original.ContentEncoding), token);
                 var transfer = PreviewTransfer(ObjectPreviewPolicy.TextLimit) with
                 {
                     Options = new TransferExecutionOptions
                     {
                         MaximumDownloadBytes = ObjectPreviewPolicy.TextLimit,
-                        ExpectedDestinationETag = original.ETag,
-                        RequireSseS3Encryption = ObjectPreviewPolicy.RequiresSseS3Encryption(original),
+                        ExpectedDestinationETag = conditionalWrite ? original.ETag : null,
+                        // R2 encrypts stored objects automatically and rejects SSE-S3 request headers.
+                        RequireSseS3Encryption = profile.ServiceType != S3ServiceType.CloudflareR2 &&
+                            ObjectPreviewPolicy.RequiresSseS3Encryption(original),
                         AllowDestinationOverwrite = true
                     }
                 };
                 await _storage.UploadFileAsync(profile, bucket, entry.Key, uploadPath,
                     ObjectPreviewPolicy.ExistingStorageClass(original.StorageClass), headers, transfer, token);
                 uploadedBytes = edited;
-                MessageBox.Show(dialog, "编辑内容已通过条件写入上传。", "上传完成");
+                MessageBox.Show(dialog, conditionalWrite ? "编辑内容已通过条件写入上传。" : "编辑内容已上传；此服务商的写前检查不是原子条件写入。", "上传完成");
             });
             using (dialog)
             {

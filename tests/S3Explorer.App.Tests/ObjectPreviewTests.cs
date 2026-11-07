@@ -8,6 +8,36 @@ namespace S3Explorer.App.Tests;
 public sealed class ObjectPreviewTests
 {
     [Theory]
+    [InlineData(null)]
+    [InlineData("identity")]
+    [InlineData("gzip")]
+    [InlineData("br")]
+    [InlineData("deflate")]
+    [InlineData("gzip, br")]
+    public void EncodedTextCanBeEditedAndReturnedWithoutChangingItsEncoding(string? encoding)
+    {
+        var bytes = Encoding.UTF8.GetBytes("hello 你好\n");
+        var encoded = ObjectPreviewPolicy.EncodeObjectContent(bytes, encoding);
+        Assert.Equal(bytes, ObjectPreviewPolicy.DecodeObjectContent(encoded, encoding, 1024));
+        Assert.Throws<InvalidDataException>(() => ObjectPreviewPolicy.DecodeObjectContent(encoded, encoding, 1));
+    }
+
+    [Fact]
+    public void OrdinaryProviderTextAndAdditionalHeadersAreNotBlanketReadOnly()
+    {
+        var original = new ObjectProperties("bucket", "key", 3, null, "etag", "text/plain", null, null, new Dictionary<string, string>())
+        { ContentLanguage = "en-US", WebsiteRedirectLocation = "/target" };
+        foreach (var provider in Enum.GetValues<S3ServiceType>())
+            Assert.Null(ObjectPreviewPolicy.EditingReadOnlyReason(provider, original));
+        MainForm.EnsurePreviewIdentityUnchanged(original, original);
+        Assert.True(ObjectPreviewPolicy.UsesConditionalTextUpload(S3ServiceType.AmazonS3));
+        Assert.True(ObjectPreviewPolicy.UsesConditionalTextUpload(S3ServiceType.MinIO));
+        Assert.True(ObjectPreviewPolicy.UsesConditionalTextUpload(S3ServiceType.CloudflareR2));
+        Assert.False(ObjectPreviewPolicy.UsesConditionalTextUpload(S3ServiceType.Custom));
+        Assert.Throws<NotSupportedException>(() => ObjectPreviewPolicy.DecodeObjectContent([1], "unknown", 1024));
+    }
+
+    [Theory]
     [InlineData("report.JSON", 2097152L)]
     [InlineData("report.csv", 2097152L)]
     [InlineData("page.html", 2097152L)]
@@ -94,7 +124,7 @@ public sealed class ObjectPreviewTests
         Assert.False(ObjectPreviewPolicy.RequiresSseS3Encryption(normal));
         Assert.Null(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.AmazonS3, sse));
         Assert.Null(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.MinIO, sse));
-        Assert.NotNull(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.CloudflareR2, sse));
+        Assert.Null(ObjectPreviewPolicy.EditingReadOnlyReason(S3ServiceType.CloudflareR2, sse));
         var protectedObjects = new[]
         {
             normal with { ServerSideEncryptionMethod = "aws:kms" },
@@ -122,8 +152,6 @@ public sealed class ObjectPreviewTests
         var normal = new ObjectProperties("bucket", "key", 3, null, "etag", "text/plain", null, "v1", new Dictionary<string, string>());
         ObjectProperties[] unsafeObjects =
         [
-            normal with { ContentLanguage = "en" },
-            normal with { WebsiteRedirectLocation = "/target" },
             normal with { MissingMetadataCount = 1 },
             normal with { ExpiresHeader = "not-a-date" }
         ];

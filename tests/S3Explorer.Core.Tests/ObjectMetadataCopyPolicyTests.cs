@@ -12,7 +12,6 @@ public sealed class ObjectMetadataCopyPolicyTests
     {
         foreach (var provider in Enum.GetValues<S3ServiceType>())
         {
-            Assert.False(S3ProviderCapabilityRegistry.For(provider).Object.MetadataRewrite.Supported);
             Assert.Equal(provider == S3ServiceType.AmazonS3, ObjectMetadataCopyPolicy.For(provider, Source).Supported);
         }
     }

@@ -9,7 +9,8 @@
       Scope="perMachine"
       UpgradeCode="A4A79148-53A1-4EAB-ADE4-B496E9641BB4">
     <SummaryInformation Description="S3 Explorer Windows object storage manager" />
-    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的 S3 Explorer。" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的 S3 Explorer。" />
+    <!-- Version uses exactly three fields; same-version flavor switches replace the prior product. -->
     <!-- Remove the prior product inside the MSI transaction so failure can restore it. -->
     <Property Id="APPLICATIONFOLDER" Secure="yes" />
     <Property Id="PREVIOUSINSTALLLOCATION" Secure="yes">
@@ -20,6 +21,20 @@
     <SetProperty Id="APPLICATIONFOLDER" Value="[PREVIOUSINSTALLLOCATION]"
         Before="CostFinalize" Sequence="both"
         Condition="NOT APPLICATIONFOLDER AND PREVIOUSINSTALLLOCATION" />
+    <!-- v0.8.8/v0.8.9 updaters append \. to the installed directory. MSI rejects
+         that component at CostFinalize (1324), before the new updater is installed.
+         Type 51 actions repair only the exact registered location plus the legacy
+         suffix. Never replace a different explicit destination. Run in both sequences
+         so /qn upgrades and interactive setup have the same early protection. -->
+    <SetProperty Id="LegacyUpdaterLocation" Value="[PREVIOUSINSTALLLOCATION]."
+        Action="BuildLegacyUpdaterLocation" After="AppSearch" Sequence="both"
+        Condition="PREVIOUSINSTALLLOCATION" />
+    <SetProperty Id="LegacyUpdaterLocationWithoutSlash" Value="[PREVIOUSINSTALLLOCATION]\."
+        Action="BuildLegacyUpdaterLocationWithoutSlash" After="BuildLegacyUpdaterLocation" Sequence="both"
+        Condition="PREVIOUSINSTALLLOCATION" />
+    <SetProperty Id="APPLICATIONFOLDER" Value="[PREVIOUSINSTALLLOCATION]"
+        Action="RestoreLegacyUpdaterLocation" After="BuildLegacyUpdaterLocationWithoutSlash" Sequence="both"
+        Condition="WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND APPLICATIONFOLDER &gt;&gt; &quot;\.&quot; AND (APPLICATIONFOLDER ~= LegacyUpdaterLocation OR APPLICATIONFOLDER ~= LegacyUpdaterLocationWithoutSlash)" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="ARPURLINFOABOUT" Value="https://project-base-mirror.github.io/tool-storage-browser/" />

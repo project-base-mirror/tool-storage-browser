@@ -46,6 +46,14 @@ public static class ObjectTransferPlanner
     }
 
     public static void ValidateDestination(
+        ConnectionProfile sourceProfile, string sourceBucket, string sourceKey, bool isDirectory,
+        ConnectionProfile destinationProfile, string destinationBucket, string destinationKey)
+    {
+        if (S3StorageIdentity.IsSameStorage(sourceProfile, destinationProfile))
+            ValidateDestination(sourceBucket, sourceKey, isDirectory, destinationBucket, destinationKey);
+    }
+
+    public static void ValidateDestination(
         string sourceBucket,
         string sourceKey,
         bool isDirectory,

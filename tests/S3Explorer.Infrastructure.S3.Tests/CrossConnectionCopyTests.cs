@@ -29,6 +29,32 @@ public sealed class CrossConnectionCopyTests
             token ?? TestContext.Current.CancellationToken);
 
     [Fact]
+    public async Task RegionalAliasSelfCopyFailsBeforeAnySourceOrDestinationRequest()
+    {
+        using var source = new Client(true);
+        using var destination = new Client(false);
+        var other = Source with { Id = Guid.NewGuid(), Endpoint = "https://s3.eu-west-1.amazonaws.com" };
+        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() =>
+            S3StorageService.CopyObjectAcrossConnectionsAsync(source, Source, "bucket", "key",
+                destination, other, "bucket", "key", Context(), TestContext.Current.CancellationToken));
+        Assert.Equal(TransferFailureCategory.Conflict, failure.Failure.Category);
+        Assert.Equal(0, source.HeadReads + destination.HeadReads);
+    }
+
+    [Fact]
+    public async Task DistinctHostsOnSameProxyAllowSameBucketAndKey()
+    {
+        using var source = new Client(true);
+        using var destination = new Client(false) { ExpectedBucket = "source" };
+        var first = Source with { Endpoint = "https://proxy.test", CustomHostHeader = "one.test" };
+        var second = Destination with { Endpoint = "https://proxy.test", CustomHostHeader = "two.test" };
+        await S3StorageService.CopyObjectAcrossConnectionsAsync(source, first, "source", "key",
+            destination, second, "source", "key", Context(), TestContext.Current.CancellationToken);
+        Assert.Equal(source.Length, destination.UploadedBytes);
+        Assert.Single(destination.Puts);
+    }
+
+    [Fact]
     public async Task DistinctClientsPreserveBytesMetadataAndTagsWithoutServerSideCopyOrDelete()
     {
         using var source = new Client(true) { Length = 37 };
@@ -392,6 +418,7 @@ public sealed class CrossConnectionCopyTests
     private sealed class Client(bool source) : AmazonS3Client(new AnonymousAWSCredentials(),
         new AmazonS3Config { ServiceURL = source ? "http://127.0.0.1:1" : "http://127.0.0.1:2" })
     {
+        public string? ExpectedBucket;
         public long Length = 31;
         public string? ETag = "source-etag";
         public int TagReads;
@@ -418,7 +445,7 @@ public sealed class CrossConnectionCopyTests
 
         public override Task<GetObjectMetadataResponse> GetObjectMetadataAsync(GetObjectMetadataRequest request, CancellationToken cancellationToken = default)
         {
-            Assert.Equal(source ? "source" : "destination", request.BucketName);
+            Assert.Equal(ExpectedBucket ?? (source ? "source" : "destination"), request.BucketName);
             HeadReads++;
             if (!source && (ExistingDestination || DestinationAppearsAfterParts && !Remote.IsEmpty)) return Task.FromResult(new GetObjectMetadataResponse { ContentLength = Length, ETag = "destination-etag", VersionId = "destination-version" });
             if (!source) throw new AmazonS3Exception("not found") { StatusCode = HttpStatusCode.NotFound };

@@ -102,10 +102,12 @@ public sealed class GitHubUpdateCheckerTests
     }
 
     [Fact]
-    public async Task UsesPagesBeforeGitHubApiAndWritesCache()
+    public async Task ChecksBothSourcesPrefersPagesOnEqualVersionAndWritesCache()
     {
         var cachePath = TemporaryCachePath();
-        var handler = new QueueHandler(JsonResponse(HttpStatusCode.OK, Manifest("v0.5.5")));
+        var handler = new QueueHandler(
+            JsonResponse(HttpStatusCode.OK, Manifest("v0.5.5")),
+            JsonResponse(HttpStatusCode.OK, Release("v0.5.5")));
         try
         {
             using var client = new HttpClient(handler);
@@ -115,7 +117,7 @@ public sealed class GitHubUpdateCheckerTests
 
             Assert.Equal(UpdateReleaseSource.PagesManifest, release.Source);
             Assert.True(File.Exists(cachePath));
-            Assert.Single(handler.Requests);
+            Assert.Equal(2, handler.Requests.Count);
         }
         finally
         {
@@ -145,6 +147,62 @@ public sealed class GitHubUpdateCheckerTests
         {
             DeleteCacheDirectory(cachePath);
         }
+    }
+
+    [Fact]
+    public async Task HangingPagesCannotConsumeTheApiFallbackBudget()
+    {
+        var cachePath = TemporaryCachePath();
+        var apiRequested = false;
+        try
+        {
+            using var client = new HttpClient(new CallbackHandler(async (request, token) =>
+            {
+                if (request.RequestUri!.AbsoluteUri == ProjectLinks.UpdateManifest)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                apiRequested = true;
+                return JsonResponse(HttpStatusCode.OK, Release("v0.5.6"));
+            }));
+            using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromMilliseconds(100));
+            var release = await checker.GetLatestAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.True(apiRequested);
+            Assert.Equal(UpdateReleaseSource.GitHubApi, release.Source);
+            Assert.Equal("v0.5.6", release.TagName);
+        }
+        finally { DeleteCacheDirectory(cachePath); }
+    }
+
+    [Fact]
+    public async Task HealthyButStalePagesDoesNotHideANewerGitHubRelease()
+    {
+        var cachePath = TemporaryCachePath();
+        try
+        {
+            using var client = new HttpClient(new QueueHandler(
+                JsonResponse(HttpStatusCode.OK, Manifest("v0.5.5")),
+                JsonResponse(HttpStatusCode.OK, Release("v0.5.6"))));
+            using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(2));
+            var release = await checker.GetLatestAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(UpdateReleaseSource.GitHubApi, release.Source);
+            Assert.Equal("v0.5.6", release.TagName);
+        }
+        finally { DeleteCacheDirectory(cachePath); }
+    }
+
+    [Fact]
+    public async Task UserCancellationCancelsBothSourcesRatherThanReturningCache()
+    {
+        var cachePath = TemporaryCachePath();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var client = new HttpClient(new CallbackHandler(async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new InvalidOperationException("Unreachable");
+        }));
+        using var checker = new GitHubUpdateChecker(client, cachePath, TimeSpan.FromSeconds(10));
+        cancel.CancelAfter(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => checker.GetLatestAsync(cancel.Token));
     }
 
     [Fact]
@@ -365,6 +423,12 @@ public sealed class GitHubUpdateCheckerTests
         var directory = Path.GetDirectoryName(cachePath);
         if (directory is not null && Directory.Exists(directory))
             Directory.Delete(directory, recursive: true);
+    }
+
+    private sealed class CallbackHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> callback) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            callback(request, cancellationToken);
     }
 
     private sealed class QueueHandler(params HttpResponseMessage[] responses) : HttpMessageHandler

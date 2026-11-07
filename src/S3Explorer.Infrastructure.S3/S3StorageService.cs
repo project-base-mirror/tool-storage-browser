@@ -333,6 +333,7 @@ public sealed partial class S3StorageService : IS3StorageService
                     ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
                     InputStream = throttled,
                     AutoCloseStream = false,
+                    WebsiteRedirectLocation = headers.WebsiteRedirectLocation,
                     // The SDK serializes an empty list as x-amz-tagging: ""; omit it instead.
                     TagSet = headers.Tags is { Count: > 0 } ? [] : null
                 };
@@ -377,7 +378,7 @@ public sealed partial class S3StorageService : IS3StorageService
             return;
         }
         throw new TransferExecutionException(new TransferFailureInfo(
-            $"上传目标已存在：{key}；请选择覆盖、跳过或重命名。", TransferFailureCategory.Conflict));
+            $"传输目标已存在：{key}；请选择覆盖、跳过或重命名。", TransferFailureCategory.Conflict));
     }
 
     public async Task PutObjectAclAsync(
@@ -1050,6 +1051,7 @@ public sealed partial class S3StorageService : IS3StorageService
                 BucketName = bucket,
                 Key = key,
                 ServerSideEncryptionMethod = RequiredUploadEncryption(transferContext.Options),
+                WebsiteRedirectLocation = headers.WebsiteRedirectLocation,
                 // The SDK serializes an empty list as x-amz-tagging: ""; omit it instead.
                 TagSet = headers.Tags is { Count: > 0 } ? [] : null
             };
@@ -1275,6 +1277,7 @@ public sealed partial class S3StorageService : IS3StorageService
         List<Tag>? destinationTags,
         ObjectWriteHeaders source)
     {
+        destinationHeaders.ContentLanguage = source.ContentLanguage;
         destinationHeaders.ContentType = source.ContentType;
         destinationHeaders.CacheControl = source.CacheControl;
         destinationHeaders.ContentEncoding = source.ContentEncoding;
@@ -1292,6 +1295,7 @@ public sealed partial class S3StorageService : IS3StorageService
     }
 
     private static bool HasWriteHeaders(ObjectWriteHeaders headers) =>
+        headers.ContentLanguage is not null || headers.WebsiteRedirectLocation is not null ||
         headers.ContentType is not null || headers.CacheControl is not null ||
         headers.ContentEncoding is not null || headers.ContentDisposition is not null ||
         headers.ExpiresUtc is not null || headers.Metadata is { Count: > 0 } ||

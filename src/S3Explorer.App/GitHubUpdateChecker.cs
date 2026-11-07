@@ -78,15 +78,44 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
 
     public async Task<GitHubReleaseInfo> GetLatestAsync(CancellationToken cancellationToken = default)
     {
+        // Independent requests share a wall-clock budget, not a consumed token. A
+        // hanging Pages host must not prevent a healthy API response (or vice versa).
+        var results = await Task.WhenAll(
+            QuerySourceAsync(GetPagesManifestAsync, cancellationToken),
+            QuerySourceAsync(GetGitHubReleaseAsync, cancellationToken)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var latest = results.Where(result => result.Release is not null)
+            .Select(result => result.Release!)
+            .OrderByDescending(release => NormalizeVersion(release.Version))
+            .FirstOrDefault();
+        if (latest is not null)
+        {
+            await TrySaveCacheAsync(latest, cancellationToken).ConfigureAwait(false);
+            return latest;
+        }
+
+        var cached = await TryLoadCacheAsync(cancellationToken).ConfigureAwait(false);
+        if (cached is not null)
+            return cached;
+
+        var failures = results.Select(result => result.Error!).ToArray();
+        if (failures.All(exception => exception is OperationCanceledException))
+            throw new TimeoutException($"检查更新超过 {_checkTimeout.TotalSeconds:N0} 秒，且没有可用缓存。");
+
+        throw new InvalidOperationException(
+            "Pages 更新清单和 GitHub Release API 均不可用，且没有可用缓存。" +
+            Environment.NewLine + string.Join(Environment.NewLine, failures.Select(FriendlyFailure)));
+    }
+
+    private async Task<(GitHubReleaseInfo? Release, Exception? Error)> QuerySourceAsync(
+        Func<CancellationToken, Task<GitHubReleaseInfo>> query,
+        CancellationToken cancellationToken)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_checkTimeout);
-        var failures = new List<Exception>();
-
         try
         {
-            var release = await GetPagesManifestAsync(timeout.Token).ConfigureAwait(false);
-            await TrySaveCacheAsync(release, cancellationToken).ConfigureAwait(false);
-            return release;
+            return (await query(timeout.Token).ConfigureAwait(false), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -94,37 +123,8 @@ internal sealed partial class GitHubUpdateChecker : IDisposable
         }
         catch (Exception exception)
         {
-            failures.Add(exception);
+            return (null, exception);
         }
-
-        if (!timeout.IsCancellationRequested)
-        {
-            try
-            {
-                var release = await GetGitHubReleaseAsync(timeout.Token).ConfigureAwait(false);
-                await TrySaveCacheAsync(release, cancellationToken).ConfigureAwait(false);
-                return release;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                failures.Add(exception);
-            }
-        }
-
-        var cached = await TryLoadCacheAsync(cancellationToken).ConfigureAwait(false);
-        if (cached is not null)
-            return cached;
-
-        if (timeout.IsCancellationRequested)
-            throw new TimeoutException($"检查更新超过 {_checkTimeout.TotalSeconds:N0} 秒，且没有可用缓存。");
-
-        throw new InvalidOperationException(
-            "Pages 更新清单和 GitHub Release API 均不可用，且没有可用缓存。" +
-            Environment.NewLine + string.Join(Environment.NewLine, failures.Select(FriendlyFailure)));
     }
 
     private async Task<GitHubReleaseInfo> GetPagesManifestAsync(CancellationToken cancellationToken)

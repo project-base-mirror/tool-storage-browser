@@ -52,38 +52,39 @@ public sealed class S3ProviderCapabilityRegistryTests
     }
 
     [Fact]
-    public void AliyunKeepsTaggingButUnsafeMetadataRewriteIsDisabled()
+    public void AliyunUsesNativeMetadataRewriteWhileOtherCapabilitiesRemainConservative()
     {
         var capabilities = S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Object;
 
         Assert.True(capabilities.Tagging.Supported);
-        Assert.False(capabilities.MetadataRewrite.Supported);
+        Assert.True(capabilities.MetadataRewrite.Supported);
         Assert.False(capabilities.Acl.Supported);
     }
 
     [Fact]
-    public void AutomaticMoveRequiresVerifiedConditionalDelete()
+    public void AtomicDeleteCapabilityIsNotInventedForCompatibleProviders()
     {
         foreach (var provider in S3ProviderCapabilityRegistry.All)
             Assert.Equal(provider.ServiceType == S3ServiceType.AmazonS3, provider.ConditionalDelete.Supported);
     }
 
     [Fact]
-    public void SupabaseMoveExplainsSeparateNativeApiIdentityAndOwnership()
+    public void CompatibleMoveExplainsRecheckAndRemainingConcurrentWriteRisk()
     {
         var feature = S3ProviderCapabilityRegistry.For(S3ServiceType.SupabaseStorage).ConditionalDelete;
         Assert.False(feature.Supported);
-        Assert.Contains("应用外", feature.Reason, StringComparison.Ordinal);
-        Assert.Contains("REST 身份", feature.Reason, StringComparison.Ordinal);
-        Assert.Contains("5 GB", feature.Reason, StringComparison.Ordinal);
-        Assert.Contains("所有者", feature.Reason, StringComparison.Ordinal);
+        Assert.Contains("先复制", feature.Reason);
+        Assert.Contains("竞争窗口", feature.Reason);
+        Assert.Contains("停止", feature.Reason);
+        Assert.Contains("不是原子重命名", feature.Reason);
+        Assert.DoesNotContain("禁用", feature.Reason);
     }
 
     [Fact]
-    public void MetadataRewriteIsFailClosedUntilFullPreservationIsImplemented()
+    public void MetadataRewriteIsAvailableWithExplicitNonAtomicWarning()
     {
         Assert.All(S3ProviderCapabilityRegistry.All, provider =>
-            Assert.False(provider.Object.MetadataRewrite.Supported));
+            Assert.Equal(Enum.IsDefined(provider.ServiceType), provider.Object.MetadataRewrite.Supported));
     }
 
     [Fact]

@@ -84,6 +84,12 @@ public sealed record ObjectProperties(
     public bool? BucketKeyEnabled { get; init; }
     public DateTimeOffset? ObjectLockRetainUntilDate { get; init; }
     public string? ExpiresHeader { get; init; }
+    // Provider revision tokens are opaque decimal strings, never floating point.
+    public string? ProviderGeneration { get; init; }
+    public string? ProviderMetageneration { get; init; }
+    public string? ProviderCustomTime { get; init; }
+    public string? ProviderRetentionUntil { get; init; }
+    public string? ProviderObjectType { get; init; }
 }
 
 public sealed record TransferProgress(long TransferredBytes, long TotalBytes)
@@ -183,6 +189,8 @@ public interface IS3StorageService
             : Task.FromException(new NotSupportedException("此存储实现不能保证条件复制/移动，已停止操作。"));
     Task<ObjectProperties> GetObjectPropertiesAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task ReplaceObjectMetadataAsync(ConnectionProfile profile, string bucket, string key, string? versionId, ObjectWriteHeaders headers, CancellationToken cancellationToken);
+    Task ReplaceObjectMetadataAsync(ConnectionProfile profile, ObjectProperties expected, ObjectWriteHeaders headers, CancellationToken cancellationToken) =>
+        Task.FromException(new NotSupportedException("此存储实现不支持带快照冲突检查的 Metadata 编辑。"));
     Task SaveObjectMetadataCopyAsync(ConnectionProfile profile, ObjectProperties source, string destinationKey,
         ObjectWriteHeaders headers, CancellationToken cancellationToken) =>
         Task.FromException(new NotSupportedException("当前存储服务不支持将 Metadata 快照另存为新对象。"));

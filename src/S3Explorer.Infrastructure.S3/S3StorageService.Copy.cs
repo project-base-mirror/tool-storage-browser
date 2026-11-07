@@ -20,21 +20,19 @@ public sealed partial class S3StorageService
         context?.Options.Validate();
         var protectDestination = context is not null &&
             (!context.Options.AllowDestinationOverwrite || context.Options.ExpectedDestinationETag is not null);
-        // R2 uses provider-specific destination headers, not the AWS If-* headers.
-        // MinIO uses its verified conditional multipart completion instead.
-        if (protectDestination && profile.ServiceType is not (S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2))
+        // Retain verified atomic conditions where available. Other compatible providers
+        // use the same best-effort existence check as ordinary uploads; do not disable
+        // normal create-only copying merely because a vendor lacks AWS's headers.
+        var conditionalDestination = profile.ServiceType is S3ServiceType.AmazonS3 or S3ServiceType.MinIO or S3ServiceType.CloudflareR2;
+        if (!conditionalDestination && context?.Options.ExpectedDestinationETag is not null)
             throw new TransferExecutionException(new TransferFailureInfo(
-                profile.ServiceType == S3ServiceType.SupabaseStorage
-                    ? "当前 Supabase S3 接口未提供目标条件复制保证，尚未写入目标。≤5 GiB 对象可明确选择覆盖后复制并保留源对象；需要不覆盖目标时，可在应用外使用 Supabase 原生复制 API（≤5 GB，需单独配置 REST 身份，新对象所有者会变为操作发起人）。"
-                    : "此服务商尚未验证原子条件复制；为避免覆盖目标已停止操作。请选择其他目标或明确选择覆盖。",
-                TransferFailureCategory.Validation, Retryable: false));
-        var conditionalDelete = S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete;
-        if (move && !conditionalDelete.Supported)
+                "此服务商不支持按指定 ETag 条件替换目标，未写入目标。", TransferFailureCategory.Validation));
+        var conditionalDelete = S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete.Supported;
+        var relayCheckpoint = context?.MultipartCheckpoint?.CopySourceProfileId == profile.Id;
+        if (profile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage &&
+            context?.MultipartCheckpoint is not null && !relayCheckpoint)
             throw new TransferExecutionException(new TransferFailureInfo(
-                conditionalDelete.Reason, TransferFailureCategory.Validation, Retryable: false));
-        if (profile.ServiceType == S3ServiceType.CloudflareR2 && context?.MultipartCheckpoint is not null)
-            throw new TransferExecutionException(new TransferFailureInfo(
-                "R2 当前仅支持单次条件复制，不能恢复旧分片复制断点。请先核对目标并取消旧任务清理分片，再新建复制任务；源对象会保留。",
+                "旧服务端分片复制断点不能转换为本机中转；请取消旧任务清理分片后重新复制。",
                 TransferFailureCategory.Validation, Retryable: false));
         try
         {
@@ -44,6 +42,8 @@ public sealed partial class S3StorageService
                 Key = sourceKey,
                 VersionId = context?.MultipartCheckpoint?.CopySourceVersionId
             }, cancellationToken).ConfigureAwait(false);
+            if (profile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+                source.VersionId = null;
             if (string.IsNullOrWhiteSpace(source.ETag))
                 throw new TransferExecutionException(new TransferFailureInfo(
                     "源对象没有可用于条件复制的 ETag，已停止操作。", TransferFailureCategory.Conflict));
@@ -57,20 +57,20 @@ public sealed partial class S3StorageService
                 throw new TransferExecutionException(new TransferFailureInfo(
                     "复制断点与当前来源或目标不一致，请取消旧任务清理分片后重新复制。", TransferFailureCategory.Conflict));
 
-            if (profile.ServiceType == S3ServiceType.SupabaseStorage && source.ContentLength > MaximumSingleCopyBytes)
-                EnsureMultipartCopySourcePreconditions(profile);
-            if (profile.ServiceType == S3ServiceType.CloudflareR2 && source.ContentLength > MaximumSingleCopyBytes)
-                throw new TransferExecutionException(new TransferFailureInfo(
-                    "R2 当前仅支持 ≤5 GiB 的单次条件复制；分片复制不能可靠保护源内容，未写入目标。可下载后另行上传并核对内容与属性，保留源对象。",
-                    TransferFailureCategory.Validation, Retryable: false));
-
+            var relay = relayCheckpoint ||
+                (protectDestination && profile.ServiceType == S3ServiceType.MinIO && !profile.EnableMultipartCopy && source.ContentLength > 0) ||
+                (source.ContentLength > MaximumSingleCopyBytes &&
+                 (!profile.EnableMultipartCopy || profile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage));
+            if (!conditionalDestination && protectDestination && saved?.CopyCompleted != true)
+                await CheckUploadDestinationAsync(client, destinationBucket, destinationKey, context!, cancellationToken)
+                    .ConfigureAwait(false);
             var copyTags = S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.Tagging.Supported;
-            if (protectDestination && profile.ServiceType == S3ServiceType.MinIO &&
-                source.ContentLength > 0 && !profile.EnableMultipartCopy)
-                throw new TransferExecutionException(new TransferFailureInfo(
-                    "MinIO 的非空对象非覆盖复制需要启用分片复制，以便在完成时原子检查目标。",
-                    TransferFailureCategory.Validation, Retryable: false));
-            if (saved is null && protectDestination && profile.ServiceType == S3ServiceType.MinIO &&
+            if (relay)
+            {
+                await RelayCopyAsync(client, profile, sourceBucket, sourceKey, destinationBucket,
+                    destinationKey, context, cancellationToken).ConfigureAwait(false);
+            }
+            else if (saved is null && protectDestination && profile.ServiceType == S3ServiceType.MinIO &&
                 source.ContentLength == 0)
             {
                 await CopyEmptyObjectConditionallyAsync(client, profile, sourceBucket, sourceKey,
@@ -86,24 +86,32 @@ public sealed partial class S3StorageService
             {
                 EnsureMultipartCopySourcePreconditions(profile);
                 await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket,
-                    destinationKey, source, copyTags, cancellationToken, context).ConfigureAwait(false);
+                    destinationKey, source, copyTags, cancellationToken, context, conditionalDestination).ConfigureAwait(false);
             }
             else
             {
                 try
                 {
+                    if (!conditionalDestination && protectDestination)
+                        await CheckUploadDestinationAsync(client, destinationBucket, destinationKey, context!, cancellationToken)
+                            .ConfigureAwait(false);
                     await CopyObjectSimpleAsync(client, sourceBucket, sourceKey, destinationBucket,
-                        destinationKey, source, cancellationToken, context?.Options,
+                        destinationKey, source, cancellationToken, conditionalDestination ? context?.Options : null,
                         useSourceVersion: profile.ServiceType is not (S3ServiceType.SupabaseStorage or S3ServiceType.CloudflareR2),
                         useR2DestinationConditions: profile.ServiceType == S3ServiceType.CloudflareR2).ConfigureAwait(false);
                 }
                 catch (AmazonS3Exception exception) when (
-                    profile.ServiceType != S3ServiceType.CloudflareR2 &&
-                    profile.EnableMultipartCopy && S3CompatibilityPolicy.RequiresMultipartCopy(exception))
+                    S3CompatibilityPolicy.RequiresMultipartCopy(exception))
                 {
-                    EnsureMultipartCopySourcePreconditions(profile);
-                    await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket,
-                        destinationKey, source, copyTags, cancellationToken, context).ConfigureAwait(false);
+                    if (!profile.EnableMultipartCopy || profile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+                        await RelayCopyAsync(client, profile, sourceBucket, sourceKey, destinationBucket,
+                            destinationKey, context, cancellationToken).ConfigureAwait(false);
+                    else
+                    {
+                        EnsureMultipartCopySourcePreconditions(profile);
+                        await MultipartCopyAsync(client, sourceBucket, sourceKey, destinationBucket,
+                            destinationKey, source, copyTags, cancellationToken, context, conditionalDestination).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -136,13 +144,25 @@ public sealed partial class S3StorageService
             if (!move) return;
             try
             {
+                // A successful copy must precede deletion. Providers without atomic delete
+                // conditions get a last-moment source recheck; the UI discloses that this
+                // cannot close the race and concurrent writers must be stopped.
+                var current = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+                {
+                    BucketName = sourceBucket, Key = sourceKey
+                }, cancellationToken).ConfigureAwait(false);
+                if (profile.ServiceType is S3ServiceType.CloudflareR2 or S3ServiceType.SupabaseStorage)
+                    current.VersionId = null;
+                if (current.ETag != source.ETag || current.VersionId != source.VersionId ||
+                    current.ContentLength != source.ContentLength)
+                    throw CrossConnectionConflict("复制已完成，但源对象已变化，未删除源对象。");
                 // Deliberately omit VersionId: preserve normal move semantics (a delete marker in
                 // versioned buckets), never permanently delete an old version as a side effect.
                 await client.DeleteObjectAsync(new DeleteObjectRequest
                 {
                     BucketName = sourceBucket,
                     Key = sourceKey,
-                    IfMatch = source.ETag
+                    IfMatch = conditionalDelete ? source.ETag : null
                 }, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -150,7 +170,7 @@ public sealed partial class S3StorageService
                 var failure = ToTransferException(exception).Failure;
                 throw new TransferExecutionException(failure with
                 {
-                    Message = "复制已完成，但源对象条件删除未确认；未执行无条件删除，请刷新核对。" + failure.SafeMessage,
+                    Message = "复制已完成，但源对象删除未确认，请刷新核对；不要直接重试移动。" + failure.SafeMessage,
                     Retryable = false
                 }, exception);
             }
@@ -161,13 +181,26 @@ public sealed partial class S3StorageService
         }
     }
 
+    private static Task RelayCopyAsync(IAmazonS3 client, ConnectionProfile profile,
+        string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
+        TransferOperationContext? context, CancellationToken cancellationToken)
+    {
+        // Reuse the bounded, resumable GET + upload path rather than unsupported
+        // UploadPartCopy source conditions. Both bandwidth lanes remain effective.
+        context ??= new TransferOperationContext(
+            new TransferExecutionOptions { RetainFailedTransferState = false },
+            new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
+        return CopyObjectAcrossConnectionsAsync(client, profile, sourceBucket, sourceKey,
+            client, profile, destinationBucket, destinationKey, context, cancellationToken);
+    }
+
     private static void EnsureMultipartCopySourcePreconditions(ConnectionProfile profile)
     {
         // Neither provider supports immutable S3 versions or the multipart source
         // condition. An arbitrary VersionId response cannot establish safety.
         if (profile.ServiceType is S3ServiceType.SupabaseStorage or S3ServiceType.CloudflareR2)
             throw new TransferExecutionException(new TransferFailureInfo(
-                "此服务商不支持分片复制的源 If-Match 条件，也没有可寻址的固定版本；为避免混合内容已停止分片复制。请下载后另行上传并核对内容与属性，保留源对象；这不是自动移动。",
+                "此服务商不支持安全的服务端分片复制；请重新建立任务使用本机中转复制。",
                 TransferFailureCategory.Validation, Retryable: false));
     }
 
@@ -195,7 +228,7 @@ public sealed partial class S3StorageService
         {
             // R2 checks the source when selecting its snapshot and the destination
             // when committing it. They are NOT a joint two-key transaction. This
-            // is a source-retaining copy only; same-key copies and moves are refused.
+            // is not an atomic move; source deletion is a separate, disclosed step.
             // Keep metadata server-side, including any fields omitted from HEAD.
             request.MetadataDirective = S3MetadataDirective.COPY;
             if (options?.AllowDestinationOverwrite == false)
@@ -260,7 +293,7 @@ public sealed partial class S3StorageService
     private static async Task MultipartCopyAsync(
         IAmazonS3 client, string sourceBucket, string sourceKey, string destinationBucket,
         string destinationKey, GetObjectMetadataResponse source, bool copyTags,
-        CancellationToken cancellationToken, TransferOperationContext? context = null)
+        CancellationToken cancellationToken, TransferOperationContext? context = null, bool conditionalDestination = true)
     {
         var objectSize = source.ContentLength;
         if (objectSize <= 0)
@@ -357,10 +390,13 @@ public sealed partial class S3StorageService
                 }
                 finally { checkpointGate.Release(); }
             }).ConfigureAwait(false);
+            if (!conditionalDestination && context?.Options.AllowDestinationOverwrite == false)
+                await CheckUploadDestinationAsync(client, destinationBucket, destinationKey, context, cancellationToken)
+                    .ConfigureAwait(false);
             var completion = await client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
             {
                 BucketName = destinationBucket, Key = destinationKey, UploadId = uploadId,
-                IfNoneMatch = context?.Options.AllowDestinationOverwrite == false ? "*" : null,
+                IfNoneMatch = conditionalDestination && context?.Options.AllowDestinationOverwrite == false ? "*" : null,
                 IfMatch = context?.Options.ExpectedDestinationETag,
                 PartETags = completed.Values.OrderBy(part => part.PartNumber)
                     .Select(part => new PartETag(part.PartNumber, part.ETag)).ToList()

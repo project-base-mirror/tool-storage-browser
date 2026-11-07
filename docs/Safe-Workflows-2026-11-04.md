@@ -1,5 +1,7 @@
 # 安全工作流继续修复（2026-11-04）
 
+> 2026-11-07 更新：本文保留 11 月 4 日修复时的边界；原地/批量 Metadata 与文本编辑的后续支持范围见 [当前编辑说明](Editing-and-Cdn-Fixes-2026-11-07.md)。固定版本另存限制未改变。
+
 [PR #4](https://github.com/project-base-mirror/tool-storage-browser/pull/4) 已合入 `main`，提交 `f5fb5ecf54d6f43504c7277185426749999f63cd`，合并树与经过测试的 `55c3d06` 一致；[合并后 Validate](https://github.com/project-base-mirror/tool-storage-browser/actions/runs/41810037441) 通过。本记录随后续代码维护，不表示已经发布版本；是否合并及最终测试结果以对应提交和 PR 为准。
 
 ## 已有功能继续可用

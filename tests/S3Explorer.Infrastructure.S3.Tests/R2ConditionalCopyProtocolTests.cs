@@ -169,14 +169,14 @@ public sealed class R2ConditionalCopyProtocolTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task LargerObjectsAreRejectedDespiteAdvertisedVersionOrMultipartSetting(bool multipartEnabled)
+    public async Task LargeRelayRefusesUnrecoverableMetadataInsteadOfDroppingIt(bool multipartEnabled)
     {
         using var transport = new Transport(_ => SourceHead(MaximumSingleCopyBytes + 1));
         var failure = await Assert.ThrowsAsync<TransferExecutionException>(() => Run(transport, Context(),
             profile: Profile with { EnableMultipartCopy = multipartEnabled }));
         Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
         Assert.False(failure.Failure.Retryable);
-        Assert.Equal(HttpMethod.Head, Assert.Single(transport.Requests).Method);
+        Assert.Equal(new[] { HttpMethod.Head, HttpMethod.Head }, transport.Requests.Select(item => item.Method));
     }
 
     [Theory]
@@ -204,13 +204,13 @@ public sealed class R2ConditionalCopyProtocolTests
     [InlineData(HttpStatusCode.BadRequest, "EntityTooLarge")]
     [InlineData(HttpStatusCode.BadRequest, "InvalidRequest")]
     [InlineData(HttpStatusCode.NotImplemented, "NotImplemented")]
-    public async Task RejectedSingleCopyNeverFallsBackToMultipartOrDropsConditions(HttpStatusCode status, string code)
+    public async Task FailedCopyDoesNotLoseHiddenMetadataByRelayingIncompleteHead(HttpStatusCode status, string code)
     {
         using var transport = new Transport(request => request.Method == HttpMethod.Head
             ? SourceHead(12) : Error(status, code));
         await Assert.ThrowsAsync<TransferExecutionException>(() => Run(transport, Context()));
         Assert.Equal(HttpMethod.Head, transport.Requests[0].Method);
-        Assert.All(transport.Requests.Skip(1), request =>
+        Assert.All(transport.Requests.Where(item => item.Method == HttpMethod.Put), request =>
         {
             Assert.Equal(HttpMethod.Put, request.Method);
             Assert.Equal("*", request.Headers["cf-copy-destination-if-none-match"]);
@@ -263,12 +263,48 @@ public sealed class R2ConditionalCopyProtocolTests
     }
 
     [Fact]
-    public async Task AutomaticMoveIsRejectedBeforeAnyNetworkAccess()
+    public async Task MoveCopiesThenRechecksSourceBeforeOrdinaryDelete()
     {
-        using var transport = new Transport(_ => throw new InvalidOperationException("No request should be sent."));
-        var failure = await Assert.ThrowsAsync<TransferExecutionException>(() => Run(transport, Context(), move: true));
-        Assert.Equal(TransferFailureCategory.Validation, failure.Failure.Category);
-        Assert.Empty(transport.Requests);
+        using var transport = new Transport(request => request.Method == HttpMethod.Head ? SourceHead(12) :
+            request.Method == HttpMethod.Delete ? new HttpResponseMessage(HttpStatusCode.NoContent) : Copied());
+        await Run(transport, Context(), move: true);
+        Assert.Equal(new[] { HttpMethod.Head, HttpMethod.Put, HttpMethod.Head, HttpMethod.Delete },
+            transport.Requests.Select(item => item.Method));
+        var delete = transport.Requests.Last();
+        Assert.DoesNotContain("If-Match", delete.Headers.Keys);
+        Assert.DoesNotContain("versionId", delete.Uri.Query);
+    }
+
+    [Fact]
+    public async Task SingleCopyLimitFallsBackToConditionalGetAndPutWithoutDroppingDestinationCondition()
+    {
+        using var transport = new Transport(request =>
+        {
+            if (request.Method == HttpMethod.Head)
+            {
+                var head = SourceHead(12);
+                head.Headers.Remove("x-amz-missing-meta");
+                return head;
+            }
+            if (request.Method == HttpMethod.Put && Header(request, "x-amz-copy-source") is not null)
+                return Error(HttpStatusCode.BadRequest, "EntityTooLarge");
+            if (request.Method == HttpMethod.Get)
+            {
+                var get = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[12]) };
+                get.Headers.TryAddWithoutValidation("ETag", SourceEtag);
+                return get;
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+        });
+        await Run(transport, Context());
+        var get = Assert.Single(transport.Requests, item => item.Method == HttpMethod.Get);
+        Assert.Equal(SourceEtag, get.Headers["If-Match"]);
+        Assert.DoesNotContain("versionId", get.Uri.Query);
+        var put = transport.Requests.Last();
+        Assert.Equal(HttpMethod.Put, put.Method);
+        Assert.Equal("*", put.Headers["If-None-Match"]);
+        Assert.DoesNotContain("x-amz-copy-source", put.Headers.Keys);
+        Assert.DoesNotContain(transport.Requests, item => item.Uri.Query.Contains("uploadId"));
     }
 
     [Fact]

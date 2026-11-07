@@ -13,6 +13,7 @@ class UpdateSafetyTests(unittest.TestCase):
         package = ET.parse(ROOT / 'installer/Package.wxs').getroot()
         ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
         self.assertEqual('afterInstallInitialize', package.find('.//w:MajorUpgrade', ns).get('Schedule'))
+        self.assertEqual('yes', package.find('.//w:MajorUpgrade', ns).get('AllowSameVersionUpgrades'))
         search = package.find('.//w:RegistrySearch', ns)
         self.assertEqual('InstallLocation', search.get('Name'))
         self.assertEqual('always64', search.get('Bitness'))
@@ -32,6 +33,58 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('$custom.SetAttribute("After", "InstallExecute")', builder)
         self.assertIn('$version = if ($stage -eq "previous") { "0.0.1" } else { "0.0.2" }', builder)
         self.assertIn('lifecycle-$payloadGeneration-only.txt', builder)
+
+    def test_legacy_msi_repair_is_early_and_only_matches_registered_directory(self):
+        package = ET.parse(ROOT / 'installer/Package.wxs').getroot()
+        ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
+        actions = {item.get('Action'): item for item in package.findall('.//w:SetProperty', ns)}
+        expected = actions['BuildLegacyUpdaterLocation']
+        alternate = actions['BuildLegacyUpdaterLocationWithoutSlash']
+        restore = actions['RestoreLegacyUpdaterLocation']
+        self.assertEqual('[PREVIOUSINSTALLLOCATION].', expected.get('Value'))
+        self.assertEqual('[PREVIOUSINSTALLLOCATION]\\.', alternate.get('Value'))
+        self.assertEqual('AppSearch', expected.get('After'))
+        self.assertEqual('BuildLegacyUpdaterLocation', alternate.get('After'))
+        self.assertEqual('BuildLegacyUpdaterLocationWithoutSlash', restore.get('After'))
+        for action in (expected, alternate, restore):
+            self.assertEqual('both', action.get('Sequence'))
+        self.assertEqual('APPLICATIONFOLDER', restore.get('Id'))
+        self.assertEqual('[PREVIOUSINSTALLLOCATION]', restore.get('Value'))
+        self.assertEqual(
+            'WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND APPLICATIONFOLDER >> "\\." AND '
+            '(APPLICATIONFOLDER ~= LegacyUpdaterLocation OR APPLICATIONFOLDER ~= LegacyUpdaterLocationWithoutSlash)',
+            restore.get('Condition'))
+
+    def test_legacy_gate_builds_pinned_updater_and_reproduces_failure_before_fix(self):
+        builder = (ROOT / 'scripts/Build-InstallerLifecycleFixtures.ps1').read_text(encoding='utf-8')
+        lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/installer-lifecycle.yml').read_text(encoding='utf-8')
+        self.assertIn('c7a04cc6d3d549b06033dc66ed688102a845d971', builder)
+        self.assertIn('747bd974f729535e3505ae32c925f73366d3b118', builder)
+        self.assertIn('diff --exit-code $legacyCommits[0] $legacyCommits[1]', builder)
+        self.assertIn('Read-LegacySource -Path "src/S3Explorer.Updater/$file"', builder)
+        self.assertIn('Read-LegacySource -Path "installer/Package.wxs"', builder)
+        self.assertIn('legacyUpdaterSourceSha256', builder)
+        self.assertIn('fetch-depth: 0', workflow)
+        self.assertIn('-LegacyUpdater $fixtures.legacyUpdater', workflow)
+        self.assertIn("@('S3 Explorer', 'S3 Explorer legacy upgrade 自定义')", workflow)
+        self.assertIn('flavor: [self-contained, framework-dependent]', workflow)
+        self.assertIn('PassedHistoricalUpdaterAndReproduced1324Baseline', lifecycle)
+        self.assertIn('Assert-LegacyUpgradeLog', lifecycle)
+        self.assertIn("$msiLog -notmatch '\\b1324\\b'", lifecycle)
+        self.assertIn('CostFinalize\\. Return value 3', lifecycle)
+        self.assertIn('RestoreLegacyUpdaterLocation\\. Return value 1', lifecycle)
+        self.assertLess(lifecycle.index('-EvidenceName "legacy-updater-baseline"'),
+                        lifecycle.index('-EvidenceName "legacy-updater-fixed"'))
+        self.assertIn('Legacy failure modified the previous payload.', lifecycle)
+        self.assertIn('"EvaluateCondition"', lifecycle)
+        self.assertIn('"DoAction"', lifecycle)
+        self.assertIn('@("InstallExecuteSequence", "InstallUISequence")', lifecycle)
+        self.assertIn('name = "non-legacy-terminal-dot"', lifecycle)
+        self.assertIn('name = "explicit-other-path"', lifecycle)
+        self.assertIn('name = "other-invalid-path"', lifecycle)
+        self.assertIn('name = "not-an-upgrade"', lifecycle)
+        self.assertIn('name = "missing-registration"', lifecycle)
 
     def test_lifecycle_requires_runtime_evidence_and_local_packages(self):
         lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
@@ -126,14 +179,33 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('APPLICATIONFOLDER=', updater)
         self.assertIn('failure = new AggregateException', updater)
 
-    def test_updater_keeps_msi_directory_unchanged_and_uses_argument_list(self):
+    def test_updater_quotes_msi_property_value_not_entire_assignment(self):
         updater = (ROOT / 'src/S3Explorer.Updater/Program.cs').read_text(encoding='utf-8')
         launcher = updater.split('internal static Process StartInstaller', 1)[1].split('internal static void WriteResult', 1)[0]
         self.assertIn('Process.Start(BuildInstallerStartInfo(', launcher)
-        self.assertIn('startInfo.ArgumentList.Add(argument)', launcher)
-        self.assertIn('$"APPLICATIONFOLDER={directory}"', launcher)
+        self.assertIn('startInfo.Arguments =', launcher)
+        self.assertIn('$"APPLICATIONFOLDER={QuoteMsiValue(directory)}"', launcher)
+        self.assertNotIn('ArgumentList.Add', launcher)
         self.assertNotIn('Path.Combine(directory, ".")', launcher)
-        self.assertNotIn('Arguments =', launcher)
+
+    def test_lifecycle_runs_production_updater_and_bidirectional_flavor_switch(self):
+        lifecycle = (ROOT / 'scripts/Test-InstallerLifecycle.ps1').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/installer-lifecycle.yml').read_text(encoding='utf-8')
+        self.assertIn('Invoke-ProductionUpdater -MsiPath $CurrentMsi', lifecycle)
+        self.assertIn('"--sha256", (Get-FileHash', lifecycle)
+        self.assertIn('Assert-ProductState -ProductCode $identities.alternate.ProductCode -Installed $false', lifecycle)
+        self.assertIn('PassedBothDirections', lifecycle)
+        self.assertIn('S3EXPLORER_MSI_ARGUMENT_PROBE', workflow)
+        self.assertIn("-InstallDirectory (Join-Path $env:ProgramFiles 'S3 Explorer')", workflow)
+
+    def test_configuration_lock_recovers_owner_exit_and_archive_is_nonfatal(self):
+        store = (ROOT / 'src/S3Explorer.Infrastructure.Configuration/ExplorerConfigurationStore.cs').read_text(encoding='utf-8')
+        self.assertNotIn('new Semaphore(', store)
+        self.assertNotIn('WaitHandle.WaitAny', store)
+        self.assertIn('FileShare.None', store)
+        self.assertIn('TimeSpan.FromSeconds(15)', store)
+        self.assertIn('LegacyArchiveWarning =', store)
+        self.assertIn('exception is IOException or UnauthorizedAccessException', store)
 
     def test_manual_tag_preparation_is_explicit_and_checks_validated_main(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')

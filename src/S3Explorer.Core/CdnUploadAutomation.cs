@@ -30,15 +30,25 @@ public sealed class CdnUploadAutomationCoordinator(PersistentCdnJobQueue queue)
     public async Task<IReadOnlyList<CdnJobRecord>> ProcessCompletedUploadsAsync(
         IEnumerable<TransferTaskRecord> tasks,
         CdnConfiguration configuration,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<TransferTaskRecord, string>? mappingRejected = null)
     {
         ArgumentNullException.ThrowIfNull(tasks);
         var jobs = new List<CdnJobRecord>();
         foreach (var task in tasks.OrderBy(value => value.CompletedAt ?? value.CreatedAt))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            jobs.AddRange(await ProcessCompletedUploadAsync(task, configuration, cancellationToken)
-                .ConfigureAwait(false));
+            try
+            {
+                jobs.AddRange(await ProcessCompletedUploadAsync(task, configuration, cancellationToken)
+                    .ConfigureAwait(false));
+            }
+            catch (NotSupportedException exception)
+            {
+                // One nonportable key must not prevent unrelated completed uploads
+                // from reaching their configured CDN jobs.
+                mappingRejected?.Invoke(task, exception.Message);
+            }
         }
         return jobs;
     }

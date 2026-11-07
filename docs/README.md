@@ -23,6 +23,7 @@
 - [`Audit-Fixes-2026-11-04.md`](Audit-Fixes-2026-11-04.md)：已合入的二十项安全审计修复与当时的验证边界。
 - [`Audit-Followups-2026-11-04.md`](Audit-Followups-2026-11-04.md)：已合入 PR #4 的 Metadata 另存、安全复制替代方案、特殊路径及安装器回滚验证。
 - [`Safe-Workflows-2026-11-04.md`](Safe-Workflows-2026-11-04.md)：继续修复条件复制、特殊 Key 链接、Metadata 保真与仍受协议约束的操作。
+- [`Editing-and-Cdn-Fixes-2026-11-07.md`](Editing-and-Cdn-Fixes-2026-11-07.md)：原地/批量 Metadata、文本回传保真、支持范围及精确 CDN Key 的当前边界。
 - [`Exact-Key-Links-and-Redirects.md`](Exact-Key-Links-and-Redirects.md)：前导斜杠 Key 预签名、可信重定向、SDK 区域重试与明确限制。
 
 ## 发布、自动化与内容分发

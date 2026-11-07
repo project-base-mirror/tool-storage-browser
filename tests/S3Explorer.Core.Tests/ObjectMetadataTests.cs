@@ -5,6 +5,26 @@ namespace S3Explorer.Core.Tests;
 public sealed class ObjectMetadataTests
 {
     [Fact]
+    public void SnapshotValidationPreservesDistinctPaddedTagsAndMetadataAcrossRepeatedValidation()
+    {
+        var original = new ObjectWriteHeaders(Metadata: new Dictionary<string, string> { ["keep"] = "  value  " },
+            Tags: [new("team", " prod "), new(" team", " "), new(" ", "")])
+        {
+            ContentLanguage = " en-US ",
+            WebsiteRedirectLocation = "/a b",
+            PreserveExistingValues = true
+        };
+        var result = original.ValidateAndNormalize().ValidateAndNormalize();
+        Assert.Equal(original.Tags, result.Tags);
+        Assert.Equal("  value  ", result.Metadata!["keep"]);
+        Assert.Equal(original.ContentLanguage, result.ContentLanguage);
+        Assert.Equal(original.WebsiteRedirectLocation, result.WebsiteRedirectLocation);
+        Assert.True(result.PreserveExistingValues);
+        Assert.Throws<ArgumentException>(() => ObjectTagValidator.ValidatePreservingValues([new("", "")]));
+        Assert.Throws<ArgumentException>(() => ObjectTagValidator.ValidatePreservingValues([new("team", "a"), new("team", "b")]));
+    }
+
+    [Fact]
     public void ObjectTagsAreNormalizedAndLimitedToTen()
     {
         var tags = ObjectTagValidator.Validate([new ObjectTag(" channel ", " stable ")]);
@@ -61,12 +81,12 @@ public sealed class ObjectMetadataTests
     }
 
     [Fact]
-    public void MetadataReplacementIsDisabledUntilContentAndAllAttributesCanBePreservedAtomically()
+    public void MetadataReplacementHasExplicitProviderCapabilityAndWarning()
     {
         foreach (var provider in Enum.GetValues<S3ServiceType>())
         {
             var capability = S3ProviderCapabilityRegistry.For(provider).Object.MetadataRewrite;
-            Assert.False(capability.Supported);
+            Assert.Equal(Enum.IsDefined(provider), capability.Supported);
             Assert.False(string.IsNullOrWhiteSpace(capability.Reason));
         }
     }
@@ -75,8 +95,8 @@ public sealed class ObjectMetadataTests
     public void ObjectCapabilitiesRemainConservativeForUnverifiedProviders()
     {
         Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AmazonS3).Object.Tagging.Supported);
-        Assert.False(S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Object.MetadataRewrite.Supported);
+        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.MinIO).Object.MetadataRewrite.Supported);
         Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.AliyunOss).Object.Tagging.Supported);
-        Assert.False(S3ProviderCapabilityRegistry.For(S3ServiceType.CloudflareR2).Object.MetadataRewrite.Supported);
+        Assert.True(S3ProviderCapabilityRegistry.For(S3ServiceType.CloudflareR2).Object.MetadataRewrite.Supported);
     }
 }

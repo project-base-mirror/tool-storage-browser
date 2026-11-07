@@ -523,6 +523,10 @@ public static class CdnUrlMapper
 
         var relative = normalizedKey[sourcePrefix.Length..];
         var targetPath = NormalizePrefix(binding.CdnPathPrefix) + relative;
+        // Browsers resolve dot segments before sending even percent-escaped URLs.
+        // Refuse an unsafe link rather than targeting a different object.
+        if (targetPath.Split('/').Any(segment => segment is "." or ".."))
+            throw new NotSupportedException("含 . 或 .. 路径段的 Key 无法生成可安全打开的 CDN URL；请使用对象存储下载。");
         var escapedPath = string.Join("/", targetPath.Split('/').Select(Uri.EscapeDataString));
         return new Uri(profile.BaseUrl.TrimEnd('/') + "/" + escapedPath, UriKind.Absolute);
     }
@@ -533,6 +537,7 @@ public static class CdnUrlMapper
         return normalized.Length == 0 || normalized.EndsWith('/') ? normalized : normalized + "/";
     }
 
+    // Object keys are opaque identifiers, not local filesystem paths.
     public static string NormalizeObjectKey(string value) =>
-        value.Replace('\\', '/').TrimStart('/');
+        value ?? throw new ArgumentNullException(nameof(value));
 }

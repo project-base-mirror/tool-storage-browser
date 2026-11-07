@@ -6,11 +6,16 @@ public sealed record ObjectTag(string Key, string Value);
 
 public static class ObjectTagValidator
 {
-    public static IReadOnlyList<ObjectTag> Validate(IEnumerable<ObjectTag>? tags)
+    public static IReadOnlyList<ObjectTag> Validate(IEnumerable<ObjectTag>? tags) => Validate(tags, preserveValues: false);
+
+    public static IReadOnlyList<ObjectTag> ValidatePreservingValues(IEnumerable<ObjectTag>? tags) => Validate(tags, preserveValues: true);
+
+    private static IReadOnlyList<ObjectTag> Validate(IEnumerable<ObjectTag>? tags, bool preserveValues)
     {
         var result = (tags ?? [])
-            .Select(tag => new ObjectTag(tag.Key?.Trim() ?? string.Empty, tag.Value?.Trim() ?? string.Empty))
-            .Where(tag => tag.Key.Length > 0 || tag.Value.Length > 0)
+            .Select(tag => new ObjectTag((preserveValues ? tag.Key : tag.Key?.Trim()) ?? string.Empty,
+                (preserveValues ? tag.Value : tag.Value?.Trim()) ?? string.Empty))
+            .Where(tag => preserveValues || tag.Key.Length > 0 || tag.Value.Length > 0)
             .ToArray();
         if (result.Length > 10)
             throw new ArgumentException("对象最多允许 10 个 Tag。", nameof(tags));
@@ -39,7 +44,14 @@ public sealed record ObjectWriteHeaders(
 {
     public static ObjectWriteHeaders Empty { get; } = new();
 
-    public ObjectWriteHeaders ValidateAndNormalize() => Validate(preserveValues: false);
+    // Snapshots retain exact values across validation and persistence, including tag keys.
+    public bool PreserveExistingValues { get; init; }
+    public string? ContentLanguage { get; init; }
+    public string? WebsiteRedirectLocation { get; init; }
+
+    public ObjectWriteHeaders ValidateAndNormalize() => Validate(PreserveExistingValues);
+
+    public ObjectWriteHeaders ValidatePreservingValues() => Validate(preserveValues: true);
 
     // A metadata copy edits an existing snapshot, not newly entered upload defaults.
     // Trimming here would silently change unrelated values merely by pressing Save.
@@ -50,9 +62,12 @@ public sealed record ObjectWriteHeaders(
         var metadata = preserveValues
             ? ObjectMetadataValidator.ValidatePreservingValues(Metadata)
             : ObjectMetadataValidator.Validate(Metadata);
-        var tags = ObjectTagValidator.Validate(Tags);
+        var tags = preserveValues ? ObjectTagValidator.ValidatePreservingValues(Tags) : ObjectTagValidator.Validate(Tags);
         return this with
         {
+            PreserveExistingValues = preserveValues,
+            ContentLanguage = NormalizeHeader(ContentLanguage, nameof(ContentLanguage), preserveValues),
+            WebsiteRedirectLocation = NormalizeHeader(WebsiteRedirectLocation, nameof(WebsiteRedirectLocation), preserveValues),
             ContentType = NormalizeHeader(ContentType, nameof(ContentType), preserveValues),
             CacheControl = NormalizeHeader(CacheControl, nameof(CacheControl), preserveValues),
             ContentEncoding = NormalizeHeader(ContentEncoding, nameof(ContentEncoding), preserveValues),
@@ -129,7 +144,7 @@ public sealed record ObjectCapabilities(
     BucketFeatureSupport ObjectLock)
 {
     public BucketFeatureSupport MetadataCopy { get; init; } = BucketFeatureSupport.No(
-        "此服务商尚未验证 Metadata 快照的非覆盖复制；原地替换仍不可用。");
+        "此服务商尚未验证 Metadata 快照的非覆盖另存。");
 }
 
 public static class ObjectMetadataCopyPolicy

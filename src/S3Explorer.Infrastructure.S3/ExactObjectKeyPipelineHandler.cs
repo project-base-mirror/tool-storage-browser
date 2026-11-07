@@ -26,7 +26,12 @@ internal sealed class ExactObjectKeyS3Client : AmazonS3Client, IAmazonS3
         _validateCompatibleKeys = MinioObjectKeyPolicy.AppliesTo(serviceType);
         if (_validateCompatibleKeys)
             RuntimePipeline.AddHandlerBefore<Marshaller>(new CompatibleObjectKeyValidationHandler(serviceType));
+        if (serviceType == S3ServiceType.GoogleCloudStorage)
+            RuntimePipeline.AddHandlerBefore<Unmarshaller>(new GcsMetadataResponseHandler());
         RuntimePipeline.AddHandlerBefore<Signer>(new ExactObjectKeyPipelineHandler());
+        if (serviceType is S3ServiceType.AliyunOss or S3ServiceType.TencentCos)
+            RuntimePipeline.AddHandlerBefore<Amazon.Runtime.Internal.Unmarshaller>(new NativeProviderMetadataResponseHandler(
+                serviceType == S3ServiceType.AliyunOss ? "x-oss-" : "x-cos-"));
         RuntimePipeline.ReplaceHandler<AmazonS3RedirectHandler>(new ExactObjectKeyRedirectHandler(followTemporaryRedirects, serviceType, hasCustomHostHeader));
     }
 
@@ -184,4 +189,96 @@ internal sealed class ExactObjectKeyPipelineHandler : PipelineHandler
         if (!string.Equals(wirePath, canonicalPath, StringComparison.Ordinal))
             throw new NotSupportedException("无法无损签名特殊对象 Key，已停止操作以防止访问其他对象。");
     }
+}
+
+// The S3 unmarshaller drops Google-only revision and protection headers. Capture
+// only an explicit allowlist after unmarshalling; never retain credentials.
+internal sealed class GcsMetadataResponseHandler : PipelineHandler
+{
+    public override void InvokeSync(IExecutionContext context)
+    {
+        base.InvokeSync(context);
+        Capture(context);
+    }
+
+    public override async Task<T> InvokeAsync<T>(IExecutionContext context)
+    {
+        var result = await base.InvokeAsync<T>(context).ConfigureAwait(false);
+        Capture(context);
+        return result;
+    }
+
+    private static void Capture(IExecutionContext context)
+    {
+        if (context.RequestContext.OriginalRequest is not GetObjectMetadataRequest ||
+            context.ResponseContext.Response is not GetObjectMetadataResponse response ||
+            context.ResponseContext.HttpResponse is not { } raw) return;
+        foreach (var name in raw.GetHeaderNames())
+        {
+            if (name.StartsWith("x-goog-meta-", StringComparison.OrdinalIgnoreCase))
+                response.Metadata[name[12..]] = raw.GetHeaderValue(name);
+            else if (PreservedHeaders.Contains(name))
+                response.Headers[name.ToLowerInvariant()] = raw.GetHeaderValue(name);
+        }
+    }
+
+    private static readonly HashSet<string> PreservedHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "x-goog-generation", "x-goog-metageneration", "x-goog-custom-time",
+        "x-goog-storage-class", "x-goog-encryption-kms-key-name",
+        "x-goog-encryption-algorithm", "x-goog-encryption-key-sha256",
+        "x-goog-object-lock-mode", "x-goog-object-lock-retain-until-date"
+    };
+}
+
+// Native providers may return their own header names even for an S3-signed HEAD.
+// Preserve only object metadata/protection fields, never arbitrary/auth headers.
+internal sealed class NativeProviderMetadataResponseHandler(string prefix) : PipelineHandler
+{
+    public override void InvokeSync(IExecutionContext context)
+    {
+        base.InvokeSync(context);
+        Capture(context);
+    }
+
+    public override async Task<T> InvokeAsync<T>(IExecutionContext context)
+    {
+        var result = await base.InvokeAsync<T>(context).ConfigureAwait(false);
+        Capture(context);
+        return result;
+    }
+
+    private void Capture(IExecutionContext context)
+    {
+        if (context.RequestContext.OriginalRequest is not GetObjectMetadataRequest ||
+            context.ResponseContext.Response is not GetObjectMetadataResponse response ||
+            context.ResponseContext.HttpResponse is not { } raw) return;
+        foreach (var name in raw.GetHeaderNames())
+        {
+            if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var suffix = name[prefix.Length..].ToLowerInvariant();
+            if (suffix.StartsWith("meta-", StringComparison.Ordinal))
+            {
+                var key = suffix[5..];
+                var value = raw.GetHeaderValue(name);
+                if (response.Metadata.Keys.Any(existing =>
+                    (existing.Equals(key, StringComparison.OrdinalIgnoreCase) || existing.Equals("x-amz-meta-" + key, StringComparison.OrdinalIgnoreCase)) &&
+                    response.Metadata[existing] != value))
+                    response.MissingMeta = Math.Max(1, response.MissingMeta ?? 0);
+                response.Metadata[key] = value;
+            }
+            else if (PreservedSuffixes.Contains(suffix))
+                response.Headers[name.ToLowerInvariant()] = raw.GetHeaderValue(name);
+        }
+    }
+
+    private static readonly HashSet<string> PreservedSuffixes = new(StringComparer.Ordinal)
+    {
+        "storage-class", "version-id", "object-type", "website-redirect-location", "missing-meta",
+        "server-side-encryption", "server-side-encryption-key-id", "server-side-encryption-kms-key-id",
+        "server-side-encryption-cos-kms-key-id", "server-side-encryption-context",
+        "server-side-encryption-customer-algorithm", "server-side-encryption-customer-key-md5",
+        "object-lock-mode", "object-lock-retain-until-date", "object-lock-legal-hold",
+        "object-worm-mode", "object-worm-retain-until-date"
+    };
 }

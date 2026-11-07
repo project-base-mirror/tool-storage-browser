@@ -6,6 +6,25 @@ namespace S3Explorer.Core.Tests;
 public sealed class CdnUploadAutomationTests
 {
     [Fact]
+    public async Task NonportableKeyDoesNotBlockOtherCompletedUploadsOrQueueAWrongUrl()
+    {
+        var fixture = await CreateAsync(CdnUploadAction.Warmup, CdnUploadAction.None);
+        var unsafeTask = UploadTask(fixture.StorageProfileId, fixture.AutomationStartedAt.AddMinutes(1), false)
+            with { ObjectKey = "assets/../other.js" };
+        var ordinaryTask = UploadTask(fixture.StorageProfileId, fixture.AutomationStartedAt.AddMinutes(2), false);
+        var rejected = new List<Guid>();
+        var jobs = await fixture.Coordinator.ProcessCompletedUploadsAsync([unsafeTask, ordinaryTask], fixture.Configuration,
+            TestContext.Current.CancellationToken, (task, reason) =>
+            {
+                rejected.Add(task.Id);
+                Assert.Contains("路径段", reason);
+            });
+        Assert.Equal(unsafeTask.Id, Assert.Single(rejected));
+        Assert.Equal(ordinaryTask.Id, Assert.Single(jobs).TransferTaskId);
+        await fixture.DisposeAsync();
+    }
+
+    [Fact]
     public async Task NewObjectUsesWarmupPolicy()
     {
         var fixture = await CreateAsync(CdnUploadAction.Warmup, CdnUploadAction.PurgeThenWarmup);

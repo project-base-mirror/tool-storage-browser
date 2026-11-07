@@ -11,6 +11,7 @@ internal sealed partial class ObjectPropertiesDialog
     private readonly TextBox _expiresUtc = HeaderTextBox("ObjectExpiresUtc");
     private readonly DataGridView _metadataGrid = KeyValueGrid("ObjectMetadataGrid", "Metadata Key");
     private readonly TextBox _metadataDestination = HeaderTextBox("ObjectMetadataCopyDestination");
+    private readonly Button _metadataReplace = ActionButton("SaveObjectMetadataButton", "保存当前对象");
     private readonly Button _metadataSave = ActionButton("SaveObjectMetadataCopyButton", "另存为新对象...");
     private readonly Label _metadataReason = CapabilityLabel("ObjectMetadataCapabilityReason");
     private readonly DataGridView _tagsGrid = KeyValueGrid("ObjectTagsGrid", "Tag Key");
@@ -28,13 +29,22 @@ internal sealed partial class ObjectPropertiesDialog
         var capability = _profile is null
             ? BucketFeatureSupport.No("当前调用未提供连接上下文，仅显示现有 Header 与 Metadata")
             : ObjectMetadataCopyPolicy.For(_profile.ServiceType, value);
-        _metadataReason.Text = capability.Reason;
+        var rewrite = _profile is null ? capability : ObjectMetadataRewritePolicy.For(_profile.ServiceType, value);
+        var editable = capability.Supported || rewrite.Supported;
+        _metadataReplace.Enabled = rewrite.Supported && _storage is not null;
+        _metadataReplace.Click += async (_, _) => await ReplaceMetadataAsync();
+        _metadataReason.Text = rewrite.Reason;
         _metadataSave.Enabled = capability.Supported && _storage is not null;
         foreach (var textBox in new[] { _contentType, _cacheControl, _contentEncoding, _contentDisposition, _expiresUtc })
-            textBox.ReadOnly = !capability.Supported;
-        _metadataGrid.ReadOnly = !capability.Supported;
-        _metadataGrid.AllowUserToAddRows = capability.Supported;
-        _metadataGrid.AllowUserToDeleteRows = capability.Supported;
+            textBox.ReadOnly = !editable;
+        if (_profile?.ServiceType == S3ServiceType.SupabaseStorage)
+        {
+            _contentDisposition.ReadOnly = true;
+            _expiresUtc.ReadOnly = true;
+        }
+        _metadataGrid.ReadOnly = !editable;
+        _metadataGrid.AllowUserToAddRows = editable;
+        _metadataGrid.AllowUserToDeleteRows = editable;
         _metadataDestination.Text = ObjectMetadataCopyPolicy.SuggestDestinationKey(value.Key);
         _metadataDestination.ReadOnly = !capability.Supported;
         _metadataReason.MaximumSize = new Size(520, 0);
@@ -66,6 +76,7 @@ internal sealed partial class ObjectPropertiesDialog
             Padding = new Padding(8, 4, 8, 7)
         };
         actions.Controls.Add(_metadataSave);
+        actions.Controls.Add(_metadataReplace);
 
         var layout = new TableLayoutPanel
         {
@@ -132,6 +143,29 @@ internal sealed partial class ObjectPropertiesDialog
         _contentDisposition.Text = value.ContentDisposition ?? string.Empty;
         _expiresUtc.Text = value.ExpiresUtc?.UtcDateTime.ToString("O") ?? value.ExpiresHeader ?? string.Empty;
         ApplyGrid(_metadataGrid, value.Metadata.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private async Task ReplaceMetadataAsync()
+    {
+        if (_storage is null || _profile is null || _objectProperties is null || _metadataBusy) return;
+        ObjectWriteHeaders headers;
+        try { headers = ReadMetadataEdits(); }
+        catch (Exception exception)
+        {
+            ErrorDialog.ShowException(this, "Header / Metadata 无效", "校验对象 Metadata", exception, ObjectLocation());
+            return;
+        }
+        if (MessageBox.Show(this, ObjectMetadataRewritePolicy.WarningFor(_profile.ServiceType) + "\r\n\r\n" + ObjectLocation(),
+            "确认原地保存 Metadata", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        var expected = _objectProperties;
+        await ExecuteMetadataAsync("保存 Metadata", async token =>
+        {
+            await _storage.ReplaceObjectMetadataAsync(_profile, expected, headers, token);
+            _objectProperties = await _storage.GetObjectPropertiesAsync(_profile, expected.Bucket, expected.Key, token);
+            ApplyMetadata(_objectProperties);
+            _metadataReason.Text = "已保存并重新读取当前对象。";
+        });
     }
 
     private async Task SaveMetadataAsync()

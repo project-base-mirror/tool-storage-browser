@@ -516,12 +516,28 @@ internal sealed partial class MainForm
             return;
         }
         var crossConnection = sourceProfile.Id != destinationProfile.Id;
-        var sameStorageEndpoint = !crossConnection ||
-            sourceProfile.NormalizedEndpoint == destinationProfile.NormalizedEndpoint;
         if (payload.Move && crossConnection)
         {
             MessageBox.Show(this, "跨连接请使用复制，核对目标后再删除源对象。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
+        }
+
+        if (payload.Move && !S3ProviderCapabilityRegistry.For(sourceProfile.ServiceType).ConditionalDelete.Supported &&
+            MessageBox.Show(this,
+                S3ProviderCapabilityRegistry.For(sourceProfile.ServiceType).ConditionalDelete.Reason +
+                "\n\n确认已停止并发写入，并继续移动？", "移动对象", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+        // Validate all roots before enumeration or queueing can create objects. Regional
+        // endpoint aliases must never allow a live listing to feed its own descendants.
+        foreach (var entry in payload.Entries)
+        {
+            var name = S3Path.LeafName(entry.Key, entry.IsDirectory);
+            var target = entry.IsDirectory
+                ? ObjectTransferPlanner.BuildDirectoryDestinationKey(destinationPrefix, name)
+                : ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, name);
+            ObjectTransferPlanner.ValidateDestination(sourceProfile, payload.SourceBucket, entry.Key,
+                entry.IsDirectory, destinationProfile, destinationBucket, target);
         }
 
         var direction = payload.Move ? TransferDirection.Move : TransferDirection.Copy;
@@ -543,10 +559,6 @@ internal sealed partial class MainForm
                 var topName = S3Path.LeafName(entry.Key, entry.IsDirectory);
                 if (entry.IsDirectory)
                 {
-                    var destinationRoot = ObjectTransferPlanner.BuildDirectoryDestinationKey(destinationPrefix, topName);
-                    if (sameStorageEndpoint)
-                        ObjectTransferPlanner.ValidateDestination(
-                            payload.SourceBucket, entry.Key, true, destinationBucket, destinationRoot);
                     await foreach (var child in EnumerateAllObjectsAsync(
                         entry.Key, includeFolderMarkers: true, profile: sourceProfile, bucket: payload.SourceBucket))
                     {
@@ -570,9 +582,6 @@ internal sealed partial class MainForm
                 else
                 {
                     var target = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName);
-                    if (sameStorageEndpoint)
-                        ObjectTransferPlanner.ValidateDestination(
-                            payload.SourceBucket, entry.Key, false, destinationBucket, target);
                     var resolved = await ResolveObjectConflictAsync(destinationProfile, destinationBucket, target, conflictPolicy);
                     if (resolved is null) { skipped++; continue; }
                     chunk.Add(new ObjectTransferBatchItem(
@@ -671,11 +680,16 @@ internal sealed partial class MainForm
         var name = PromptDialog.Show(this, "重命名对象", "新名称：", originalName);
         if (string.IsNullOrEmpty(name) || name == originalName) return;
         var targetKey = S3Path.RenameLeaf(entry.Key, name);
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
+        if (!S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete.Supported &&
+            MessageBox.Show(this,
+                S3ProviderCapabilityRegistry.For(profile.ServiceType).ConditionalDelete.Reason +
+                "\n\n确认已停止并发写入，并继续重命名？", "重命名对象", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         try
         {
             SetBusy("正在重命名（Copy + Delete）...");
-            var profile = _currentProfile!;
-            var bucket = _currentBucket!;
             await RenameObjectSafelyAsync(_storage, profile, bucket, entry.Key, targetKey, CancellationToken.None);
             await RefreshAsync();
         }
@@ -695,8 +709,8 @@ internal sealed partial class MainForm
         var context = new TransferOperationContext(
             new TransferExecutionOptions { AllowDestinationOverwrite = false, RetainFailedTransferState = false },
             new SharedTransferBandwidthLimiter(), null, null, _ => { }, (_, _, _, _) => Task.CompletedTask);
-        // The preflight improves feedback; the backend condition protects a target
-        // created after the check and must succeed before the source is deleted.
+        // Use atomic destination conditions when supported. Compatible providers
+        // recheck existence before writing; their concurrency limits are disclosed above.
         await storage.MoveObjectAsync(profile, bucket, sourceKey, bucket, targetKey, context, cancellationToken);
     }
 
@@ -706,13 +720,15 @@ internal sealed partial class MainForm
         var selected = SelectedEntries();
         if (selected.Count != 1 || selected[0].IsDirectory) return;
         var entry = selected[0];
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
         ObjectProperties properties;
         try
         {
             SetBusy("正在读取对象属性...");
             properties = await _storage.GetObjectPropertiesAsync(
-                _currentProfile!,
-                _currentBucket!,
+                profile,
+                bucket,
                 entry.Key,
                 CancellationToken.None);
         }
@@ -723,17 +739,24 @@ internal sealed partial class MainForm
         }
         finally { SetIdle(); }
 
-        var cdnTargets = CdnUrlMapper.ResolveAll(
-            _cdnConfiguration,
-            _currentProfile!.Id,
-            _currentBucket!,
-            entry.Key);
+        // Do not reopen a stale selection after navigation while HEAD was in flight.
+        if (_currentProfile?.Id != profile.Id || _currentBucket != bucket) return;
+        IReadOnlyList<CdnResolvedTarget> cdnTargets = [];
+        try
+        {
+            cdnTargets = CdnUrlMapper.ResolveAll(_cdnConfiguration, profile.Id, bucket, entry.Key);
+        }
+        catch (NotSupportedException exception)
+        {
+            // A nonportable CDN URL must not block ordinary object properties or S3 downloads.
+            _requestStatus.Text = exception.Message;
+        }
         using var dialog = new ObjectPropertiesDialog(
             properties,
-            _currentProfile.Endpoint,
+            profile.Endpoint,
             cdnProfileName: cdnTargets.FirstOrDefault()?.Profile.Name,
             storage: _storage,
-            profile: _currentProfile);
+            profile: profile);
         dialog.ShowDialog(this);
         switch (dialog.SelectedAction)
         {
@@ -751,19 +774,23 @@ internal sealed partial class MainForm
         if (!EnsureLocation()) return;
         var selected = SelectedEntries().Where(entry => !entry.IsDirectory).ToArray();
         if (selected.Length == 0) return;
-        var capability = S3ProviderCapabilityRegistry.For(_currentProfile!.ServiceType).Object.MetadataRewrite;
+        // Keep the selected storage namespace stable across every awaited object.
+        // Navigation may change the form fields while the batch is in progress.
+        var profile = _currentProfile!;
+        var bucket = _currentBucket!;
+        var capability = S3ProviderCapabilityRegistry.For(profile.ServiceType).Object.MetadataRewrite;
         if (!capability.Supported)
         {
             MessageBox.Show(this, capability.Reason, "批量 Header / Metadata", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        using var dialog = new ObjectMetadataBatchDialog(selected.Length);
+        using var dialog = new ObjectMetadataBatchDialog(selected.Length, profile.ServiceType);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (MessageBox.Show(
                 this,
-                $"确定对 {selected.Length:N0} 个对象逐个执行原地 Copy 吗？\r\n\r\n" +
-                "这可能产生请求费和新对象版本；失败对象会单独报告，不会回滚已成功对象。",
+                $"确定对连接“{profile.Name}”的 Bucket“{bucket}”中 {selected.Length:N0} 个对象逐个执行原地 Copy 吗？\r\n\r\n" +
+                ObjectMetadataRewritePolicy.WarningFor(profile.ServiceType) + "\r\n失败对象单独报告，不会回滚已成功对象。",
                 "确认批量 Header / Metadata",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
@@ -779,11 +806,10 @@ internal sealed partial class MainForm
                 try
                 {
                     var current = await _storage.GetObjectPropertiesAsync(
-                        _currentProfile, _currentBucket!, entry.Key, CancellationToken.None);
+                        profile, bucket, entry.Key, CancellationToken.None);
                     var headers = dialog.ApplyTo(current);
                     await _storage.ReplaceObjectMetadataAsync(
-                        _currentProfile, _currentBucket!, entry.Key, current.VersionId,
-                        headers, CancellationToken.None);
+                        profile, current, headers, CancellationToken.None);
                     succeeded++;
                 }
                 catch (Exception exception)
@@ -803,7 +829,8 @@ internal sealed partial class MainForm
                 "批量 Header / Metadata",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
-        await RefreshAsync();
+        if (_currentProfile?.Id == profile.Id && _currentBucket == bucket)
+            await RefreshAsync();
     }
 
     private void ShowPresignedUrl()
