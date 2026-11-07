@@ -49,6 +49,7 @@ internal sealed partial class MainForm : Form
     private readonly ToolStripTextBox _address = new() { Name = "AddressBox", AutoSize = false, Width = 620 };
     private readonly ToolStripTextBox _search = new() { Name = "SearchBox", AutoSize = false, Width = 220, ToolTipText = "过滤当前已加载列表（Ctrl+F）" };
     private readonly SplitContainer _outerSplit = new() { Name = "MainLayout", Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, FixedPanel = FixedPanel.Panel2 };
+    private bool _transferLayoutInitialized;
     private readonly SplitContainer _mainSplit = new() { Name = "NavigationLayout", Dock = DockStyle.Fill, Orientation = Orientation.Vertical, FixedPanel = FixedPanel.Panel1 };
     private readonly TreeView _tree = new() { Name = "AccountTree", Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true, AllowDrop = true };
     private readonly ListView _objects = new()
@@ -509,6 +510,11 @@ internal sealed partial class MainForm : Form
         _objectMenu.Items.Add("批量 Header / Metadata...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await EditBatchMetadataAsync());
         _objectMenu.Items.Add("查看 / 恢复历史版本...", UiIcons.Create(UiIconKind.Properties, 16), async (_, _) => await ShowObjectVersionsAsync(true));
         _objectMenu.Items.Add(new ToolStripSeparator());
+        var download = ContextCommand("download", "下载...", UiIconKind.Download,
+            async (_, _) => await RunUiCommandAsync("下载", DownloadSelectedAsync));
+        download.Name = "ObjectDownloadContextMenu";
+        download.ToolTipText = "直接从对象存储下载所选文件或文件夹";
+        _objectMenu.Items.Add(download);
         _objectMenu.Items.Add(BuildObjectCdnContextMenu());
         _objectMenu.Items.Add(new ToolStripSeparator());
         var preview = _objectMenu.Items.Add("内容预览 / 编辑...", UiIcons.Create(UiIconKind.Properties, 16),
@@ -518,6 +524,7 @@ internal sealed partial class MainForm : Form
             var entries = SelectedEntries();
             var any = entries.Count > 0;
             var oneFile = entries.Count == 1 && !entries[0].IsDirectory;
+            download.Enabled = any && _currentProfile is not null && _currentBucket is not null;
             preview.Enabled = oneFile;
             var capabilities = _currentProfile is null
                 ? null
@@ -754,9 +761,10 @@ internal sealed partial class MainForm : Form
             if (!_closing)
                 await ProcessCompletedCdnUploadsAsync([args.Task]);
             if (!_closing &&
-                _currentProfile?.Id == args.Task.ProfileId &&
-                (string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal) ||
-                 string.Equals(_currentBucket, args.Task.DestinationBucket, StringComparison.Ordinal)))
+                ((_currentProfile?.Id == args.Task.ProfileId &&
+                  string.Equals(_currentBucket, args.Task.Bucket, StringComparison.Ordinal)) ||
+                 (_currentProfile?.Id == args.Task.EffectiveDestinationProfileId &&
+                  string.Equals(_currentBucket, args.Task.DestinationBucket, StringComparison.Ordinal))))
             {
                 await RefreshAsync();
             }
@@ -2862,9 +2870,23 @@ internal sealed partial class MainForm : Form
 
     private void SetTransferVisibility(bool visible)
     {
+        if (_transferLayoutInitialized && !visible && !_outerSplit.Panel2Collapsed)
+            _settings = _settings with { TransferPanelHeight = _outerSplit.Panel2.Height };
         _outerSplit.Panel2Collapsed = !visible;
-        if (visible && _outerSplit.Height > 350)
-            _outerSplit.SplitterDistance = Math.Max(200, _outerSplit.Height - Math.Clamp(_settings.TransferPanelHeight, 120, 350));
+        if (visible)
+        {
+            var available = _outerSplit.ClientSize.Height - _outerSplit.SplitterWidth;
+            var browserMinimum = Math.Min(LogicalToDeviceUnits(180), Math.Max(0, available / 2));
+            var transferMinimum = Math.Min(LogicalToDeviceUnits(AppSettings.MinimumTransferPanelHeight),
+                Math.Max(0, available - browserMinimum));
+            // Restore old undersized layouts too, and leave larger user-selected heights intact.
+            _outerSplit.Panel1MinSize = browserMinimum;
+            _outerSplit.Panel2MinSize = transferMinimum;
+            var height = Math.Clamp(_settings.TransferPanelHeight, transferMinimum,
+                Math.Max(transferMinimum, available - browserMinimum));
+            _outerSplit.SplitterDistance = Math.Max(browserMinimum, available - height);
+        }
+        _transferLayoutInitialized = true;
         if (_commands.TryGetValue("show-transfers", out var item) && item is ToolStripMenuItem menu)
             menu.Checked = visible;
     }
@@ -3141,7 +3163,7 @@ internal sealed partial class MainForm : Form
             return;
         }
         var widths = _objects.Columns.Cast<ColumnHeader>().Select(column => column.Width).ToArray();
-        var transferHeight = _outerSplit.Panel2Collapsed ? _settings.TransferPanelHeight : Math.Max(100, _outerSplit.Height - _outerSplit.SplitterDistance);
+        var transferHeight = _outerSplit.Panel2Collapsed ? _settings.TransferPanelHeight : _outerSplit.Panel2.Height;
         var proposed = _settings with
         {
             WindowX = WindowState == FormWindowState.Normal ? Left : RestoreBounds.Left,

@@ -83,7 +83,7 @@ internal static class TransferTaskDetailsFormatter
             TransferDirection.Upload => S3Uri(task.ProfileName, task.Bucket, task.ObjectKey),
             TransferDirection.Download => task.LocalPath,
             TransferDirection.Copy or TransferDirection.Move =>
-                S3Uri(task.ProfileName, task.DestinationBucket, task.DestinationObjectKey),
+                S3Uri(task.DestinationProfileName ?? task.ProfileName, task.DestinationBucket, task.DestinationObjectKey),
             TransferDirection.DeleteRemote => "删除远端对象",
             TransferDirection.DeleteLocal => "删除本地文件",
             _ => string.Empty
@@ -93,6 +93,7 @@ internal static class TransferTaskDetailsFormatter
             .AppendLine($"任务 ID：{task.Id}")
             .AppendLine($"批次 ID：{Value(task.BatchId)}")
             .AppendLine($"连接：{task.ProfileName} ({task.ProfileId})")
+            .AppendLine($"目标连接：{task.DestinationProfileName ?? task.ProfileName} ({task.EffectiveDestinationProfileId})")
             .AppendLine($"方向：{DirectionText(task.Direction)}")
             .AppendLine($"状态：{StateText(task.State)}")
             .AppendLine($"来源：{source}")

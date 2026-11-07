@@ -80,7 +80,7 @@ public sealed partial class MainFormInteractionTests
             SetField(form, "_currentBucket", "source");
             var payload = new ObjectClipboardPayload(profile.Id, profile.Name, "source",
                 [new("/source//", "friendly empty segment label", true, 0), new(" ", "friendly whitespace label", false, 0)], false);
-            await InvokeAsync(form, "QueueObjectTransferAsync", payload, "destination", "/destination//", ObjectConflictPolicy.Overwrite);
+            await InvokeAsync(form, "QueueObjectTransferAsync", payload, "destination", "/destination//", ObjectConflictPolicy.Overwrite, null);
             await queue.WaitForIdleAsync();
             Assert.Equal("/source//", Assert.Single(recorder.RawPrefixes));
             var tasks = queue.Snapshot.Tasks.ToDictionary(task => task.ObjectKey, StringComparer.Ordinal);

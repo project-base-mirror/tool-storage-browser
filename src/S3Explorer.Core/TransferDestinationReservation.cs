@@ -61,7 +61,7 @@ public static class TransferDestinationReservation
         }
         var leftRemote = RemoteDestination(left);
         var rightRemote = RemoteDestination(right);
-        return leftRemote is not null && rightRemote is not null && left.ProfileId == right.ProfileId &&
+        return leftRemote is not null && rightRemote is not null && left.EffectiveDestinationProfileId == right.EffectiveDestinationProfileId &&
             leftRemote.Value == rightRemote.Value;
     }
 
@@ -108,7 +108,7 @@ public static class TransferDestinationReservation
                 AddFile(TemporaryPath(task));
             }
             else if (RemoteDestination(task) is { } remote)
-                _remote.Add((task.ProfileId, remote.Bucket, remote.Key));
+                _remote.Add((task.EffectiveDestinationProfileId, remote.Bucket, remote.Key));
         }
 
         public bool Contains(TransferTaskRecord task)
@@ -118,7 +118,7 @@ public static class TransferDestinationReservation
                 var path = NormalizeLocalPath(task.LocalPath);
                 return ContainsFile(path) || ContainsFile(TemporaryPath(task));
             }
-            return RemoteDestination(task) is { } remote && _remote.Contains((task.ProfileId, remote.Bucket, remote.Key));
+            return RemoteDestination(task) is { } remote && _remote.Contains((task.EffectiveDestinationProfileId, remote.Bucket, remote.Key));
         }
 
         private void AddFile(string path)

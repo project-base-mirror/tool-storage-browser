@@ -5,11 +5,17 @@ namespace S3Explorer.App;
 internal sealed record ObjectTransferOptions(
     string DestinationBucket,
     string DestinationPrefix,
-    ObjectConflictPolicy ConflictPolicy);
+    ObjectConflictPolicy ConflictPolicy,
+    ConnectionProfile? DestinationProfile = null);
 
 internal sealed class ObjectTransferDialog : Form
 {
     private readonly BucketPicker _bucket;
+    private readonly ComboBox _profile = new()
+    {
+        Name = "ObjectTransferDestinationProfile", Dock = DockStyle.Fill,
+        DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = nameof(ConnectionProfile.Name)
+    };
     private readonly TextBox _prefix = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _conflict = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Button _ok = new() { Text = "确定", Size = new Size(92, 32) };
@@ -22,7 +28,8 @@ internal sealed class ObjectTransferDialog : Form
         int itemCount,
         ConnectionProfile? profile = null,
         IS3StorageService? storage = null,
-        BucketDiscoveryCache? bucketDiscoveryCache = null)
+        BucketDiscoveryCache? bucketDiscoveryCache = null,
+        IReadOnlyList<ConnectionProfile>? profiles = null)
     {
         _bucket = new BucketPicker(
             bucketDiscoveryCache ?? new BucketDiscoveryCache(),
@@ -38,11 +45,17 @@ internal sealed class ObjectTransferDialog : Form
         };
         Text = move ? "移动到" : "复制到";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(560, move ? 335 : 275);
-        MinimumSize = new Size(500, move ? 320 : 260);
+        ClientSize = new Size(560, move ? 375 : 335);
+        MinimumSize = new Size(500, move ? 360 : 320);
         ShowInTaskbar = false;
         Icon = UiIcons.CreateApplicationIcon();
 
+        var choices = move ? Array.Empty<ConnectionProfile>() : (profiles ?? []).ToArray();
+        if (profile is not null && !choices.Any(item => item.Id == profile.Id))
+            choices = [profile, .. choices];
+        _profile.Items.AddRange(choices.Cast<object>().ToArray());
+        _profile.SelectedItem = choices.FirstOrDefault(item => item.Id == profile?.Id) ?? choices.FirstOrDefault();
+        _profile.Enabled = !move && choices.Length > 1;
         _bucket.BucketText = bucket;
         _prefix.Text = prefix;
         _conflict.DisplayMember = nameof(ConflictOption.Text);
@@ -57,39 +70,54 @@ internal sealed class ObjectTransferDialog : Form
 
         var table = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 2, RowCount = 5
+            Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 2, RowCount = 6
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        AddRow(table, 0, "目标 Bucket：", _bucket);
-        AddRow(table, 1, "目标前缀：", _prefix);
-        AddRow(table, 2, "冲突处理：", _conflict);
-        table.Controls.Add(new Label
+        AddRow(table, 0, "目标连接：", _profile);
+        AddRow(table, 1, "目标 Bucket：", _bucket);
+        AddRow(table, 2, "目标前缀：", _prefix);
+        AddRow(table, 3, "冲突处理：", _conflict);
+        var notice = new Label
         {
             Name = "ObjectTransferNotice",
             Text = BuildTransferNotice(move, itemCount, profile?.ServiceType ?? S3ServiceType.AmazonS3),
             Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.TopLeft,
             ForeColor = SystemColors.GrayText, Margin = new Padding(3, 12, 3, 3)
-        }, 1, 3);
+        };
+        table.Controls.Add(notice, 1, 4);
         var buttons = new FlowLayoutPanel
         {
             AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Dock = DockStyle.Fill
         };
         buttons.Controls.AddRange([_cancel, _ok]);
-        table.Controls.Add(buttons, 1, 4);
+        table.Controls.Add(buttons, 1, 5);
         Controls.Add(table);
         AcceptButton = _ok;
         CancelButton = _cancel;
         _ok.Click += (_, _) => Confirm();
-        if (profile is not null)
+        _profile.SelectedIndexChanged += async (_, _) =>
         {
-            Shown += async (_, _) => await _bucket.RefreshAsync(profile, preserve: true);
-        }
+            if (_profile.SelectedItem is not ConnectionProfile selected) return;
+            var crossConnection = selected.Id != profile?.Id;
+            notice.Text = BuildTransferNotice(move, itemCount, profile?.ServiceType ?? S3ServiceType.AmazonS3) +
+                (crossConnection ? "\n\n跨连接复制经本机传输，使用源和目标各自的凭据；源对象保留。" : string.Empty);
+            _bucket.BucketText = string.Empty;
+            // Clear the old connection immediately, then preserve any target the user
+            // types while remote bucket discovery is still running.
+            await _bucket.RefreshAsync(selected, preserve: true);
+        };
+        Shown += async (_, _) =>
+        {
+            if (_profile.SelectedItem is ConnectionProfile selected)
+                await _bucket.RefreshAsync(selected, preserve: true);
+        };
     }
 
     internal static string BuildTransferNotice(bool move, int itemCount, S3ServiceType serviceType = S3ServiceType.AmazonS3)
@@ -114,7 +142,8 @@ internal sealed class ObjectTransferDialog : Form
         }
         var option = (ConflictOption)_conflict.SelectedItem!;
         Options = new ObjectTransferOptions(
-            bucket, ObjectTransferPlanner.NormalizePrefix(_prefix.Text), option.Policy);
+            bucket, ObjectTransferPlanner.NormalizePrefix(_prefix.Text), option.Policy,
+            _profile.SelectedItem as ConnectionProfile);
         DialogResult = DialogResult.OK;
         Close();
     }

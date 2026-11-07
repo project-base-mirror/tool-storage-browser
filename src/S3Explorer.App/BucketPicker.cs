@@ -17,6 +17,7 @@ internal sealed class BucketPicker : UserControl
         Name = "RefreshBucketChoicesButton",
         Text = "刷新",
         AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
         MinimumSize = new Size(68, 30)
     };
     private readonly BucketDiscoveryCache _cache;
@@ -31,16 +32,22 @@ internal sealed class BucketPicker : UserControl
     {
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _remoteLoader = remoteLoader;
-        _comboBox.Dock = DockStyle.Fill;
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        // The native ComboBox can settle on a taller height after font scaling.
+        // Top-align it so an earlier preferred height cannot leave a clipped centered offset.
+        _comboBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _comboBox.Margin = new Padding(0, 2, 6, 2);
-        _refreshButton.Dock = DockStyle.Fill;
+        _refreshButton.Anchor = AnchorStyles.Right;
         _refreshButton.Click += async (_, _) =>
         {
             if (SelectedProfile is not null) await RefreshAsync(SelectedProfile, preserve: true);
         };
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
             RowCount = 1,
             Margin = Padding.Empty,
@@ -48,11 +55,13 @@ internal sealed class BucketPicker : UserControl
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(_comboBox, 0, 0);
         layout.Controls.Add(_refreshButton, 1, 0);
         Controls.Add(layout);
+        // Let the parent measure the complete row, including button margins and large fonts.
+        // A fixed-height picker can clip a stretched button before its centered text is visible.
         MinimumSize = new Size(160, 34);
-        Height = 34;
     }
 
     [Browsable(false)]

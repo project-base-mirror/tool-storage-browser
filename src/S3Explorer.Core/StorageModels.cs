@@ -165,6 +165,11 @@ public interface IS3StorageService
     Task DeleteObjectsAsync(ConnectionProfile profile, string bucket, IReadOnlyCollection<string> keys, CancellationToken cancellationToken);
     Task<bool> ObjectExistsAsync(ConnectionProfile profile, string bucket, string key, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
+    /// <summary>Copies object bytes between independently authenticated connections, without deleting the source.</summary>
+    Task CopyObjectAcrossConnectionsAsync(ConnectionProfile sourceProfile, string sourceBucket, string sourceKey,
+        ConnectionProfile destinationProfile, string destinationBucket, string destinationKey,
+        TransferOperationContext context, CancellationToken cancellationToken) =>
+        Task.FromException(new NotSupportedException("此存储实现不支持跨连接复制。"));
     Task MoveObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey, CancellationToken cancellationToken);
     Task CopyObjectAsync(ConnectionProfile profile, string sourceBucket, string sourceKey, string destinationBucket, string destinationKey,
         TransferOperationContext context, CancellationToken cancellationToken) =>

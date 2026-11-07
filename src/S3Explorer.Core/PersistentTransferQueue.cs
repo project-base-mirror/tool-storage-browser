@@ -71,6 +71,8 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
     private readonly ITransferTaskExecutor _executor;
     private readonly Func<DateTimeOffset> _clock;
     private readonly SemaphoreSlim _mutex = new(1, 1);
+    private readonly SemaphoreSlim _removalMutex = new(1, 1);
+    private bool _removingAll;
     private readonly Dictionary<Guid, RuntimeTransfer> _running = [];
     private readonly HashSet<Guid> _cleaningMultipart = [];
     private int _cleanupOperations;
@@ -457,27 +459,46 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         Publish();
     }
 
-    public async Task CancelAllAsync(CancellationToken cancellationToken = default)
+    public async Task CancelAllAsync(CancellationToken cancellationToken = default) =>
+        await CancelAllCoreAsync(false, cancellationToken).ConfigureAwait(false);
+
+    private async Task<TransferStoreSnapshot> CancelAllCoreAsync(bool removingAll, CancellationToken cancellationToken)
     {
+        TransferStoreSnapshot original;
         var cleanupIds = new List<Guid>();
         await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             EnsureInitialized();
+            original = _snapshot;
+            if (removingAll) _removingAll = true;
             foreach (var runtime in _running.Values)
             {
                 runtime.RequestedStop = TransferTaskState.Cancelled;
                 runtime.Cancellation.Cancel();
             }
             var now = _clock();
+            var cancelledBatchIds = _snapshot.Tasks.Where(task =>
+                    IsActive(task) || task.State is TransferTaskState.Paused or TransferTaskState.Interrupted ||
+                    task.State == TransferTaskState.Failed && task.MultipartCheckpoint is not null)
+                .Select(task => task.BatchId).ToHashSet();
             var next = _snapshot with
             {
                 Tasks = _snapshot.Tasks.Select(task =>
                     task.State is TransferTaskState.Queued or TransferTaskState.Paused or TransferTaskState.RetryPending or
                         TransferTaskState.Interrupted ||
-                    task.State == TransferTaskState.Failed && task.MultipartCheckpoint is not null
+                    (task.State == TransferTaskState.Failed ||
+                     removingAll && (task.State is TransferTaskState.Cancelled or TransferTaskState.CleanupPending)) &&
+                    task.MultipartCheckpoint is not null
                         ? PrepareCancelledTask(task, now, cleanupIds)
-                        : task).ToArray()
+                        : task).ToArray(),
+                Batches = _snapshot.Batches.Select(batch =>
+                    removingAll || !batch.DiscoveryCompleted || cancelledBatchIds.Contains(batch.Id) ? batch with
+                {
+                    CancellationRequested = true,
+                    DiscoveryCompleted = true,
+                    UpdatedAt = now
+                } : batch).ToArray()
             };
             await CommitLockedAsync(next, cancellationToken).ConfigureAwait(false);
             ReserveMultipartCleanupLocked(cleanupIds);
@@ -488,15 +509,80 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
         }
         Publish();
         await CleanupCancelledMultipartBatchAsync(cleanupIds, cancellationToken).ConfigureAwait(false);
+        return original;
     }
 
-    public Task RemoveCompletedAsync(CancellationToken cancellationToken = default) => MutateAsync(
-        snapshot => snapshot with
+    public Task RemoveCompletedAsync(CancellationToken cancellationToken = default) => MutateAsync(snapshot =>
+    {
+        bool CanRemove(TransferTaskRecord task) =>
+            (task.State is TransferTaskState.Completed or TransferTaskState.Cancelled) &&
+            task.MultipartCheckpoint is null && !_running.ContainsKey(task.Id) && !_cleaningMultipart.Contains(task.Id);
+        var children = snapshot.Tasks.Where(task => task.BatchId is not null).ToLookup(task => task.BatchId!.Value);
+        var removableBatches = snapshot.Batches
+            .Where(batch => batch.DiscoveryCompleted && children[batch.Id].All(CanRemove))
+            .Select(batch => batch.Id).ToHashSet();
+        return snapshot with
         {
-            Tasks = snapshot.Tasks.Where(task =>
-                task.BatchId is not null || task.MultipartCheckpoint is not null ||
-                task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled)).ToArray()
-        }, null, cancellationToken);
+            Tasks = snapshot.Tasks.Where(task => task.BatchId is { } batchId
+                ? !removableBatches.Contains(batchId) : !CanRemove(task)).ToArray(),
+            Batches = snapshot.Batches.Where(batch => !removableBatches.Contains(batch.Id)).ToArray()
+        };
+    }, null, cancellationToken);
+
+    /// <summary>
+    /// Cancels and removes the current queue, retaining any unresolved remote multipart cleanup.
+    /// Tasks added after cancellation begins are left in the queue.
+    /// </summary>
+    public async Task RemoveAllAsync(CancellationToken cancellationToken = default)
+    {
+        await _removalMutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var original = await CancelAllCoreAsync(true, cancellationToken).ConfigureAwait(false);
+            var taskIds = original.Tasks.Select(task => task.Id).ToHashSet();
+            var batchIds = original.Batches.Select(batch => batch.Id).ToHashSet();
+            // Terminal states alone are insufficient: an executor or abort callback can still
+            // reference its task. Hold the scheduler until those callbacks have finished.
+            while (true)
+            {
+                await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (!_running.Keys.Any(taskIds.Contains) && !_cleaningMultipart.Any(taskIds.Contains))
+                    {
+                        var tasks = _snapshot.Tasks.Where(task =>
+                            !taskIds.Contains(task.Id) || task.MultipartCheckpoint is not null).ToArray();
+                        var retainedIds = tasks.Select(task => task.Id).ToHashSet();
+                        var retainedBatchIds = tasks.Where(task => task.BatchId is not null)
+                            .Select(task => task.BatchId!.Value).ToHashSet();
+                        var next = _snapshot with
+                        {
+                            Tasks = tasks,
+                            Batches = _snapshot.Batches
+                                .Where(batch => !batchIds.Contains(batch.Id) || retainedBatchIds.Contains(batch.Id))
+                                .Select(batch => batch with
+                                {
+                                    TaskIds = batch.TaskIds.Where(retainedIds.Contains).ToArray()
+                                }).ToArray()
+                        };
+                        await CommitLockedAsync(next, cancellationToken).ConfigureAwait(false);
+                        break;
+                    }
+                }
+                finally { _mutex.Release(); }
+                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            }
+            Publish();
+        }
+        finally
+        {
+            await _mutex.WaitAsync().ConfigureAwait(false);
+            try { _removingAll = false; }
+            finally { _mutex.Release(); }
+            _removalMutex.Release();
+            await PumpAsync().ConfigureAwait(false);
+        }
+    }
 
     public Task MarkMultipartCleanedAsync(
         Guid profileId,
@@ -509,11 +595,13 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             Tasks = snapshot.Tasks.Select(task =>
             {
                 var checkpoint = task.MultipartCheckpoint;
-                if (task.ProfileId != profileId ||
+                if (task.EffectiveDestinationProfileId != profileId ||
                     checkpoint is null ||
                     !string.Equals(checkpoint.UploadId, uploadId, StringComparison.Ordinal) ||
-                    !string.Equals(task.Bucket, bucket, StringComparison.Ordinal) ||
-                    !string.Equals(task.ObjectKey, objectKey, StringComparison.Ordinal))
+                    !string.Equals(string.IsNullOrWhiteSpace(checkpoint.Bucket) ? task.Bucket : checkpoint.Bucket,
+                        bucket, StringComparison.Ordinal) ||
+                    !string.Equals(string.IsNullOrEmpty(checkpoint.ObjectKey) ? task.ObjectKey : checkpoint.ObjectKey,
+                        objectKey, StringComparison.Ordinal))
                 {
                     return task;
                 }
@@ -656,7 +744,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             await _mutex.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!_initialized || _disposed || _persistenceFailed || _running.Count >= _maxConcurrency) return;
+                if (!_initialized || _disposed || _persistenceFailed || _removingAll || _running.Count >= _maxConcurrency) return;
                 var now = _clock();
                 var runningDestinations = _snapshot.Tasks.Where(active => _running.ContainsKey(active.Id)).ToArray();
                 var candidate = _snapshot.Tasks.FirstOrDefault(item =>
@@ -724,7 +812,7 @@ public sealed class PersistentTransferQueue : IAsyncDisposable
             await _executor.ExecuteAsync(context, runtime.Cancellation.Token).ConfigureAwait(false);
             await CompleteRunningAsync(task.Id, TransferTaskState.Completed, null, null).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (runtime.Cancellation.IsCancellationRequested)
+        catch (Exception) when (runtime.Cancellation.IsCancellationRequested)
         {
             var current = FindTask(_snapshot, task.Id);
             if (runtime.RequestedStop == TransferTaskState.Cancelled && current.MultipartCheckpoint is { } checkpoint)

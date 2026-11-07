@@ -35,6 +35,10 @@ public sealed class JsonTransferTaskStore : ITransferTaskStore, IRecoveryAwareSt
 
     public async Task SaveAsync(TransferStoreSnapshot snapshot, CancellationToken cancellationToken = default)
     {
+        // Older applications know only one connection per task. Do not let them silently
+        // execute a cross-connection copy against the source account after a downgrade.
+        snapshot.Validate();
+        snapshot = snapshot with { SchemaVersion = snapshot.Tasks.Any(task => task.IsCrossConnectionCopy) ? 2 : 1 };
         await _file.SaveAsync(snapshot, _options, static value => value.Validate(), cancellationToken)
             .ConfigureAwait(false);
     }

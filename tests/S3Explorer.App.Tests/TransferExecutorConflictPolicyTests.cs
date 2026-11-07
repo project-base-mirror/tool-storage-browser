@@ -34,6 +34,67 @@ public sealed class TransferExecutorConflictPolicyTests
         Assert.Equal(overwrite, recorder.Context.Options.AllowDestinationOverwrite);
     }
 
+    [Theory]
+    [InlineData(ObjectConflictPolicy.Skip, false)]
+    [InlineData(ObjectConflictPolicy.AutoRename, false)]
+    [InlineData(ObjectConflictPolicy.Overwrite, true)]
+    public async Task CrossConnectionCopyUsesIndependentProfilesAndPersistedConflictPolicy(ObjectConflictPolicy policy, bool overwrite)
+    {
+        var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss);
+        var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2);
+        var storage = DispatchProxy.Create<IS3StorageService, CrossConnectionRecordingStorage>();
+        var recorder = (CrossConnectionRecordingStorage)storage;
+        var context = new ExecutionContext(new TransferTaskRecord
+        {
+            ProfileId = source.Id, DestinationProfileId = destination.Id, DestinationProfileName = destination.Name,
+            Direction = TransferDirection.Copy, Bucket = "source", ObjectKey = "key",
+            DestinationBucket = "target", DestinationObjectKey = "copy", ConflictPolicy = policy
+        });
+        var executor = new S3TransferTaskExecutor(new Profiles(source, destination), storage,
+            new TransferRuntimeConfiguration(), null!, new SimpleFileLogger());
+        await executor.ExecuteAsync(context, TestContext.Current.CancellationToken);
+        Assert.Equal(nameof(IS3StorageService.CopyObjectAcrossConnectionsAsync), recorder.Operation);
+        Assert.Same(source, recorder.Arguments![0]);
+        Assert.Same(destination, recorder.Arguments[3]);
+        Assert.Equal(overwrite, Assert.IsType<TransferOperationContext>(recorder.Arguments[6]).Options.AllowDestinationOverwrite);
+    }
+
+    [Fact]
+    public async Task CrossConnectionMultipartCleanupNeedsOnlyDestinationCredentials()
+    {
+        var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss);
+        var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2);
+        var storage = DispatchProxy.Create<IS3StorageService, CrossConnectionRecordingStorage>();
+        var recorder = (CrossConnectionRecordingStorage)storage;
+        var context = new ExecutionContext(new TransferTaskRecord
+        {
+            ProfileId = source.Id, DestinationProfileId = destination.Id, Direction = TransferDirection.Copy,
+            Bucket = "source", ObjectKey = "key", DestinationBucket = "target", DestinationObjectKey = "copy",
+            MultipartCheckpoint = new("upload", 5 * 1024 * 1024, [], Bucket: "target", ObjectKey: "copy")
+        });
+        // The source connection may have been removed; abort still targets the destination.
+        var executor = new S3TransferTaskExecutor(new Profiles(destination), storage,
+            new TransferRuntimeConfiguration(), null!, new SimpleFileLogger());
+        await executor.AbortMultipartAsync(context, TestContext.Current.CancellationToken);
+        Assert.Equal(nameof(IS3StorageService.AbortMultipartUploadAsync), recorder.Operation);
+        Assert.Same(destination, recorder.Arguments![0]);
+        Assert.Equal("target", recorder.Arguments[1]);
+        Assert.Equal("copy", recorder.Arguments[2]);
+        Assert.Equal("upload", recorder.Arguments[3]);
+    }
+
+    public class CrossConnectionRecordingStorage : DispatchProxy
+    {
+        public string? Operation;
+        public object?[]? Arguments;
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            Operation = targetMethod!.Name;
+            Arguments = args;
+            return Task.CompletedTask;
+        }
+    }
+
     public class RecordingStorage : DispatchProxy
     {
         public string? Operation;
@@ -46,10 +107,10 @@ public sealed class TransferExecutorConflictPolicyTests
         }
     }
 
-    private sealed class Profiles(ConnectionProfile profile) : IProfileStore
+    private sealed class Profiles(params ConnectionProfile[] profiles) : IProfileStore
     {
         public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<ConnectionProfile>>([profile]);
+            Task.FromResult<IReadOnlyList<ConnectionProfile>>(profiles);
         public Task SaveAsync(IReadOnlyCollection<ConnectionProfile> profiles, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
