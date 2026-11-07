@@ -51,7 +51,7 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertEqual('APPLICATIONFOLDER', restore.get('Id'))
         self.assertEqual('[PREVIOUSINSTALLLOCATION]', restore.get('Value'))
         self.assertEqual(
-            'WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND '
+            'WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND APPLICATIONFOLDER >> "\\." AND '
             '(APPLICATIONFOLDER ~= LegacyUpdaterLocation OR APPLICATIONFOLDER ~= LegacyUpdaterLocationWithoutSlash)',
             restore.get('Condition'))
 
@@ -80,6 +80,7 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('"EvaluateCondition"', lifecycle)
         self.assertIn('"DoAction"', lifecycle)
         self.assertIn('@("InstallExecuteSequence", "InstallUISequence")', lifecycle)
+        self.assertIn('name = "non-legacy-terminal-dot"', lifecycle)
         self.assertIn('name = "explicit-other-path"', lifecycle)
         self.assertIn('name = "other-invalid-path"', lifecycle)
         self.assertIn('name = "not-an-upgrade"', lifecycle)

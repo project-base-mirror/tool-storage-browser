@@ -34,7 +34,7 @@
         Condition="PREVIOUSINSTALLLOCATION" />
     <SetProperty Id="APPLICATIONFOLDER" Value="[PREVIOUSINSTALLLOCATION]"
         Action="RestoreLegacyUpdaterLocation" After="BuildLegacyUpdaterLocationWithoutSlash" Sequence="both"
-        Condition="WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND (APPLICATIONFOLDER ~= LegacyUpdaterLocation OR APPLICATIONFOLDER ~= LegacyUpdaterLocationWithoutSlash)" />
+        Condition="WIX_UPGRADE_DETECTED AND PREVIOUSINSTALLLOCATION AND APPLICATIONFOLDER &gt;&gt; &quot;\.&quot; AND (APPLICATIONFOLDER ~= LegacyUpdaterLocation OR APPLICATIONFOLDER ~= LegacyUpdaterLocationWithoutSlash)" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="ARPURLINFOABOUT" Value="https://project-base-mirror.github.io/tool-storage-browser/" />

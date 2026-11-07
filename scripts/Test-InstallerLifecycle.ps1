@@ -336,6 +336,7 @@ function Test-LegacyDirectoryActions {
         @{ name = "legacy-trailing-slash"; registered = $registered; requested = "$registered."; upgrade = "{TEST}"; expected = $registered },
         @{ name = "legacy-no-trailing-slash"; registered = $InstallDirectory; requested = "$InstallDirectory\."; upgrade = "{TEST}"; expected = $InstallDirectory },
         @{ name = "legacy-case-insensitive"; registered = $registered; requested = "$registered.".ToUpperInvariant(); upgrade = "{TEST}"; expected = $registered },
+        @{ name = "non-legacy-terminal-dot"; registered = $InstallDirectory; requested = "$InstallDirectory."; upgrade = "{TEST}"; expected = "$InstallDirectory." },
         @{ name = "explicit-same-path"; registered = $registered; requested = $InstallDirectory; upgrade = "{TEST}"; expected = $InstallDirectory },
         @{ name = "explicit-other-path"; registered = $registered; requested = "$InstallDirectory Other"; upgrade = "{TEST}"; expected = "$InstallDirectory Other" },
         @{ name = "other-invalid-path"; registered = $registered; requested = "$InstallDirectory Other\."; upgrade = "{TEST}"; expected = "$InstallDirectory Other\." },
@@ -515,7 +516,7 @@ try {
     }
     $result.products = $identities
     Test-LegacyDirectoryActions -Path $CurrentMsi
-    $result.legacyDirectoryActions = "PassedEightCasesAndBothSequenceTables"
+    $result.legacyDirectoryActions = "PassedNineCasesAndBothSequenceTables"
     $cleanupNeeded = $true
     if ($PreviousMsi) {
         $null = Invoke-Msi -Action Install -Path $PreviousMsi -LogPath (Join-Path $runRoot "install-previous.log")
