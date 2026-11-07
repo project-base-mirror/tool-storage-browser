@@ -19,6 +19,7 @@ public sealed partial class MainFormInteractionTests
                 var profile = ConnectionProfile.CreatePreset(S3ServiceType.AmazonS3);
                 await using var queue = new PersistentTransferQueue(
                     new JsonTransferTaskStore(Path.Combine(root, "tasks.json")), new NeverRunExecutor());
+                await queue.InitializeAsync(TestContext.Current.CancellationToken);
                 using var form = CreateForm(queue, new TransferRuntimeConfiguration(),
                     new SimpleFileLogger(Path.Combine(root, "logs")), new SingleProfileStore(profile));
                 SetField(form, "_currentProfile", profile);

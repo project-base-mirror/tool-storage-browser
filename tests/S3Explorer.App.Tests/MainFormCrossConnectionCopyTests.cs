@@ -16,8 +16,11 @@ public sealed partial class MainFormInteractionTests
             Directory.CreateDirectory(root);
             try
             {
-                var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with { Name = "source" };
-                var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with { Name = "destination" };
+                var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with
+                { Name = "source", Endpoint = "https://source.example.test" };
+                var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with
+                { Name = "destination", Endpoint = "https://destination.example.test" };
+                Assert.NotEqual(source.NormalizedEndpoint, destination.NormalizedEndpoint);
                 var storage = DispatchProxy.Create<IS3StorageService, FileClipboardStorageProxy>();
                 var fake = (FileClipboardStorageProxy)(object)storage;
                 fake.Head = (_, bucket, key) => Task.FromResult(new ObjectProperties(
@@ -69,9 +72,12 @@ public sealed partial class MainFormInteractionTests
             var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             try
             {
-                var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with { Name = "source" };
-                var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with { Name = "destination" };
+                var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with
+                { Name = "source", Endpoint = "https://source.example.test" };
+                var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with
+                { Name = "destination", Endpoint = "https://destination.example.test" };
                 var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Assert.NotEqual(source.NormalizedEndpoint, destination.NormalizedEndpoint);
                 var storage = DispatchProxy.Create<IS3StorageService, FileClipboardStorageProxy>();
                 var fake = (FileClipboardStorageProxy)(object)storage;
                 fake.RawList = (profile, bucket, prefix, continuation) =>
@@ -105,7 +111,12 @@ public sealed partial class MainFormInteractionTests
                     [new("folder/", "folder", true, 0)], false);
                 var pending = InvokeFileClipboardAsync(form, "QueueObjectTransferAsync", payload,
                     "same-bucket", "", ObjectConflictPolicy.Skip, destination);
-                await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                // Surface setup/validation failures from the operation itself instead of
+                // hiding them behind a timeout waiting for a callback it never reaches.
+                var first = await Task.WhenAny(started.Task, pending)
+                    .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                if (ReferenceEquals(first, pending)) await pending;
+                Assert.True(started.Task.IsCompleted, "Copy discovery ended before the destination conflict lookup.");
                 SetField(form, "_currentProfile", ConnectionProfile.CreatePreset(S3ServiceType.MinIO));
                 SetField(form, "_currentBucket", "unrelated");
                 release.TrySetResult(false);
@@ -137,8 +148,10 @@ public sealed partial class MainFormInteractionTests
     {
         await RunMessagePumpAsync(async unusedHost =>
         {
-            var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with { Name = "source" };
-            var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with { Name = "destination" };
+            var source = ConnectionProfile.CreatePreset(S3ServiceType.AliyunOss) with
+                { Name = "source", Endpoint = "https://source.example.test" };
+            var destination = ConnectionProfile.CreatePreset(S3ServiceType.CloudflareR2) with
+                { Name = "destination", Endpoint = "https://destination.example.test" };
             using var copy = new ObjectTransferDialog(false, "bucket", "", 1, source, profiles: [source, destination]);
             var picker = Assert.IsType<ComboBox>(Assert.Single(copy.Controls.Find("ObjectTransferDestinationProfile", true)));
             Assert.Equal(2, picker.Items.Count);

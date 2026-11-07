@@ -34,7 +34,9 @@ internal sealed class BucketPicker : UserControl
         _remoteLoader = remoteLoader;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _comboBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        // The native ComboBox can settle on a taller height after font scaling.
+        // Top-align it so an earlier preferred height cannot leave a clipped centered offset.
+        _comboBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _comboBox.Margin = new Padding(0, 2, 6, 2);
         _refreshButton.Anchor = AnchorStyles.Right;
         _refreshButton.Click += async (_, _) =>
