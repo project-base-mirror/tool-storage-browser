@@ -140,12 +140,27 @@ public sealed class UpdateRunnerTests
         }
     }
 
-    [Fact]
-    public void InstallerArgumentsKeepCustomDirectory()
+    [Theory]
+    [InlineData(@"C:\Program Files\S3 Explorer\S3Explorer.exe", @"C:\Program Files\S3 Explorer")]
+    [InlineData(@"D:\My Apps\S3 Explorer\S3Explorer.exe", @"D:\My Apps\S3 Explorer")]
+    [InlineData(@"D:\我的应用\S3 Explorer\S3Explorer.exe", @"D:\我的应用\S3 Explorer")]
+    [InlineData(@"D:\S3Explorer.exe", @"D:\")]
+    [InlineData(@"\\server\share\S3 Explorer\S3Explorer.exe", @"\\server\share\S3 Explorer")]
+    public void InstallerArgumentsPreserveExactDirectoryWithoutDotSuffix(string applicationPath, string expectedDirectory)
     {
-        var arguments = UpdateRunner.BuildInstallerArguments(
-            @"C:\Downloads\update.msi", @"C:\Logs\install.log", @"D:\My Apps\S3 Explorer\S3Explorer.exe");
-        Assert.Contains("APPLICATIONFOLDER=\"D:\\My Apps\\S3 Explorer\\.\"", arguments, StringComparison.Ordinal);
+        const string msiPath = @"C:\Downloads\安装包\S3 Explorer update.msi";
+        const string logPath = @"C:\Logs\更新日志\install update.log";
+        var startInfo = UpdateRunner.BuildInstallerStartInfo(msiPath, logPath, applicationPath);
+
+        Assert.Equal(new[]
+        {
+            "/i", msiPath, "/qn", "/norestart", "/l*v", logPath,
+            $"APPLICATIONFOLDER={expectedDirectory}"
+        }, startInfo.ArgumentList);
+        Assert.Empty(startInfo.Arguments);
+        Assert.True(startInfo.UseShellExecute);
+        Assert.Equal("runas", startInfo.Verb);
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe"), startInfo.FileName);
     }
 
     [Theory]

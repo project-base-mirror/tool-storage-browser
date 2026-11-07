@@ -71,6 +71,7 @@ internal sealed partial class MainForm
                              emptyDirectories.Add(directory);
                          }))
                 {
+                    _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                     var info = new FileInfo(file);
                     var relative = Path.GetRelativePath(path, file).Replace('\\', '/');
                     var destination = await ResolveUploadDestinationAsync(
@@ -90,6 +91,7 @@ internal sealed partial class MainForm
                 // resumable queue path; zero-byte markers use the same conditional upload pipeline.
                 foreach (var directory in emptyDirectories)
                 {
+                    _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                     var relative = Path.GetRelativePath(path, directory).Replace('\\', '/');
                     var folderKey = prefix + rootName + (relative == "." ? "/" : "/" + relative + "/");
                     await UploadEmptyDirectoryMarkerAsync(profile, bucket, folderKey);
@@ -187,6 +189,7 @@ internal sealed partial class MainForm
         {
             foreach (var entry in selected)
             {
+                _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                 if (!entry.IsDirectory)
                 {
                     if (seenKeys.Add(entry.Key))
@@ -202,6 +205,7 @@ internal sealed partial class MainForm
                 {
                     await foreach (var child in EnumerateAllObjectsAsync(entry.Key, profile: profile, bucket: bucket))
                     {
+                        _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                         if (child.IsDirectory || !seenKeys.Add(child.Key))
                             continue;
                         var relative = DownloadRelativeKey(entry, child.Key);
@@ -274,6 +278,7 @@ internal sealed partial class MainForm
         {
             await foreach (var entry in EnumerateAllObjectsAsync(string.Empty, profile: profile, bucket: bucket))
             {
+                _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                 if (entry.IsDirectory) continue;
                 var destination = ResolveDownloadDestination(
                     LocalObjectPath.MapRelativeKey(targetRoot, entry.Key), policy, allocated);
@@ -482,29 +487,48 @@ internal sealed partial class MainForm
             selected.Count,
             _currentProfile,
             _storage,
-            _bucketDiscoveryCache);
+            _bucketDiscoveryCache,
+            _profiles);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Options is null) return;
         await QueueObjectTransferAsync(
             payload, dialog.Options.DestinationBucket,
-            dialog.Options.DestinationPrefix, dialog.Options.ConflictPolicy);
+            dialog.Options.DestinationPrefix, dialog.Options.ConflictPolicy,
+            dialog.Options.DestinationProfile);
     }
 
     private async Task QueueObjectTransferAsync(
         ObjectClipboardPayload payload,
         string destinationBucket,
         string destinationPrefix,
-        ObjectConflictPolicy conflictPolicy)
+        ObjectConflictPolicy conflictPolicy,
+        ConnectionProfile? destinationProfile = null)
     {
-        if (_currentProfile is null || payload.ProfileId != _currentProfile.Id)
+        // Freeze both sides before discovery yields. Navigating elsewhere must not change
+        // the source enumeration, conflict checks or credentials of an already-started batch.
+        destinationProfile ??= _currentProfile;
+        if (destinationProfile is null) return;
+        var sourceProfile = _profiles.FirstOrDefault(profile => profile.Id == payload.ProfileId)
+            ?? (_currentProfile?.Id == payload.ProfileId ? _currentProfile : null)
+            ?? (await _profileStore.LoadAsync()).FirstOrDefault(profile => profile.Id == payload.ProfileId);
+        if (sourceProfile is null)
         {
-            MessageBox.Show(this, "对象剪贴板属于另一个连接。请在源连接中重新复制或剪切。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "源连接已不存在，请重新选择要复制的对象。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        var crossConnection = sourceProfile.Id != destinationProfile.Id;
+        var sameStorageEndpoint = !crossConnection ||
+            sourceProfile.NormalizedEndpoint == destinationProfile.NormalizedEndpoint;
+        if (payload.Move && crossConnection)
+        {
+            MessageBox.Show(this, "跨连接请使用复制，核对目标后再删除源对象。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         var direction = payload.Move ? TransferDirection.Move : TransferDirection.Copy;
         var batch = await _transfers.CreateBatchAsync(
-            _currentProfile, payload.SourceBucket,
-            $"{(payload.Move ? "移动" : "复制")} {payload.Entries.Count:N0} 项",
+            sourceProfile, payload.SourceBucket,
+            $"{(payload.Move ? "移动" : "复制")} {payload.Entries.Count:N0} 项" +
+                (crossConnection ? $" → {destinationProfile.Name}" : string.Empty),
             $"s3://{payload.SourceBucket}", direction);
         var chunk = new List<ObjectTransferBatchItem>(256);
         var skipped = 0;
@@ -513,23 +537,29 @@ internal sealed partial class MainForm
         {
             foreach (var entry in payload.Entries)
             {
+                _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                 // Name is a presentation label (empty/dot segments have friendly
                 // labels). Only the literal key can determine a remote target.
                 var topName = S3Path.LeafName(entry.Key, entry.IsDirectory);
                 if (entry.IsDirectory)
                 {
                     var destinationRoot = ObjectTransferPlanner.BuildDirectoryDestinationKey(destinationPrefix, topName);
-                    ObjectTransferPlanner.ValidateDestination(
-                        payload.SourceBucket, entry.Key, true, destinationBucket, destinationRoot);
-                    await foreach (var child in EnumerateAllObjectsAsync(entry.Key, includeFolderMarkers: true))
+                    if (sameStorageEndpoint)
+                        ObjectTransferPlanner.ValidateDestination(
+                            payload.SourceBucket, entry.Key, true, destinationBucket, destinationRoot);
+                    await foreach (var child in EnumerateAllObjectsAsync(
+                        entry.Key, includeFolderMarkers: true, profile: sourceProfile, bucket: payload.SourceBucket))
                     {
+                        _transfers.ThrowIfBatchDiscoveryStopped(batch.Id);
                         if (child.IsDirectory) continue;
                         var relative = ObjectTransferPlanner.GetRelativePath(entry.Key, child.Key);
                         var target = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName, relative);
-                        var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
+                        var resolved = await ResolveObjectConflictAsync(destinationProfile, destinationBucket, target, conflictPolicy);
                         if (resolved is null) { skipped++; continue; }
                         chunk.Add(new ObjectTransferBatchItem(
-                            child.Key, destinationBucket, resolved.Value.Key, $"{topName}/{relative}", child.Size, resolved.Value.Policy));
+                            child.Key, destinationBucket, resolved.Value.Key, $"{topName}/{relative}", child.Size, resolved.Value.Policy,
+                            crossConnection ? destinationProfile.Id : null,
+                            crossConnection ? destinationProfile.Name : null));
                         if (chunk.Count >= 256)
                         {
                             await _transfers.AddObjectTransferBatchItemsAsync(batch, chunk);
@@ -540,12 +570,15 @@ internal sealed partial class MainForm
                 else
                 {
                     var target = ObjectTransferPlanner.BuildDestinationKey(destinationPrefix, topName);
-                    ObjectTransferPlanner.ValidateDestination(
-                        payload.SourceBucket, entry.Key, false, destinationBucket, target);
-                    var resolved = await ResolveObjectConflictAsync(destinationBucket, target, conflictPolicy);
+                    if (sameStorageEndpoint)
+                        ObjectTransferPlanner.ValidateDestination(
+                            payload.SourceBucket, entry.Key, false, destinationBucket, target);
+                    var resolved = await ResolveObjectConflictAsync(destinationProfile, destinationBucket, target, conflictPolicy);
                     if (resolved is null) { skipped++; continue; }
                     chunk.Add(new ObjectTransferBatchItem(
-                        entry.Key, destinationBucket, resolved.Value.Key, topName, entry.Size, resolved.Value.Policy));
+                        entry.Key, destinationBucket, resolved.Value.Key, topName, entry.Size, resolved.Value.Policy,
+                        crossConnection ? destinationProfile.Id : null,
+                        crossConnection ? destinationProfile.Name : null));
                 }
 
                 if (chunk.Count >= 256)
@@ -560,7 +593,11 @@ internal sealed partial class MainForm
         catch (OperationCanceledException)
         {
             cancelled = true;
-            await _transferQueue.CancelBatchAsync(batch.Id);
+            if (!_transfers.IsBatchDiscoveryStopped(batch.Id))
+            {
+                try { await _transferQueue.CancelBatchAsync(batch.Id); }
+                catch (KeyNotFoundException) when (_transfers.IsBatchDiscoveryStopped(batch.Id)) { }
+            }
         }
         catch (Exception exception)
         {
@@ -583,10 +620,10 @@ internal sealed partial class MainForm
     }
 
     private async Task<(string Key, ObjectConflictPolicy Policy)?> ResolveObjectConflictAsync(
-        string bucket, string key, ObjectConflictPolicy policy)
+        ConnectionProfile profile, string bucket, string key, ObjectConflictPolicy policy)
     {
         if (policy == ObjectConflictPolicy.Overwrite) return (key, policy);
-        if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, key, CancellationToken.None))
+        if (!await _storage.ObjectExistsAsync(profile, bucket, key, CancellationToken.None))
             return (key, policy == ObjectConflictPolicy.Ask ? ObjectConflictPolicy.Skip : policy);
         if (policy == ObjectConflictPolicy.Skip) return null;
         if (policy == ObjectConflictPolicy.Ask)
@@ -604,7 +641,7 @@ internal sealed partial class MainForm
         for (var sequence = 2; sequence <= 10_000; sequence++)
         {
             var candidate = ObjectTransferPlanner.GetAutoRenameCandidate(key, sequence);
-            if (!await _storage.ObjectExistsAsync(_currentProfile!, bucket, candidate, CancellationToken.None))
+            if (!await _storage.ObjectExistsAsync(profile, bucket, candidate, CancellationToken.None))
                 return (candidate, ObjectConflictPolicy.AutoRename);
         }
         throw new InvalidOperationException("无法为目标对象生成不冲突的名称。");
@@ -613,10 +650,10 @@ internal sealed partial class MainForm
     private bool EnsureClipboardProfile(bool showMessage = true)
     {
         var valid = OwnsObjectClipboard() && _objectClipboard is not null &&
-            _currentProfile?.Id == _objectClipboard.ProfileId &&
-            _currentBucket is not null;
+            _currentProfile is not null && _currentBucket is not null &&
+            (!_objectClipboard.Move || _currentProfile.Id == _objectClipboard.ProfileId);
         if (!valid && showMessage)
-            MessageBox.Show(this, "对象剪贴板为空，或属于另一个连接。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "对象剪贴板为空，或剪切来源不属于当前连接。跨连接请使用复制。", "对象剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
         return valid;
     }
 

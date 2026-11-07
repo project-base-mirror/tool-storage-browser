@@ -6,12 +6,13 @@ namespace S3Explorer.App;
 
 internal sealed record AppSettings
 {
+    internal const int MinimumTransferPanelHeight = 240;
     public int WindowX { get; init; } = -1;
     public int WindowY { get; init; } = -1;
     public int WindowWidth { get; init; } = 1280;
     public int WindowHeight { get; init; } = 780;
     public int LeftPanelWidth { get; init; } = 270;
-    public int TransferPanelHeight { get; init; } = 190;
+    public int TransferPanelHeight { get; init; } = 320;
     public bool ShowTransfers { get; init; } = true;
     public bool RememberLayout { get; init; } = true;
     public bool ConfirmDelete { get; init; } = true;
@@ -49,7 +50,7 @@ internal sealed record AppSettings
             WindowWidth = Math.Clamp(WindowWidth, 960, 10000),
             WindowHeight = Math.Clamp(WindowHeight, 600, 10000),
             LeftPanelWidth = Math.Clamp(LeftPanelWidth, 180, 4000),
-            TransferPanelHeight = Math.Clamp(TransferPanelHeight, 120, 3000),
+            TransferPanelHeight = Math.Clamp(TransferPanelHeight, MinimumTransferPanelHeight, 3000),
             DefaultDownloadDirectory = string.IsNullOrWhiteSpace(DefaultDownloadDirectory)
                 ? defaults.DefaultDownloadDirectory
                 : DefaultDownloadDirectory.Trim(),

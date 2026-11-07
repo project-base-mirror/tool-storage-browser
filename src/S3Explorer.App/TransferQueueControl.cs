@@ -24,7 +24,9 @@ internal sealed record ObjectTransferBatchItem(
     string DestinationKey,
     string RelativePath,
     long Size,
-    ObjectConflictPolicy ConflictPolicy);
+    ObjectConflictPolicy ConflictPolicy,
+    Guid? DestinationProfileId = null,
+    string? DestinationProfileName = null);
 
 internal sealed class TransferCompletedEventArgs(TransferTaskRecord task) : EventArgs
 {
@@ -38,13 +40,13 @@ internal sealed class TransferFinishedEventArgs(TransferTaskRecord task) : Event
 
 internal sealed class TransferQueueControl : UserControl
 {
-    private const int VisibleStandaloneLimit = 1_000;
+    private const int VisibleTaskLimit = 1_000;
     private const int ProgressRefreshIntervalMilliseconds = 150;
 
     private sealed record ProgressSample(long Bytes, long Total, double BytesPerSecond, DateTimeOffset At);
 
     private readonly PersistentTransferQueue _queue;
-    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill, ShowToolTips = true };
     private readonly ListView _batches = CreateBatchList();
     private readonly ListView _all = CreateTaskList("AllTransfersList");
     private readonly ListView _active = CreateTaskList("ActiveTransfersList");
@@ -223,7 +225,7 @@ internal sealed class TransferQueueControl : UserControl
             MaxAttempts = _maxAttempts,
             RetryBaseDelaySeconds = _retryBaseDelaySeconds
         }).ToArray();
-        return _queue.AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
+        return AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
     }
 
     public Task AddDownloadBatchItemsAsync(
@@ -247,7 +249,7 @@ internal sealed class TransferQueueControl : UserControl
             MaxAttempts = _maxAttempts,
             RetryBaseDelaySeconds = _retryBaseDelaySeconds
         }).ToArray();
-        return _queue.AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
+        return AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
     }
 
     public Task AddObjectTransferBatchItemsAsync(
@@ -266,6 +268,8 @@ internal sealed class TransferQueueControl : UserControl
             Kind = TransferTaskKind.ObjectTransfer,
             Bucket = batch.Bucket,
             ObjectKey = item.SourceKey,
+            DestinationProfileId = item.DestinationProfileId,
+            DestinationProfileName = item.DestinationProfileName,
             DestinationBucket = item.DestinationBucket,
             DestinationObjectKey = item.DestinationKey,
             ConflictPolicy = item.ConflictPolicy,
@@ -274,14 +278,38 @@ internal sealed class TransferQueueControl : UserControl
             MaxAttempts = _maxAttempts,
             RetryBaseDelaySeconds = _retryBaseDelaySeconds
         }).ToArray();
-        return _queue.AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
+        return AddBatchTasksAsync(batch.Id, tasks, cancellationToken);
     }
 
-    public Task CompleteBatchDiscoveryAsync(
+    internal bool IsBatchDiscoveryStopped(Guid batchId) =>
+        !_queue.Snapshot.Batches.Any(batch => batch.Id == batchId && !batch.CancellationRequested);
+
+    internal void ThrowIfBatchDiscoveryStopped(Guid batchId)
+    {
+        if (IsBatchDiscoveryStopped(batchId)) throw new OperationCanceledException("批次发现已取消。");
+    }
+
+    private async Task AddBatchTasksAsync(Guid batchId, IReadOnlyCollection<TransferTaskRecord> tasks,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfBatchDiscoveryStopped(batchId);
+        try { await _queue.AddBatchTasksAsync(batchId, tasks, cancellationToken); }
+        catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException &&
+                                         IsBatchDiscoveryStopped(batchId))
+        {
+            throw new OperationCanceledException("批次发现已取消。", exception, cancellationToken);
+        }
+    }
+
+    public async Task CompleteBatchDiscoveryAsync(
         Guid batchId,
         int skippedCount = 0,
-        CancellationToken cancellationToken = default) =>
-        _queue.CompleteBatchDiscoveryAsync(batchId, skippedCount, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (IsBatchDiscoveryStopped(batchId)) return;
+        try { await _queue.CompleteBatchDiscoveryAsync(batchId, skippedCount, cancellationToken); }
+        catch (KeyNotFoundException) when (IsBatchDiscoveryStopped(batchId)) { }
+    }
 
     private void BuildUi()
     {
@@ -298,6 +326,10 @@ internal sealed class TransferQueueControl : UserControl
         toolbar.Items.Add(GlobalButton("暂停全部", UiIconKind.Transfers, () => _queue.PauseAllAsync()));
         toolbar.Items.Add(GlobalButton("取消全部", UiIconKind.Delete, () => _queue.CancelAllAsync()));
         toolbar.Items.Add(GlobalButton("清除已完成", UiIconKind.Delete, () => _queue.RemoveCompletedAsync()));
+        var clearAll = GlobalButton("清除所有", UiIconKind.Delete, ClearAllAsync);
+        clearAll.Name = "ClearAllTransfersButton";
+        clearAll.ToolTipText = "取消未完成传输并清空任务和批次记录，不删除已传输的文件";
+        toolbar.Items.Add(clearAll);
         toolbar.Items.Add(new ToolStripSeparator());
         var details = new ToolStripButton("批次明细", UiIcons.Create(UiIconKind.Transfers, 16));
         details.Click += (_, _) => OpenSelectedBatchDetails();
@@ -319,11 +351,11 @@ internal sealed class TransferQueueControl : UserControl
         };
         toolbar.Items.Add(cancelBatch);
 
-        AddTab("批次", _batches);
-        AddTab("全部", _all);
-        AddTab("进行中", _active);
-        AddTab("成功", _completed);
-        AddTab("失败", _failed);
+        AddTab("批次", _batches, "按文件夹或操作分组的批次数量；其他标签按文件任务计数（含批次内文件）");
+        AddTab("全部", _all, "所有文件任务，包括批次内文件；已跳过的文件未创建传输任务");
+        AddTab("进行中", _active, "所有尚未结束的文件任务，包括批次内文件");
+        AddTab("成功", _completed, "所有成功的文件任务，包括批次内文件");
+        AddTab("失败", _failed, "所有失败的文件任务，包括批次内文件");
         _batches.RetrieveVirtualItem += RetrieveBatchItem;
         _batches.DoubleClick += (_, _) => OpenSelectedBatchDetails();
         ConfigureTaskList(_all);
@@ -353,13 +385,35 @@ internal sealed class TransferQueueControl : UserControl
     private ToolStripButton GlobalButton(string text, UiIconKind icon, Func<Task> action)
     {
         var button = new ToolStripButton(text, UiIcons.Create(icon, 16));
-        button.Click += async (_, _) => await ExecuteActionAsync(action);
+        button.Click += async (_, _) =>
+        {
+            button.Enabled = false;
+            try { await ExecuteActionAsync(action); }
+            finally { if (!button.IsDisposed) button.Enabled = true; }
+        };
         return button;
     }
 
-    private void AddTab(string text, Control control)
+    private async Task ClearAllAsync()
     {
-        var page = new TabPage(text);
+        var snapshot = _queue.Snapshot;
+        var unfinished = snapshot.Tasks.Any(task => task.MultipartCheckpoint is not null ||
+            task.State is not (TransferTaskState.Completed or TransferTaskState.Cancelled or TransferTaskState.Failed)) ||
+            snapshot.Batches.Any(batch => !batch.DiscoveryCompleted);
+        if (unfinished && MessageBox.Show(this,
+                "将取消未完成的传输并清除所有任务和批次记录。已传输的文件不会删除。继续吗？",
+                "清除所有传输", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        await _queue.RemoveAllAsync();
+        if (_queue.Snapshot.Tasks.Any(task => task.State == TransferTaskState.CleanupPending))
+            MessageBox.Show(this, "部分分片上传尚未清理成功，已保留相关记录。请在未完成分片管理中清理后重试。",
+                "清除所有传输", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    private void AddTab(string text, Control control, string toolTipText)
+    {
+        var page = new TabPage(text) { ToolTipText = toolTipText };
         page.Controls.Add(control);
         _tabs.TabPages.Add(page);
     }
@@ -702,33 +756,32 @@ internal sealed class TransferQueueControl : UserControl
         _batches.VirtualListSize = _batchRows.Length;
         _batches.Invalidate();
 
-        var standalone = snapshot.Tasks
-            .Where(task => task.BatchId is null)
+        var all = snapshot.Tasks
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
-        var active = standalone
+        var active = all
             .Where(task => task.State is not (
                 TransferTaskState.Completed or
                 TransferTaskState.Cancelled or
                 TransferTaskState.Failed))
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
-        var completed = standalone
+        var completed = all
             .Where(task => task.State == TransferTaskState.Completed)
             .ToArray();
-        var failed = standalone
+        var failed = all
             .Where(task => task.State == TransferTaskState.Failed)
             .OrderByDescending(task => task.UpdatedAt)
             .ToArray();
 
-        SetListRows(_all, standalone);
+        SetListRows(_all, all);
         SetListRows(_active, active);
         SetListRows(_completed, completed);
         SetListRows(_failed, failed);
         RefreshSelectedList();
 
         _tabs.TabPages[0].Text = $"批次 ({_batchRows.Length:N0})";
-        _tabs.TabPages[1].Text = TabText("全部", standalone.Length);
+        _tabs.TabPages[1].Text = TabText("全部", all.Length);
         _tabs.TabPages[2].Text = TabText("进行中", active.Length);
         _tabs.TabPages[3].Text = TabText("成功", completed.Length);
         _tabs.TabPages[4].Text = TabText("失败", failed.Length);
@@ -736,7 +789,7 @@ internal sealed class TransferQueueControl : UserControl
 
     private void SetListRows(ListView list, TransferTaskRecord[] rows)
     {
-        _listRows[list] = rows.Take(VisibleStandaloneLimit).ToArray();
+        _listRows[list] = rows.Take(VisibleTaskLimit).ToArray();
         _dirtyLists.Add(list);
     }
 
@@ -821,6 +874,7 @@ internal sealed class TransferQueueControl : UserControl
             TransferDirection.Upload => $"s3://{task.Bucket}/{task.ObjectKey}",
             TransferDirection.Download => task.LocalPath,
             TransferDirection.Copy or TransferDirection.Move =>
+                (task.IsCrossConnectionCopy ? $"{task.DestinationProfileName}: " : string.Empty) +
                 $"s3://{task.DestinationBucket}/{task.DestinationObjectKey}",
             TransferDirection.DeleteRemote => "删除远端对象",
             TransferDirection.DeleteLocal => "删除本地文件",
@@ -904,6 +958,11 @@ internal sealed class TransferQueueControl : UserControl
         try
         {
             await action();
+            if (!IsDisposed)
+            {
+                _viewsDirty = false;
+                RefreshViews(_queue.Snapshot);
+            }
         }
         catch (Exception exception)
         {
@@ -971,8 +1030,8 @@ internal sealed class TransferQueueControl : UserControl
     }
 
     private static string TabText(string name, int total) =>
-        total > VisibleStandaloneLimit
-            ? $"{name} ({total:N0}，显示前 {VisibleStandaloneLimit:N0})"
+        total > VisibleTaskLimit
+            ? $"{name} ({total:N0}，显示前 {VisibleTaskLimit:N0})"
             : $"{name} ({total:N0})";
 
     private static string BatchStateText(TransferBatchState state) => state switch

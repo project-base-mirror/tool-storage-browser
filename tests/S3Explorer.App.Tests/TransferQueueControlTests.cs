@@ -50,6 +50,118 @@ public sealed class TransferQueueControlTests
         });
     }
 
+    [Fact]
+    public void TaskTabsIncludeBatchChildrenAndClearButtonsRefreshAllCounts()
+    {
+        RunSta(() =>
+        {
+            var profileId = Guid.NewGuid();
+            var batch = new TransferBatchRecord
+            {
+                ProfileId = profileId, ProfileName = "test-profile", Name = "folder",
+                Bucket = "test-bucket", RootPath = Path.GetTempPath(), DiscoveryCompleted = true,
+                Direction = TransferDirection.Download
+            };
+            var child = CreateTask(profileId, "folder/done.bin", TransferTaskState.Completed) with
+            { BatchId = batch.Id, Kind = TransferTaskKind.FolderBatchItem };
+            batch = batch with { TaskIds = [child.Id] };
+            var failed = CreateTask(profileId, "failed.bin", TransferTaskState.Failed);
+            var queue = new PersistentTransferQueue(new SnapshotStore(new TransferStoreSnapshot
+            { Tasks = [child, failed], Batches = [batch] }), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue) { Width = 1600, Height = 320 };
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                var tabs = Assert.Single(control.Controls.OfType<TabControl>());
+                Assert.Equal(["批次 (1)", "全部 (2)", "进行中 (0)", "成功 (1)", "失败 (1)"],
+                    tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                tabs.SelectedIndex = 1;
+                Assert.Equal(2, FindList(control, "AllTransfersList").Items.Count);
+                tabs.SelectedIndex = 3;
+                Assert.Equal(child.Id, Assert.IsType<TransferTaskRecord>(
+                    Assert.Single(FindList(control, "SuccessfulTransfersList").Items.Cast<ListViewItem>()).Tag).Id);
+
+                var toolbar = Assert.Single(control.Controls.OfType<ToolStrip>());
+                toolbar.Items.OfType<ToolStripButton>().Single(button => button.Text == "清除已完成").PerformClick();
+                Assert.Empty(queue.Snapshot.Batches);
+                Assert.Equal(["批次 (0)", "全部 (1)", "进行中 (0)", "成功 (0)", "失败 (1)"],
+                    tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                Assert.Empty(FindList(control, "SuccessfulTransfersList").Items.Cast<ListViewItem>());
+
+                toolbar.Items.OfType<ToolStripButton>().Single(button => button.Name == "ClearAllTransfersButton").PerformClick();
+                Assert.Empty(queue.Snapshot.Tasks);
+                Assert.Equal(["批次 (0)", "全部 (0)", "进行中 (0)", "成功 (0)", "失败 (0)"],
+                    tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                tabs.SelectedIndex = 1;
+                Assert.Empty(FindList(control, "AllTransfersList").Items.Cast<ListViewItem>());
+            }
+            finally { queue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        });
+    }
+
+    [Fact]
+    public void FailedAndActiveTabsIncludeBatchChildren()
+    {
+        RunSta(() =>
+        {
+            var profileId = Guid.NewGuid();
+            var batch = new TransferBatchRecord
+            {
+                ProfileId = profileId, ProfileName = "test-profile", Name = "folder",
+                Bucket = "test-bucket", RootPath = Path.GetTempPath(), DiscoveryCompleted = true,
+                Direction = TransferDirection.Download
+            };
+            var tasks = new[] { TransferTaskState.Paused, TransferTaskState.Failed }
+                .Select(state => CreateTask(profileId, $"folder/{state}.bin", state) with
+                { BatchId = batch.Id, Kind = TransferTaskKind.FolderBatchItem }).ToArray();
+            batch = batch with { TaskIds = tasks.Select(task => task.Id).ToArray() };
+            var queue = new PersistentTransferQueue(new SnapshotStore(new TransferStoreSnapshot
+            { Tasks = tasks, Batches = [batch] }), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue);
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                var tabs = Assert.Single(control.Controls.OfType<TabControl>());
+                Assert.Equal(["批次 (1)", "全部 (2)", "进行中 (1)", "成功 (0)", "失败 (1)"],
+                    tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                tabs.SelectedIndex = 2;
+                Assert.Single(FindList(control, "ActiveTransfersList").Items.Cast<ListViewItem>());
+                tabs.SelectedIndex = 4;
+                Assert.Single(FindList(control, "FailedTransfersList").Items.Cast<ListViewItem>());
+            }
+            finally { queue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        });
+    }
+
+    [Fact]
+    public void ClearingDuringDiscoveryTreatsLateItemsAsCancellationAndIgnoresLateCompletion()
+    {
+        RunSta(() =>
+        {
+            var queue = new PersistentTransferQueue(new SnapshotStore(new()), new UnexpectedExecutor());
+            try
+            {
+                using var control = new TransferQueueControl(queue);
+                control.CreateControl();
+                control.InitializeAsync().GetAwaiter().GetResult();
+                var profile = new ConnectionProfile { Name = "test-profile", Endpoint = "https://storage.example.test" };
+                var batch = control.CreateBatchAsync(profile, "test-bucket", "folder", Path.GetTempPath(),
+                    TransferDirection.Upload, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+                queue.RemoveAllAsync(TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+                Assert.Throws<OperationCanceledException>(() => control.AddUploadBatchItemsAsync(batch,
+                    [new UploadBatchItem(Path.Combine(Path.GetTempPath(), "late.bin"), "late.bin", "late.bin", 10, "STANDARD")],
+                    TestContext.Current.CancellationToken)
+                    .GetAwaiter().GetResult());
+                control.CompleteBatchDiscoveryAsync(batch.Id, cancellationToken: TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+                Assert.Empty(queue.Snapshot.Tasks);
+                Assert.Empty(queue.Snapshot.Batches);
+            }
+            finally { queue.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -96,7 +96,7 @@ internal sealed partial class MainForm
                 _shellClipboard = data;
                 _objectClipboard = payload;
                 TrackClipboardSession(data);
-                _requestStatus.Text = $"已复制 {selected.Length:N0} 项，可在资源管理器 Ctrl+V；请保持程序运行";
+                _requestStatus.Text = $"已复制 {selected.Length:N0} 项，可粘贴到其他连接或资源管理器；请保持程序运行";
             }
             catch { data.Dispose(); throw; }
         }
@@ -110,7 +110,7 @@ internal sealed partial class MainForm
             _logger.Error("Clipboard preparation failed", exception);
             if (revision == _clipboardRevision && !IsDisposed)
                 ErrorDialog.ShowException(this, "无法准备资源管理器粘贴", "复制文件",
-                    exception, "同连接内复制仍可用（如果剪贴板未被替换）。特殊对象名可使用下载功能。");
+                    exception, "对象间复制仍可用（如果剪贴板未被替换）。特殊对象名可使用下载功能。");
         }
         finally
         {

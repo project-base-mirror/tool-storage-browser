@@ -6,6 +6,15 @@ namespace S3Explorer.App.Tests;
 public sealed class AppSettingsStoreTests
 {
     [Fact]
+    public void TransferPanelDefaultsAndLegacyHeightLeaveRoomForRows()
+    {
+        Assert.Equal(320, new AppSettings().TransferPanelHeight);
+        Assert.Equal(240, (new AppSettings { TransferPanelHeight = 120 }).Normalize().TransferPanelHeight);
+        Assert.Equal(240, (new AppSettings { TransferPanelHeight = 190 }).Normalize().TransferPanelHeight);
+        Assert.Equal(480, (new AppSettings { TransferPanelHeight = 480 }).Normalize().TransferPanelHeight);
+    }
+
+    [Fact]
     public async Task InvalidSemanticValuesAreNormalizedBeforeRuntimeUse()
     {
         var root = TemporaryDirectory();

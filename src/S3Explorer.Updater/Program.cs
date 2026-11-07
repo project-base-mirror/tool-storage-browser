@@ -195,26 +195,31 @@ internal static class UpdateRunner
     }
 
     internal static Process StartInstaller(string msiPath, string logPath, string applicationPath)
+        => Process.Start(BuildInstallerStartInfo(msiPath, logPath, applicationPath))
+            ?? throw new InvalidOperationException("无法启动 Windows Installer。");
+
+    internal static ProcessStartInfo BuildInstallerStartInfo(string msiPath, string logPath, string applicationPath)
     {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(applicationPath))
+            ?? throw new ArgumentException("应用程序目录无效。", nameof(applicationPath));
         var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var startInfo = new ProcessStartInfo
         {
             FileName = Path.Combine(systemDirectory, "msiexec.exe"),
             UseShellExecute = true,
             Verb = "runas",
-            WindowStyle = ProcessWindowStyle.Hidden,
-            Arguments = BuildInstallerArguments(msiPath, logPath, applicationPath)
+            WindowStyle = ProcessWindowStyle.Hidden
         };
-        return Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 Windows Installer。");
-    }
-
-    internal static string BuildInstallerArguments(string msiPath, string logPath, string applicationPath)
-    {
-        var directory = Path.GetDirectoryName(Path.GetFullPath(applicationPath))
-            ?? throw new ArgumentException("应用程序目录无效。", nameof(applicationPath));
-        // A terminal dot also handles drive roots without a trailing quote-escaping slash.
-        directory = Path.Combine(directory, ".");
-        return $"/i \"{msiPath}\" /qn /norestart /l*v \"{logPath}\" APPLICATIONFOLDER=\"{directory}\"";
+        // MSI rejects a terminal \. directory component with error 1324. Let .NET
+        // quote each argument, including spaces and a drive root's trailing slash,
+        // rather than changing the install directory to work around quoting.
+        foreach (var argument in new[]
+        {
+            "/i", msiPath, "/qn", "/norestart", "/l*v", logPath,
+            $"APPLICATIONFOLDER={directory}"
+        })
+            startInfo.ArgumentList.Add(argument);
+        return startInfo;
     }
 
     internal static void WriteResult(string path, UpdateResult result)

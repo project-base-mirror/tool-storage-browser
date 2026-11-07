@@ -122,7 +122,9 @@ public sealed record MultipartUploadCheckpoint(
     DateTimeOffset SourceLastWriteTimeUtc = default,
     DateTimeOffset InitiatedAt = default)
 {
-    // Optional server-side copy identity; absent on existing local-upload checkpoints.
+    // Optional server-side / cross-connection copy identity; absent on local-upload checkpoints.
+    public Guid? CopySourceProfileId { get; init; }
+    public Guid? CopyDestinationProfileId { get; init; }
     public string? CopySourceBucket { get; init; }
     public string? CopySourceKey { get; init; }
     public string? CopySourceETag { get; init; }
@@ -178,6 +180,9 @@ public sealed record TransferTaskRecord
     public string Bucket { get; init; } = string.Empty;
     public string ObjectKey { get; init; } = string.Empty;
     public string? VersionId { get; init; }
+    /// <summary>Null preserves the original same-connection copy/move behavior.</summary>
+    public Guid? DestinationProfileId { get; init; }
+    public string? DestinationProfileName { get; init; }
     public string DestinationBucket { get; init; } = string.Empty;
     public string DestinationObjectKey { get; init; } = string.Empty;
     public ObjectConflictPolicy ConflictPolicy { get; init; } = ObjectConflictPolicy.Overwrite;
@@ -201,6 +206,11 @@ public sealed record TransferTaskRecord
     public MultipartUploadCheckpoint? MultipartCheckpoint { get; init; }
     public string? IntegritySummary { get; init; }
 
+    public bool IsCrossConnectionCopy => Direction == TransferDirection.Copy &&
+        DestinationProfileId is { } destination && destination != ProfileId;
+    public Guid EffectiveDestinationProfileId =>
+        Direction is TransferDirection.Copy or TransferDirection.Move ? DestinationProfileId ?? ProfileId : ProfileId;
+
     public bool IsTerminal => State is TransferTaskState.Completed or TransferTaskState.Cancelled;
     public bool CanResume => State is TransferTaskState.Paused or TransferTaskState.Interrupted or TransferTaskState.Failed or TransferTaskState.RetryPending;
 
@@ -222,8 +232,13 @@ public sealed record TransferTaskRecord
                 throw new ArgumentException("目标 Bucket 不能为空。", nameof(DestinationBucket));
             if (string.IsNullOrEmpty(DestinationObjectKey))
                 throw new ArgumentException("目标对象 Key 不能为空。", nameof(DestinationObjectKey));
-            ObjectTransferPlanner.ValidateDestination(
-                Bucket, ObjectKey, isDirectory: false, DestinationBucket, DestinationObjectKey);
+            if (DestinationProfileId == Guid.Empty)
+                throw new ArgumentException("目标连接 ID 不能为空。", nameof(DestinationProfileId));
+            if (Direction == TransferDirection.Move && EffectiveDestinationProfileId != ProfileId)
+                throw new ArgumentException("跨连接请使用复制，核对后再删除源对象。", nameof(DestinationProfileId));
+            if (EffectiveDestinationProfileId == ProfileId)
+                ObjectTransferPlanner.ValidateDestination(
+                    Bucket, ObjectKey, isDirectory: false, DestinationBucket, DestinationObjectKey);
         }
         if (TotalBytes < 0 || TransferredBytes < 0 || TransferredBytes > TotalBytes)
             throw new ArgumentOutOfRangeException(nameof(TransferredBytes));
@@ -280,7 +295,7 @@ public sealed record TransferStoreSnapshot
 
     public void Validate()
     {
-        if (SchemaVersion != 1) throw new InvalidOperationException($"不支持的任务存储版本：{SchemaVersion}");
+        if (SchemaVersion is not (1 or 2)) throw new InvalidOperationException($"不支持的任务存储版本：{SchemaVersion}");
         foreach (var task in Tasks) task.Validate();
         foreach (var batch in Batches) batch.Validate();
         if (Tasks.Select(task => task.Id).Distinct().Count() != Tasks.Count)

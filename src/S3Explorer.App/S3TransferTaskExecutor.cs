@@ -48,10 +48,19 @@ internal sealed class S3TransferTaskExecutor(
                 return;
 
             case TransferDirection.Copy:
-                await storage.CopyObjectAsync(
-                    profile, task.Bucket, task.ObjectKey,
-                    task.DestinationBucket, task.DestinationObjectKey, transfer, cancellationToken)
-                    .ConfigureAwait(false);
+                if (task.IsCrossConnectionCopy)
+                {
+                    var destination = await ResolveProfileAsync(task, cancellationToken, destination: true).ConfigureAwait(false);
+                    await storage.CopyObjectAcrossConnectionsAsync(
+                        profile, task.Bucket, task.ObjectKey, destination,
+                        task.DestinationBucket, task.DestinationObjectKey, transfer, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                    await storage.CopyObjectAsync(
+                        profile, task.Bucket, task.ObjectKey,
+                        task.DestinationBucket, task.DestinationObjectKey, transfer, cancellationToken)
+                        .ConfigureAwait(false);
                 context.ReportProgress(new TransferProgress(task.TotalBytes, task.TotalBytes));
                 return;
 
@@ -119,21 +128,28 @@ internal sealed class S3TransferTaskExecutor(
         var task = context.Task;
         var checkpoint = task.MultipartCheckpoint;
         if (checkpoint is null) return;
-        var profile = await ResolveProfileAsync(task, cancellationToken).ConfigureAwait(false);
+        var profile = await ResolveProfileAsync(task, cancellationToken, destination: task.IsCrossConnectionCopy).ConfigureAwait(false);
         await storage.AbortMultipartUploadAsync(
             profile,
-            string.IsNullOrWhiteSpace(checkpoint.Bucket) ? task.Bucket : checkpoint.Bucket,
-            string.IsNullOrWhiteSpace(checkpoint.ObjectKey) ? task.ObjectKey : checkpoint.ObjectKey,
+            string.IsNullOrWhiteSpace(checkpoint.Bucket)
+                ? task.Direction is TransferDirection.Copy or TransferDirection.Move ? task.DestinationBucket : task.Bucket
+                : checkpoint.Bucket,
+            string.IsNullOrEmpty(checkpoint.ObjectKey)
+                ? task.Direction is TransferDirection.Copy or TransferDirection.Move ? task.DestinationObjectKey : task.ObjectKey
+                : checkpoint.ObjectKey,
             checkpoint.UploadId,
             cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<ConnectionProfile> ResolveProfileAsync(
         TransferTaskRecord task,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool destination = false)
     {
+        var id = destination ? task.EffectiveDestinationProfileId : task.ProfileId;
+        var name = destination ? task.DestinationProfileName ?? task.ProfileName : task.ProfileName;
         var available = await profiles.LoadAsync(cancellationToken).ConfigureAwait(false);
-        return available.FirstOrDefault(item => item.Id == task.ProfileId)
-            ?? throw new InvalidOperationException($"找不到传输任务引用的连接：{task.ProfileName} ({task.ProfileId})");
+        return available.FirstOrDefault(item => item.Id == id)
+            ?? throw new InvalidOperationException($"找不到传输任务引用的{(destination ? "目标" : "源")}连接：{name} ({id})");
     }
 }

@@ -126,6 +126,15 @@ class UpdateSafetyTests(unittest.TestCase):
         self.assertIn('APPLICATIONFOLDER=', updater)
         self.assertIn('failure = new AggregateException', updater)
 
+    def test_updater_keeps_msi_directory_unchanged_and_uses_argument_list(self):
+        updater = (ROOT / 'src/S3Explorer.Updater/Program.cs').read_text(encoding='utf-8')
+        launcher = updater.split('internal static Process StartInstaller', 1)[1].split('internal static void WriteResult', 1)[0]
+        self.assertIn('Process.Start(BuildInstallerStartInfo(', launcher)
+        self.assertIn('startInfo.ArgumentList.Add(argument)', launcher)
+        self.assertIn('$"APPLICATIONFOLDER={directory}"', launcher)
+        self.assertNotIn('Path.Combine(directory, ".")', launcher)
+        self.assertNotIn('Arguments =', launcher)
+
     def test_manual_tag_preparation_is_explicit_and_checks_validated_main(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
         preparation = workflow.split('  prepare-tag:', 1)[1].split('  release:', 1)[0]

@@ -131,6 +131,35 @@ public sealed class BucketSelectionTests
         });
     }
 
+    [Theory]
+    [InlineData(9F, 680)]
+    [InlineData(12F, 600)]
+    [InlineData(16F, 680)]
+    public void Binding_picker_keeps_refresh_button_compact_and_fully_visible(float fontSize, int width)
+    {
+        RunSta(() =>
+        {
+            var storageProfile = Profile();
+            var cdnProfile = new CdnProfile { Name = "cdn", BaseUrl = "https://cdn.example.test" };
+            using var font = new Font(SystemFonts.MessageBoxFont!.FontFamily, fontSize);
+            using var dialog = new CdnBindingEditorDialog(
+                null, [storageProfile], [cdnProfile], storageProfile, "manual-bucket");
+            dialog.Font = font;
+            dialog.ClientSize = new Size(width, 500);
+            dialog.Show();
+            Application.DoEvents();
+
+            var picker = Assert.IsType<BucketPicker>(Assert.Single(dialog.Controls.Find("CdnBindingBucket", true)));
+            var button = picker.RefreshButton;
+            Assert.Equal("刷新", button.Text);
+            Assert.True(button.Width >= button.PreferredSize.Width);
+            Assert.Equal(button.PreferredSize.Height, button.Height);
+            Assert.True(picker.Input.Right <= button.Left, "Bucket input overlaps its refresh button.");
+            AssertFullyVisible(button, dialog);
+            AssertFullyVisible(picker.Input, dialog);
+        });
+    }
+
     [Fact]
     public void Stale_remote_result_cannot_replace_the_new_profiles_bucket_choices()
     {
@@ -192,6 +221,18 @@ public sealed class BucketSelectionTests
         Assert.Equal(ComboBoxStyle.DropDown, picker.Input.DropDownStyle);
         picker.BucketText = "manual-bucket";
         Assert.Equal("manual-bucket", picker.BucketText);
+    }
+
+    private static void AssertFullyVisible(Control control, Form dialog)
+    {
+        var bounds = control.Bounds;
+        for (var parent = control.Parent; parent is not null; parent = parent.Parent)
+        {
+            Assert.True(parent.ClientRectangle.Contains(bounds),
+                $"{control.Name} bounds {bounds} were clipped by {parent.GetType().Name} {parent.ClientRectangle}.");
+            if (parent == dialog) break;
+            bounds.Offset(parent.Left, parent.Top);
+        }
     }
 
     private static void WaitWithMessagePump(Task task)
